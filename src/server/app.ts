@@ -3,7 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ACTIVE_TASK_STATUSES, PAGE_PARAMETER_PLATFORMS, PLATFORMS, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type BusinessSuite, type ConsoleSnapshot, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest } from "../shared/contracts.js";
+import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget } from "../shared/contracts.js";
 import { toPublicTests, validateParameters, type LoadedProjectConfig } from "./config.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
@@ -21,11 +21,17 @@ import type { TaskResultService as TaskResultServiceType } from "./task-results.
 import type { ResultBundleStore } from "./result-bundle-store.js";
 import { resolveProjectConfigSelection, scanProjectDirectory, type ProjectCatalogService } from "./project-catalog.js";
 import { DirectoryPicker } from "./directory-picker.js";
+import type { ArtifactRetentionService } from "./artifact-retention.js";
 
 const startRequestSchema = z.object({
   testId: z.string().min(1),
-  deviceKeys: z.array(z.string().min(1)).min(1),
+  deviceKeys: z.array(z.string().min(1)).optional(),
+  targetKeys: z.array(z.string().min(1)).optional(),
   parameters: z.record(z.string()).default({}),
+}).refine(value => (value.deviceKeys?.length ?? 0) > 0 || (value.targetKeys?.length ?? 0) > 0, {
+  message: "请至少选择一个设备或运行目标",
+}).refine(value => !value.deviceKeys?.length || !value.targetKeys?.length, {
+  message: "设备和运行目标只能选择其中一种",
 });
 
 const accountProfileProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
@@ -182,6 +188,11 @@ const applyProjectSetupSchema = previewProjectSetupSchema.extend({
   planId: z.string().min(1),
 });
 
+const taskRetentionSchema = z.object({ retained: z.boolean() });
+const artifactCleanupApplySchema = z.object({
+  runIds: z.array(z.string().regex(ARTIFACT_RUN_ID_PATTERN)).min(1).max(500).optional(),
+}).strict();
+
 export interface CreateAppOptions {
   config: LoadedProjectConfig;
   devices: DeviceDiscoveryService;
@@ -192,6 +203,7 @@ export interface CreateAppOptions {
   projectProviders?: ProjectProviderManifestSummary[];
   projectCatalog?: ProjectCatalogService;
   directoryPicker?: DirectoryPicker;
+  artifacts?: ArtifactRetentionService;
   onProjectSwitch?: (configPath: string) => void | Promise<void>;
   staticDir?: string;
 }
@@ -220,6 +232,18 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   });
 
   app.get("/api/health", async () => ({ ok: true }));
+
+  app.get("/api/artifact-retention", async () => requireArtifactRetention(options).snapshot());
+
+  app.post("/api/artifact-retention/preview", async () => requireArtifactRetention(options).preview());
+
+  app.post("/api/artifact-retention/inventory", async () => requireArtifactRetention(options).inventory());
+
+  app.post<{ Body: ArtifactCleanupApplyRequest }>("/api/artifact-retention/apply", async request => {
+    const parsed = artifactCleanupApplySchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireArtifactRetention(options).apply(parsed.data.runIds);
+  });
 
   app.get("/api/projects", async () => requireProjectCatalog(options).snapshot());
 
@@ -331,6 +355,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         : {}),
       projectProviders: options.projectProviders ?? [],
       devices: discovery.devices,
+      targets: configuredRunTargets(options.config),
       deviceErrors: discovery.errors,
       deviceDiscoveryPending: discovery.refreshing,
       tests: toPublicTests(options.config.tests),
@@ -512,11 +537,12 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         parsed.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "),
       );
     }
+    await options.artifacts?.assertCanStart();
     const discovery = await options.devices.discover();
     const test = options.config.tests.find(item => item.id === parsed.data.testId);
     if (test) {
       const parameters = validateParameters(test, parsed.data.parameters ?? {});
-      const selectedDevices = discovery.devices.filter(device => parsed.data.deviceKeys.includes(device.key));
+      const selectedDevices = discovery.devices.filter(device => parsed.data.deviceKeys?.includes(device.key));
       const blockedPreparation = selectedDevices.flatMap(device => (device.preparations ?? [])
         .filter(item => item.blocksTests && item.status !== "ready")
         .map(item => ({ device, preparation: item })))[0];
@@ -528,7 +554,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         );
       }
       const environment = parameters.environment || "qa";
-      for (const parameter of test.parameters) {
+      if ((parsed.data.deviceKeys?.length ?? 0) > 0) for (const parameter of test.parameters) {
         if (parameter.type !== "account-profile") continue;
         const selection = parameters[parameter.id];
         if (selection === "current-session") continue;
@@ -544,7 +570,16 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         );
       }
     }
-    return { tasks: await options.tasks.start(parsed.data, discovery.devices) };
+    return {
+      tasks: await options.tasks.start(
+        parsed.data,
+        discovery.devices,
+        undefined,
+        undefined,
+        undefined,
+        configuredRunTargets(options.config),
+      ),
+    };
   });
 
   app.post<{ Body: { deviceKey: string } }>("/api/devices/start", async request => {
@@ -562,6 +597,12 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   app.post<{ Params: { taskId: string } }>("/api/tasks/:taskId/stop", async request => ({
     task: await options.tasks.stop(request.params.taskId),
   }));
+
+  app.put<{ Params: { taskId: string }; Body: { retained: boolean } }>("/api/tasks/:taskId/retention", async request => {
+    const parsed = taskRetentionSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return { task: await requireArtifactRetention(options).setTaskRetained(request.params.taskId, parsed.data.retained) };
+  });
 
   app.get("/api/repairs", async () => ({
     schemaVersion: "mobile-test-console.repair-jobs.v1" as const,
@@ -651,6 +692,19 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   return app;
 }
 
+function configuredRunTargets(config: LoadedProjectConfig): RunTarget[] {
+  return (config.testing?.targets ?? []).map(target => ({
+    key: target.key,
+    kind: "mini-program" as const,
+    label: target.label,
+    platform: target.platform,
+    runtime: target.runtime,
+    appId: target.appId,
+    concurrencyKey: target.concurrencyKey,
+    ...(target.extensions ? { extensions: structuredClone(target.extensions) } : {}),
+  }));
+}
+
 async function findAvailableDevice(options: CreateAppOptions, deviceKey: string) {
   const discovery = await options.devices.discover();
   const device = discovery.devices.find(item => item.key === deviceKey);
@@ -669,6 +723,11 @@ function invalidRequest(error: z.ZodError): ConsoleError {
 function requireRepairs(options: CreateAppOptions): RepairJobManager {
   if (!options.repairs) throw new ConsoleError("CODEX_REPAIR_DISABLED", "项目未初始化 Codex 修复服务", 409);
   return options.repairs;
+}
+
+function requireArtifactRetention(options: CreateAppOptions): ArtifactRetentionService {
+  if (!options.artifacts) throw new ConsoleError("ARTIFACT_RETENTION_DISABLED", "当前项目未启用测试产物治理", 409);
+  return options.artifacts;
 }
 
 function requireRepairJob(options: CreateAppOptions, repairJobId: string) {

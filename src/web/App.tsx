@@ -2,11 +2,14 @@ import {
   Activity,
   AlertCircle,
   BarChart3,
+  Bookmark,
   CheckCircle2,
   ChevronRight,
   Clock3,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   ExternalLink,
   Files,
   ImageIcon,
@@ -29,6 +32,7 @@ import {
   FolderKanban,
   FolderPlus,
   RotateCcw,
+  PanelsTopLeft,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -54,11 +58,14 @@ import type {
   TestTask,
   RepairJob,
   RepairJobPreview,
+  ProjectFamily,
+  PublicTestDefinition,
+  RunTarget,
 } from "../shared/contracts";
-import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, PROJECT_EXECUTION_PREREQUISITE_STEP_IDS, TERMINAL_TASK_STATUSES } from "../shared/contracts";
+import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, PROJECT_EXECUTION_PREREQUISITE_STEP_IDS, TERMINAL_TASK_STATUSES, projectFamilyOf } from "../shared/contracts";
 import { supportsAccountProfileProvider } from "../shared/account-profile-compatibility";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults";
-import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, registerProject, retryRepairTest, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
+import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, registerProject, retryRepairTest, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
 import { PageParametersWorkspace } from "./PageParametersWorkspace";
 import { PageSelectionField } from "./PageSelectionField";
 import { AccountProfilesWorkspace } from "./AccountProfilesWorkspace";
@@ -161,6 +168,7 @@ export function resolveAccountProfileOptions(
 }
 
 export default function App() {
+  const [projectFamily, setProjectFamily] = useState<ProjectFamily>("app");
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("projects");
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
   const [projectCatalog, setProjectCatalog] = useState<ProjectCatalogResponse | null>(null);
@@ -205,7 +213,10 @@ export default function App() {
       setSnapshot(next);
       if (accountProfileResponse) setAccountProfiles(accountProfileResponse);
       if (projectCatalogResponse) setProjectCatalog(projectCatalogResponse);
-      setSelectedKeys(previous => previous.filter(key => next.devices.some(device => device.key === key && device.connectionState === "available")));
+      setSelectedKeys(previous => previous.filter(key => (
+        next.devices.some(device => device.key === key && device.connectionState === "available")
+        || next.targets?.some(target => target.key === key)
+      )));
       setFocusedTaskId(previous => reconcileFocusedTaskId(previous, next.tasks));
     } catch (error) {
       if (!switchingProjectId) {
@@ -235,10 +246,23 @@ export default function App() {
   }, [projectCatalog]);
 
   const handleSelectCatalogProject = useCallback((projectId: string) => {
+    const project = projectCatalog?.projects.find(item => item.id === projectId);
+    if (project) setProjectFamily(projectFamilyOf(project.integrationType));
+    setSelectedKeys([]);
     setSelectedCatalogProjectId(projectId);
     setAddingCatalogProject(false);
     setWorkspaceView("projects");
-  }, []);
+  }, [projectCatalog?.projects]);
+
+  const handleSelectProjectFamily = useCallback((family: ProjectFamily) => {
+    setProjectFamily(family);
+    setSelectedKeys([]);
+    const projects = projectCatalog?.projects.filter(project => projectFamilyOf(project.integrationType) === family) ?? [];
+    const active = projects.find(project => project.id === projectCatalog?.activeProjectId);
+    setSelectedCatalogProjectId(active?.id ?? projects[0]?.id ?? "");
+    setAddingCatalogProject(false);
+    setWorkspaceView("projects");
+  }, [projectCatalog]);
 
   const handleAddCatalogProject = useCallback(() => {
     setAddingCatalogProject(true);
@@ -252,8 +276,11 @@ export default function App() {
   }, []);
 
   const tests = snapshot?.tests || [];
-  const workspaceViews = resolveWorkspaceViews();
   const selectedCatalogProject = projectCatalog?.projects.find(project => project.id === selectedCatalogProjectId) ?? null;
+  const selectedProjectFamily = selectedCatalogProject
+    ? projectFamilyOf(selectedCatalogProject.integrationType)
+    : projectFamily;
+  const workspaceViews = resolveWorkspaceViews(selectedProjectFamily);
   const hasSelectedCatalogProject = selectedCatalogProject !== null;
   const selectedCatalogProjectActive = selectedCatalogProject?.id === snapshot?.project.id;
   const selectedProjectExecutionReady = Boolean(selectedCatalogProject && PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.every(id => (
@@ -269,12 +296,14 @@ export default function App() {
     executionReady: selectedProjectExecutionReady,
     runtimeReady: selectedProjectRuntimeReady,
     declaredWorkspaces: declaredProjectWorkspaces,
+    family: selectedProjectFamily,
   }), [
     hasSelectedCatalogProject,
     selectedCatalogProjectActive,
     selectedProjectExecutionReady,
     selectedProjectRuntimeReady,
     declaredProjectWorkspaces,
+    selectedProjectFamily,
   ]);
   const selectedTest = tests.find(test => test.id === selectedTestId) || tests[0];
   const selectedTestMissingCapabilities = useMemo(() => {
@@ -360,16 +389,32 @@ export default function App() {
     });
   }, [accountProfiles?.profiles, accountProfiles?.providers, selectedKeys, selectedTest, snapshot?.devices]);
 
-  const taskByDevice = useMemo(() => {
+  const taskByTarget = useMemo(() => {
     const map = new Map<string, TestTask>();
     for (const task of tasks) {
-      const current = map.get(task.device.key);
-      if (!current || task.createdAt > current.createdAt) map.set(task.device.key, task);
+      const key = task.target?.key ?? task.device.key;
+      const current = map.get(key);
+      if (!current || task.createdAt > current.createdAt) map.set(key, task);
+    }
+    return map;
+  }, [tasks]);
+
+  const activeTaskByConcurrencyKey = useMemo(() => {
+    const map = new Map<string, TestTask>();
+    for (const task of tasks) {
+      const concurrencyKey = task.target?.concurrencyKey;
+      if (!concurrencyKey || !ACTIVE_STATUSES.has(task.status)) continue;
+      const current = map.get(concurrencyKey);
+      if (!current || task.createdAt > current.createdAt) map.set(concurrencyKey, task);
     }
     return map;
   }, [tasks]);
 
   const connectedDevices = (snapshot?.devices || []).filter(device => device.connectionState === "available");
+  const configuredTargets = snapshot?.targets ?? [];
+  const visibleTargets = configuredTargets.filter(target => (
+    !selectedTest?.targetKeys?.length || selectedTest.targetKeys.includes(target.key)
+  ));
   const selectedDevicePlatforms = [...new Set((snapshot?.devices || [])
     .filter(device => selectedKeys.includes(device.key))
     .map(device => device.platform))];
@@ -381,19 +426,35 @@ export default function App() {
   const toggleDevice = (device: Device) => {
     if (device.connectionState !== "available"
       || device.preparations?.some(item => item.blocksTests && item.status !== "ready")
-      || taskByDevice.get(device.key) && ACTIVE_STATUSES.has(taskByDevice.get(device.key)!.status)) return;
+      || taskByTarget.get(device.key) && ACTIVE_STATUSES.has(taskByTarget.get(device.key)!.status)) return;
     setSelectedKeys(previous => previous.includes(device.key)
       ? previous.filter(key => key !== device.key)
       : [...previous, device.key]);
   };
 
+  const toggleTarget = (target: RunTarget) => {
+    if (activeTaskByConcurrencyKey.has(target.concurrencyKey)) return;
+    setSelectedKeys(previous => previous.includes(target.key)
+      ? previous.filter(key => key !== target.key)
+      : [...previous, target.key]);
+  };
+
+  const handleSelectTest = (testId: string) => {
+    const nextTest = tests.find(test => test.id === testId);
+    setSelectedTestId(testId);
+    setSelectedKeys(previous => nextTest
+      ? reconcileSelectedKeysForTest(previous, nextTest, selectedProjectFamily, snapshot?.devices ?? [])
+      : []);
+    setParameters({});
+  };
+
   const handleStart = async () => {
     if (!selectedTest || selectedKeys.length === 0) {
-      setMessage({ kind: "error", text: "请选择测试和至少一台设备" });
+      setMessage({ kind: "error", text: selectedProjectFamily === "mini-program" ? "请选择测试套件和运行目标" : "请选择测试和至少一台设备" });
       return;
     }
     const accountParameter = selectedTest.parameters.find(parameter => parameter.type === "account-profile");
-    if (accountParameter) {
+    if (accountParameter && selectedProjectFamily === "app") {
       const selectedValue = parameters[accountParameter.id] || accountParameter.defaultValue;
       const environment = parameters.environment || selectedTest.parameters.find(item => item.id === "environment")?.defaultValue || "";
       const accountOptions = resolveAccountProfileOptions(
@@ -411,10 +472,14 @@ export default function App() {
     }
     setActionPending(true);
     try {
-      const result = await startTasks({ testId: selectedTest.id, deviceKeys: selectedKeys, parameters });
+      const result = await startTasks({
+        testId: selectedTest.id,
+        ...(selectedProjectFamily === "mini-program" ? { targetKeys: selectedKeys } : { deviceKeys: selectedKeys }),
+        parameters,
+      });
       setSelectedKeys([]);
       setFocusedTaskId(result.tasks[0]?.id || "");
-      setMessage({ kind: "info", text: `已启动 ${result.tasks.length} 台设备` });
+      setMessage({ kind: "info", text: `已启动 ${result.tasks.length} 个运行任务` });
       await load();
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "启动测试失败" });
@@ -595,7 +660,7 @@ export default function App() {
     setActionPending(true);
     try {
       await stopTask(task.id);
-      setMessage({ kind: "info", text: `已请求停止 ${task.device.name}` });
+      setMessage({ kind: "info", text: `已请求停止 ${taskTargetLabel(task)}` });
       await load();
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "停止测试失败" });
@@ -614,9 +679,25 @@ export default function App() {
       setSnapshot(previous => previous ? excludeDeletedTasks(previous, deletedTaskIds.current) : previous);
       setFocusedTaskId(previous => clearDeletedFocusedTaskId(previous, task.id));
       setDeleteCandidate(null);
-      setMessage({ kind: "info", text: `已删除 ${task.device.name} 的运行记录` });
+      setMessage({ kind: "info", text: `已删除 ${taskTargetLabel(task)} 的运行记录` });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "删除运行记录失败" });
+    } finally {
+      setActionPending(false);
+    }
+  };
+
+  const handleRetain = async (task: TestTask) => {
+    setActionPending(true);
+    try {
+      const response = await setTaskRetained(task.id, !task.retained);
+      setSnapshot(previous => previous ? {
+        ...previous,
+        tasks: previous.tasks.map(item => item.id === task.id ? response.task : item),
+      } : previous);
+      setMessage({ kind: "info", text: response.task.retained ? "已将运行标记为长期保留" : "已恢复按项目策略管理" });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "更新运行保留状态失败" });
     } finally {
       setActionPending(false);
     }
@@ -731,10 +812,12 @@ export default function App() {
       <div className="app-body">
         <ProjectSidebar
           catalog={projectCatalog}
+          family={selectedProjectFamily}
           selectedProjectId={addingCatalogProject ? "" : selectedCatalogProjectId}
           runtimeProjectId={snapshot?.project.id ?? ""}
           addingProject={addingCatalogProject}
           onSelect={handleSelectCatalogProject}
+          onSelectFamily={handleSelectProjectFamily}
           onAdd={handleAddCatalogProject}
           onDelete={setProjectDeleteCandidate}
         />
@@ -775,7 +858,12 @@ export default function App() {
             />
           : workspaceView === "tests" ? <>
         <section className="metrics-strip" aria-label="运行概览">
-          <Metric label="可用设备" value={connectedDevices.length} tone="teal" icon={<MonitorSmartphone size={17} />} />
+          <Metric
+            label={selectedProjectFamily === "mini-program" ? "运行目标" : "可用设备"}
+            value={selectedProjectFamily === "mini-program" ? visibleTargets.length : connectedDevices.length}
+            tone="teal"
+            icon={selectedProjectFamily === "mini-program" ? <PanelsTopLeft size={17} /> : <MonitorSmartphone size={17} />}
+          />
           <Metric label="测试中" value={activeCount} tone="blue" icon={<LoaderCircle size={17} />} />
           <Metric label="最近通过" value={passedCount} tone="green" icon={<CheckCircle2 size={17} />} />
           <Metric label="需要关注" value={failedCount} tone="red" icon={<AlertCircle size={17} />} />
@@ -784,12 +872,14 @@ export default function App() {
         <div className="workspace-grid">
           <aside className="devices-column section-panel">
             <div className="section-heading">
-              <div><p className="eyebrow">DEVICE POOL</p><h2>连接设备</h2></div>
+              <div><p className="eyebrow">{selectedProjectFamily === "mini-program" ? "RUN TARGETS" : "DEVICE POOL"}</p><h2>{selectedProjectFamily === "mini-program" ? "运行环境" : "连接设备"}</h2></div>
               <span className="count-label">
-                {snapshot?.deviceDiscoveryPending ? <><LoaderCircle size={12} className="spin" />发现中</> : `${visibleDevices.length} 台`}
+                {selectedProjectFamily === "mini-program"
+                  ? `${visibleTargets.length} 个`
+                  : snapshot?.deviceDiscoveryPending ? <><LoaderCircle size={12} className="spin" />发现中</> : `${visibleDevices.length} 台`}
               </span>
             </div>
-            <div className="platform-filter" aria-label="设备平台筛选">
+            {selectedProjectFamily === "app" && <div className="platform-filter" aria-label="设备平台筛选">
               {(["all", "android", "ios", "harmony"] as const).map(platform => (
                 <button
                   key={platform}
@@ -801,15 +891,23 @@ export default function App() {
                   {platform === "all" ? "全部" : platformLabels[platform]}
                 </button>
               ))}
-            </div>
+            </div>}
             <div className="device-list">
-              {loading && <EmptyState icon={<LoaderCircle className="spin" size={21} />} text="正在读取设备" />}
-              {!loading && visibleDevices.length === 0 && <EmptyState icon={<Smartphone size={21} />} text="暂未发现设备" />}
-              {visibleDevices.map(device => (
+              {loading && <EmptyState icon={<LoaderCircle className="spin" size={21} />} text={selectedProjectFamily === "mini-program" ? "正在读取运行目标" : "正在读取设备"} />}
+              {!loading && selectedProjectFamily === "mini-program" && visibleTargets.length === 0 && <EmptyState icon={<PanelsTopLeft size={21} />} text="当前测试套件没有可用运行目标" />}
+              {!loading && selectedProjectFamily === "app" && visibleDevices.length === 0 && <EmptyState icon={<Smartphone size={21} />} text="暂未发现设备" />}
+              {selectedProjectFamily === "mini-program" && visibleTargets.map(target => <TargetRow
+                key={target.key}
+                target={target}
+                task={activeTaskByConcurrencyKey.get(target.concurrencyKey) ?? taskByTarget.get(target.key)}
+                selected={selectedKeys.includes(target.key)}
+                onToggle={() => toggleTarget(target)}
+              />)}
+              {selectedProjectFamily === "app" && visibleDevices.map(device => (
                 <DeviceRow
                   key={device.key}
                   device={device}
-                  task={taskByDevice.get(device.key)}
+                  task={taskByTarget.get(device.key)}
                   selected={selectedKeys.includes(device.key)}
                   onToggle={() => toggleDevice(device)}
                   starting={startingDeviceKeys.has(device.key)}
@@ -819,17 +917,17 @@ export default function App() {
                 />
               ))}
             </div>
-            {Object.entries(snapshot?.deviceErrors || {}).map(([platform, error]) => <div className="provider-error" key={platform}><AlertCircle size={14} /><span>{platformLabels[platform as Platform]}：{error}</span></div>)}
+            {selectedProjectFamily === "app" && Object.entries(snapshot?.deviceErrors || {}).map(([platform, error]) => <div className="provider-error" key={platform}><AlertCircle size={14} /><span>{platformLabels[platform as Platform]}：{error}</span></div>)}
           </aside>
 
           <div className="main-column">
             <section className="section-panel test-panel">
-              <div className="section-heading"><div><p className="eyebrow">TEST PLAN</p><h2>启动测试</h2></div><span className="selection-label">已选 {selectedKeys.length} 台</span></div>
+              <div className="section-heading"><div><p className="eyebrow">TEST PLAN</p><h2>{selectedProjectFamily === "mini-program" ? "启动测试套件" : "启动测试"}</h2></div><span className="selection-label">已选 {selectedKeys.length} {selectedProjectFamily === "mini-program" ? "个目标" : "台"}</span></div>
               <div className="form-grid">
-                <label className="field"><span>测试入口</span><select value={selectedTest?.id || ""} onChange={event => { setSelectedTestId(event.target.value); setParameters({}); }} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{test.label}</option>)}</select></label>
+                <label className="field"><span>测试入口</span><select value={selectedTest?.id || ""} onChange={event => handleSelectTest(event.target.value)} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{test.label}</option>)}</select></label>
                 <div className="test-description">{selectedTestMissingCapabilities.length > 0
                   ? `测试能力未就绪：${selectedTestMissingCapabilities.join("、")}，请在项目概览完成接入验证。`
-                  : selectedTest?.description || "选择已声明的测试入口和设备后启动。"}</div>
+                  : selectedTest?.description || (selectedProjectFamily === "mini-program" ? "选择测试套件和运行目标后启动。" : "选择已声明的测试入口和设备后启动。")}</div>
                 {selectedTest?.parameters.map(parameter => {
                   if (parameter.type === "page-selection") {
                     return <div className="field page-selection-wrapper" key={parameter.id}>
@@ -869,12 +967,12 @@ export default function App() {
                   </label>;
                 })}
               </div>
-              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每台设备独立记录运行结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0}><Play size={16} fill="currentColor" />启动测试</button></div>
+              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每个运行目标独立记录结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0}><Play size={16} fill="currentColor" />启动测试</button></div>
             </section>
 
             <section className="section-panel runs-panel">
               <div className="section-heading"><div><p className="eyebrow">RUN MONITOR</p><h2>运行状态</h2></div><span className="count-label">{tasks.length} 条记录</span></div>
-              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : <div className="run-list">{tasks.map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}</div>}
+              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : <div className="run-list">{tasks.map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}</div>}
             </section>
 
             {focusedTask && <TaskDetail
@@ -882,7 +980,7 @@ export default function App() {
               tab={detailTab}
               resultState={resultState.taskId === focusedTask.id ? resultState : { taskId: focusedTask.id, loading: true, result: null, error: "" }}
               repairJobs={focusedRepairJobs}
-              codexRepairEnabled={snapshot?.codexRepairEnabled === true}
+              codexRepairEnabled={selectedProjectFamily === "app" && snapshot?.codexRepairEnabled === true}
               repairPending={actionPending}
               adapter={snapshot?.adapter}
               onTab={setDetailTab}
@@ -919,37 +1017,46 @@ function WorkspaceViewIcon({ view }: { view: WorkspaceView }) {
 
 export function ProjectSidebar({
   catalog,
+  family = "app",
   selectedProjectId,
   runtimeProjectId = "",
   addingProject = false,
   onSelect,
+  onSelectFamily = () => undefined,
   onAdd,
   onDelete,
 }: {
   catalog: ProjectCatalogResponse | null;
+  family?: ProjectFamily;
   selectedProjectId: string;
   runtimeProjectId?: string;
   addingProject?: boolean;
   onSelect: (projectId: string) => void;
+  onSelectFamily?: (family: ProjectFamily) => void;
   onAdd: () => void;
   onDelete: (project: ProjectCatalogEntry) => void;
 }) {
+  const projects = catalog?.projects.filter(project => projectFamilyOf(project.integrationType) === family) ?? [];
   return <aside className="app-project-sidebar" aria-label="项目列表">
+    <div className="project-family-switch" role="group" aria-label="终端类型">
+      <button type="button" className={family === "app" ? "active" : ""} onClick={() => onSelectFamily("app")} aria-pressed={family === "app"}><Smartphone size={14} />App</button>
+      <button type="button" className={family === "mini-program" ? "active" : ""} onClick={() => onSelectFamily("mini-program")} aria-pressed={family === "mini-program"}><PanelsTopLeft size={14} />小程序</button>
+    </div>
     <div className="app-project-sidebar-heading">
-      <div><p className="eyebrow">PROJECTS</p><h2>项目列表</h2></div>
+      <div><p className="eyebrow">PROJECTS</p><h2>{family === "mini-program" ? "小程序项目" : "App 项目"}</h2></div>
       <button className={`icon-button app-project-add ${addingProject ? "active" : ""}`} type="button" onClick={onAdd} title="添加项目" aria-label="添加项目" aria-pressed={addingProject}><FolderPlus size={16} /></button>
     </div>
     <div className="app-project-sidebar-list">
-      {catalog?.projects.map(project => <div className="app-project-row" key={project.id}>
+      {projects.map(project => <div className="app-project-row" key={project.id}>
         <button className={`app-project-item ${project.id === selectedProjectId ? "selected" : ""}`} type="button" onClick={() => onSelect(project.id)}>
-          <span className="app-project-item-icon"><Smartphone size={15} /></span>
+          <span className="app-project-item-icon">{family === "mini-program" ? <PanelsTopLeft size={15} /> : <Smartphone size={15} />}</span>
           <span><strong>{project.name}</strong><small>{projectIntegrationLabels[project.integrationType]}</small></span>
           {project.id === runtimeProjectId && <span className="project-sidebar-active" title="当前运行项目" />}
         </button>
         <button className="app-project-delete" type="button" title={`删除项目：${project.name}`} aria-label={`删除项目：${project.name}`} onClick={() => onDelete(project)}><Trash2 size={13} /></button>
       </div>)}
       {!catalog && <div className="app-project-sidebar-empty">正在读取项目</div>}
-      {catalog?.projects.length === 0 && <div className="app-project-sidebar-empty">还没有登记项目</div>}
+      {catalog && projects.length === 0 && <div className="app-project-sidebar-empty">当前终端类型还没有登记项目</div>}
     </div>
   </aside>;
 }
@@ -996,8 +1103,8 @@ function TaskDetail({
     { id: "logs", label: "日志", icon: <Terminal size={14} /> },
   ];
   return <section className="section-panel detail-panel">
-    <div className="section-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>{task.device.name}</h2></div><StatusBadge status={task.status} /></div>
-    <div className="detail-meta"><span>{platformLabels[task.device.platform]}</span><span>{task.testLabel}</span><span>{task.phase}</span><span>{formatDuration(task.startedAt, task.finishedAt)}</span></div>
+    <div className="section-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>{taskTargetLabel(task)}</h2></div><StatusBadge status={task.status} /></div>
+    <div className="detail-meta"><span>{taskTargetEnvironment(task)}</span><span>{task.testLabel}</span><span>{task.phase}</span><span>{formatDuration(task.startedAt, task.finishedAt)}</span></div>
     <div className="detail-tabs" role="tablist" aria-label="运行详情视图">
       {tabs.map(item => <button
         key={item.id}
@@ -1085,7 +1192,7 @@ export function RepairPanel({
 }
 
 function TaskLog({ task }: { task: TestTask }) {
-  return <div className="log-window" role="log" aria-label={`${task.device.name} 测试日志`}>
+  return <div className="log-window" role="log" aria-label={`${taskTargetLabel(task)} 测试日志`}>
     <div className="log-toolbar"><span><Terminal size={14} /> 最近日志</span><span>{task.logs.length} 行</span></div>
     {task.logs.length > 0 ? <pre>{task.logs.join("\n")}</pre> : <div className="log-empty">等待测试输出</div>}
   </div>;
@@ -1106,6 +1213,7 @@ export function ResultPanel({
   onOpenRepair,
   adapter,
   initialSelectedRunKey = "",
+  initialOverviewImagesVisible = true,
 }: {
   taskId: string;
   tab: Exclude<DetailTab, "logs">;
@@ -1120,10 +1228,15 @@ export function ResultPanel({
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
   initialSelectedRunKey?: string;
+  initialOverviewImagesVisible?: boolean;
   adapter?: ConsoleSnapshot["adapter"];
 }) {
   const [selectedRunKey, setSelectedRunKey] = useState(initialSelectedRunKey);
-  useEffect(() => setSelectedRunKey(""), [taskId]);
+  const [overviewImagesVisible, setOverviewImagesVisible] = useState(initialOverviewImagesVisible);
+  useEffect(() => {
+    setSelectedRunKey("");
+    setOverviewImagesVisible(true);
+  }, [taskId]);
   if (state.loading) return <EmptyState icon={<LoaderCircle className="spin" size={20} />} text="正在分析测试结果" />;
   if (state.error) return <div className="result-empty"><AlertCircle size={18} /><strong>分析结果暂不可用</strong><span>{state.error}</span></div>;
   const result = state.result;
@@ -1146,9 +1259,12 @@ export function ResultPanel({
     <EvidenceResult runs={scopedRuns} />
   </>;
   return <OverviewResult
+    taskId={taskId}
     result={result}
     selectedRunKey={selectedRunKey}
     onSelectRun={setSelectedRunKey}
+    imagesVisible={overviewImagesVisible}
+    onToggleImages={() => setOverviewImagesVisible(visible => !visible)}
     onTab={onTab}
     onCopy={onCopy}
     repairJobs={repairJobs}
@@ -1163,9 +1279,12 @@ export function ResultPanel({
 }
 
 function OverviewResult({
+  taskId,
   result,
   selectedRunKey,
   onSelectRun,
+  imagesVisible,
+  onToggleImages,
   onTab,
   onCopy,
   repairJobs,
@@ -1177,9 +1296,12 @@ function OverviewResult({
   onOpenRepair,
   adapter,
 }: {
+  taskId: string;
   result: TaskResult;
   selectedRunKey: string;
   onSelectRun: (runKey: string) => void;
+  imagesVisible: boolean;
+  onToggleImages: () => void;
   onTab?: (tab: DetailTab) => void;
   onCopy: (label: string, value: unknown) => void;
   repairJobs: RepairJob[];
@@ -1209,25 +1331,39 @@ function OverviewResult({
       </div>)}
     </div>}
     {result.warnings.length > 0 && <div className="result-warning"><AlertCircle size={14} /><span>{result.warnings.join("；")}</span></div>}
-    <div className="analysis-run-list">
+    {screenshots > 0 && <div className="analysis-run-toolbar">
+      <div><ImageIcon size={15} /><strong>测试条目</strong><span>{result.runs.length} 条 · {screenshots} 张截图</span></div>
+      <button
+        type="button"
+        aria-expanded={imagesVisible}
+        aria-controls="analysis-run-list"
+        onClick={onToggleImages}
+      >{imagesVisible ? <><EyeOff size={13} />隐藏图片</> : <><Eye size={13} />显示图片</>}</button>
+    </div>}
+    <div className="analysis-run-list" id="analysis-run-list">
       {result.runs.map(run => {
         const runKey = taskResultRunKey(run);
         const selected = runKey === selectedRunKey;
         return <div className={`analysis-run-entry ${selected ? "selected" : ""}`} key={runKey}>
-          <button
-            type="button"
-            className="analysis-run-row"
-            aria-expanded={selected}
-            aria-label={`查看 ${run.caseId || run.targetPage || run.runId} ${run.status === "passed" ? "通过" : "失败"}详情`}
-            onClick={() => onSelectRun(selected ? "" : runKey)}
-          >
-            <span className={`analysis-status ${run.status}`}>{run.status === "passed" ? "通过" : "失败"}</span>
-            <span><strong>{run.caseId || run.targetPage || run.runId}</strong><small>{run.executionKind || "scenario"} · {run.launchPage || "?"} → {run.actualFinalPage || "?"} / {run.expectedFinalPage || run.targetPage || "?"}</small></span>
-            <span><strong>{run.platform || "-"}</strong><small>{run.device || "未记录设备"}</small></span>
-            <span><strong>{run.apiCalls.length} 接口</strong><small>{run.screenshots.length} 截图 · {run.uiActionCount} 动作</small></span>
-            <span className="analysis-result-text">{run.errorSummary || (run.missingEvents.length ? `缺少 ${run.missingEvents.join("、")}` : run.passBasis?.map(item => item.description).join("；") || "证据采集完成")}</span>
-            <ChevronRight className="analysis-run-chevron" size={16} />
-          </button>
+          <div className={`analysis-run-summary ${imagesVisible && run.screenshots.length > 0 ? "with-preview" : ""}`}>
+            <button
+              type="button"
+              className="analysis-run-row"
+              aria-expanded={selected}
+              aria-label={`查看 ${run.caseId || run.targetPage || run.runId} ${run.status === "passed" ? "通过" : "失败"}详情`}
+              onClick={() => onSelectRun(selected ? "" : runKey)}
+            >
+              <span className={`analysis-status ${run.status}`}>{run.status === "passed" ? "通过" : "失败"}</span>
+              <span className="analysis-run-main">
+                <strong>{run.caseId || run.targetPage || run.runId}</strong>
+                <small>{run.executionKind || "scenario"} · {run.launchPage || "?"} → {run.actualFinalPage || "?"} / {run.expectedFinalPage || run.targetPage || "?"}</small>
+                <span className="analysis-run-meta"><span>{run.platform || "-"} · {run.device || "未记录设备"}</span><span>{run.apiCalls.length} 接口 · {run.screenshots.length} 截图 · {run.uiActionCount} 动作</span></span>
+                <span className="analysis-result-text">{run.errorSummary || (run.missingEvents.length ? `缺少 ${run.missingEvents.join("、")}` : run.passBasis?.map(item => item.description).join("；") || "证据采集完成")}</span>
+              </span>
+              <ChevronRight className="analysis-run-chevron" size={16} />
+            </button>
+            {imagesVisible && run.screenshots.length > 0 && <RunScreenshotPreview taskId={taskId} run={run} />}
+          </div>
           {selected && <RunDiagnosticDetail
             run={run}
             repairJob={repairJobs.find(job => job.caseRunId === run.caseRunId)}
@@ -1363,6 +1499,20 @@ function ScreenshotResult({ taskId, runs }: { taskId: string; runs: TaskResultRu
   </div>;
 }
 
+function RunScreenshotPreview({ taskId, run }: { taskId: string; run: TaskResultRun }) {
+  const artifact = run.screenshots[0];
+  if (!artifact) return null;
+  return <a
+    className="analysis-run-preview"
+    href={taskArtifactUrl(taskId, artifact.id)}
+    target="_blank"
+    rel="noreferrer"
+  >
+    <img src={taskArtifactUrl(taskId, artifact.id)} alt={`${run.caseId || run.targetPage || run.runId} ${artifact.label}`} loading="lazy" />
+    {run.screenshots.length > 1 && <span>+{run.screenshots.length - 1} 张</span>}
+  </a>;
+}
+
 function ApiResult({ runs, onCopy }: { runs: TaskResultRun[]; onCopy: (label: string, value: unknown) => void }) {
   const calls = runs.flatMap(run => run.apiCalls.map(call => ({ call, run })));
   if (calls.length === 0) return <div className="result-empty"><Network size={18} /><strong>没有接口记录</strong><span>当前运行未采集到 API runtime event</span></div>;
@@ -1460,17 +1610,30 @@ export function DeviceRow({ device, task, selected, onToggle, starting, onStart,
   </div>;
 }
 
-export function RunRow({ task, focused, onFocus, onStop, onDelete, pending }: { task: TestTask; focused: boolean; onFocus: () => void; onStop: () => void; onDelete: () => void; pending: boolean }) {
+export function TargetRow({ target, task, selected, onToggle }: { target: RunTarget; task?: TestTask; selected: boolean; onToggle: () => void }) {
+  const busy = Boolean(task && ACTIVE_STATUSES.has(task.status));
+  return <label className={`device-row target-row ${selected ? "selected" : ""} ${busy ? "disabled" : ""}`}>
+    <input type="checkbox" checked={selected} onChange={onToggle} disabled={busy} aria-label={`选择 ${target.label}`} />
+    <span className={`device-status-dot ${busy ? "offline" : "available"}`} />
+    <span className="device-main"><strong>{target.label}</strong><span>{target.platform} · {target.runtime}</span></span>
+    <span className="device-side"><span className="connection-label available">{busy ? "测试中" : "可运行"}</span><small>{target.key}</small></span>
+  </label>;
+}
+
+export function RunRow({ task, focused, onFocus, onStop, onRetain, onDelete, pending }: { task: TestTask; focused: boolean; onFocus: () => void; onStop: () => void; onRetain?: () => void; onDelete: () => void; pending: boolean }) {
   const active = ACTIVE_STATUSES.has(task.status);
   const deletable = TERMINAL_STATUSES.has(task.status);
   return <div className={`run-row ${focused ? "focused" : ""}`}>
-    <button className="run-row-select" type="button" onClick={onFocus} aria-label={`查看 ${task.device.name} ${task.testLabel} 详情`}>
+    <button className="run-row-select" type="button" onClick={onFocus} aria-label={`查看 ${taskTargetLabel(task)} ${task.testLabel} 详情`}>
       <span className="run-row-status"><StatusIcon status={task.status} /><StatusBadge status={task.status} /></span>
-      <span className="run-row-main"><strong>{task.device.name}</strong><span>{platformLabels[task.device.platform]} · {task.device.type === "physical" ? "真机" : "模拟器"} · {task.testLabel} · {task.phase}</span></span>
+      <span className="run-row-main"><strong>{taskTargetLabel(task)}</strong><span>{taskTargetEnvironment(task)} · {task.testLabel} · {task.phase}</span></span>
       <span className="run-row-time">{formatDuration(task.startedAt, task.finishedAt)}</span>
     </button>
-    {active && <span className="run-row-action"><button type="button" className="stop-button" onClick={onStop} disabled={pending} title="停止此设备测试" aria-label={`停止 ${task.device.name} 测试`}><Square size={14} fill="currentColor" />停止</button></span>}
-    {deletable && <span className="run-row-action"><button type="button" className="delete-button" onClick={onDelete} disabled={pending} title="删除此运行记录" aria-label={`删除 ${task.device.name} 的运行记录`}><Trash2 size={15} /></button></span>}
+    {active && <span className="run-row-action"><button type="button" className="stop-button" onClick={onStop} disabled={pending} title="停止此测试" aria-label={`停止 ${taskTargetLabel(task)} 测试`}><Square size={14} fill="currentColor" />停止</button></span>}
+    {deletable && <span className="run-row-action">
+      <button type="button" className={`retain-button ${task.retained ? "active" : ""}`} onClick={onRetain} disabled={pending} title={task.retained ? "恢复按策略管理" : "长期保留此运行"} aria-label={task.retained ? "取消长期保留" : "长期保留此运行"}><Bookmark size={15} fill={task.retained ? "currentColor" : "none"} /></button>
+      <button type="button" className="delete-button" onClick={onDelete} disabled={pending} title="删除此运行记录" aria-label={`删除 ${taskTargetLabel(task)} 的运行记录`}><Trash2 size={15} /></button>
+    </span>}
   </div>;
 }
 
@@ -1496,13 +1659,27 @@ export function excludeDeletedTasks(snapshot: ConsoleSnapshot, deletedTaskIds: R
   return tasks.length === snapshot.tasks.length ? snapshot : { ...snapshot, tasks };
 }
 
-export function DeleteConfirmation({ task, pending, onCancel, onConfirm }: { task: Pick<TestTask, "testLabel" | "device">; pending: boolean; onCancel: () => void; onConfirm: () => void }) {
+// 切换测试入口时保留新入口仍然支持的运行资源。
+// eslint-disable-next-line react-refresh/only-export-components
+export function reconcileSelectedKeysForTest(
+  previous: string[],
+  test: PublicTestDefinition,
+  family: ProjectFamily,
+  devices: Device[],
+): string[] {
+  const allowedKeys = family === "mini-program"
+    ? new Set(test.targetKeys ?? [])
+    : new Set(devices.filter(device => test.platforms.includes(device.platform)).map(device => device.key));
+  return previous.filter(key => allowedKeys.has(key));
+}
+
+export function DeleteConfirmation({ task, pending, onCancel, onConfirm }: { task: Pick<TestTask, "testLabel" | "device" | "target">; pending: boolean; onCancel: () => void; onConfirm: () => void }) {
   return <div className="confirm-overlay">
     <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
       <div className="confirm-icon"><Trash2 size={20} /></div>
       <div className="confirm-copy">
         <h2 id="delete-confirm-title">删除运行记录</h2>
-        <p>将删除 {task.device.name} 的 {task.testLabel} 记录及本地测试文件。此操作无法撤销。</p>
+        <p>将删除 {taskTargetLabel(task)} 的 {task.testLabel} 记录及本地测试文件。此操作无法撤销。</p>
       </div>
       <div className="confirm-actions">
         <button type="button" className="secondary-button" onClick={onCancel} disabled={pending}>取消</button>
@@ -1578,4 +1755,13 @@ function formatDuration(start: string, finish: string): string {
   if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return "-";
   const seconds = Math.max(0, Math.floor((endTime - startTime) / 1_000));
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function taskTargetLabel(task: Pick<TestTask, "device" | "target">): string {
+  return task.target?.label ?? task.device.name;
+}
+
+function taskTargetEnvironment(task: Pick<TestTask, "device" | "target">): string {
+  if (task.target?.kind === "mini-program") return `${task.target.platform} · ${task.target.runtime}`;
+  return `${platformLabels[task.device.platform]} · ${task.device.type === "physical" ? "真机" : "模拟器"}`;
 }

@@ -1,7 +1,7 @@
 {
   "name": "mobile-test-console",
   "version": "0.1.0-beta.1",
-  "description": "Configuration-driven mobile test console for Lynx applications",
+  "description": "Configuration-driven test console for mobile apps and mini programs",
   "license": "MIT",
   "keywords": [
     "lynx",
@@ -9,6 +9,8 @@
     "android",
     "ios",
     "harmonyos",
+    "mini-program",
+    "wechat",
     "test-automation"
   ],
   "type": "module",

@@ -5,10 +5,14 @@ import {
   FolderPlus,
   FolderOpen,
   FileText,
+  HardDrive,
+  Eye,
+  Trash2,
   LoaderCircle,
   Power,
   RefreshCw,
   Smartphone,
+  PanelsTopLeft,
   Terminal,
   Wrench,
   X,
@@ -16,6 +20,8 @@ import {
 import { useEffect, useState } from "react";
 import type {
   Platform,
+  ArtifactCleanupPlan,
+  ArtifactRetentionSnapshot,
   ApplyProjectInitializationRequest,
   ApplyProjectSetupRequest,
   ProjectCapabilityCheck,
@@ -33,7 +39,7 @@ import type {
   RegisterProjectRequest,
 } from "../shared/contracts";
 import { PROJECT_EXECUTION_PREREQUISITE_STEP_IDS } from "../shared/contracts";
-import { ApiError, fetchProjectCatalogDetail } from "./api";
+import { ApiError, applyArtifactCleanup, fetchArtifactRetention, fetchProjectCatalogDetail, inventoryArtifactCleanup, previewArtifactCleanup } from "./api";
 
 const platformLabels: Record<Platform, string> = {
   android: "Android",
@@ -132,6 +138,11 @@ export function ProjectCatalogWorkspace({
   const [detail, setDetail] = useState<ProjectCatalogDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [retention, setRetention] = useState<ArtifactRetentionSnapshot | null>(null);
+  const [storagePending, setStoragePending] = useState(false);
+  const [cleanupConfirmation, setCleanupConfirmation] = useState<ArtifactCleanupPlan | null>(null);
+  const [cleanupPickerOpen, setCleanupPickerOpen] = useState(false);
+  const [cleanupRunIds, setCleanupRunIds] = useState<string[]>([]);
   const selectedProject = addingProject ? null : catalog?.projects.find(project => project.id === selectedProjectId) ?? null;
   const selectedProjectVersion = selectedProject?.updatedAt ?? "";
 
@@ -183,6 +194,20 @@ export function ProjectCatalogWorkspace({
       });
     return () => { cancelled = true; };
   }, [addingProject, selectedProjectId, selectedProjectVersion]);
+
+  useEffect(() => {
+    if (addingProject || !selectedProjectId || selectedProjectId !== runtimeProjectId) {
+      setRetention(null);
+      return;
+    }
+    let cancelled = false;
+    setStoragePending(true);
+    void fetchArtifactRetention()
+      .then(response => { if (!cancelled) setRetention(response); })
+      .catch(() => { if (!cancelled) setRetention(null); })
+      .finally(() => { if (!cancelled) setStoragePending(false); });
+    return () => { cancelled = true; };
+  }, [addingProject, runtimeProjectId, selectedProjectId]);
 
   const submit = async () => {
     const registered = await onRegister({
@@ -281,6 +306,53 @@ export function ProjectCatalogWorkspace({
     }
   };
 
+  const previewCleanup = async () => {
+    setStoragePending(true);
+    try {
+      const plan = await previewArtifactCleanup();
+      setRetention(previous => previous ? { ...previous, latestPlan: plan } : previous);
+      onMessage({ kind: "info", text: plan.items.length > 0
+        ? `清理预览已生成，预计释放 ${formatBytes(plan.estimatedBytes)}`
+        : "当前没有符合策略的清理候选" });
+    } catch (error) {
+      onMessage({ kind: "error", text: error instanceof ApiError ? error.message : "生成清理预览失败" });
+    } finally {
+      setStoragePending(false);
+    }
+  };
+
+  const prepareCleanup = async () => {
+    setCleanupPickerOpen(true);
+    setCleanupConfirmation(null);
+    setCleanupRunIds([]);
+    setStoragePending(true);
+    try {
+      const plan = await inventoryArtifactCleanup();
+      setCleanupConfirmation(plan);
+    } catch (error) {
+      onMessage({ kind: "error", text: error instanceof ApiError ? error.message : "扫描测试产物失败" });
+    } finally {
+      setStoragePending(false);
+    }
+  };
+
+  const confirmCleanup = async (runIds: string[]) => {
+    setCleanupRunIds(runIds);
+    setStoragePending(true);
+    try {
+      const result = await applyArtifactCleanup(runIds);
+      setRetention(previous => previous ? { ...previous, latestCleanup: result, latestPlan: null } : previous);
+      setCleanupConfirmation(null);
+      setCleanupPickerOpen(false);
+      onMessage({ kind: "info", text: `已清理 ${result.filesRemoved} 个文件，释放 ${formatBytes(result.bytesFreed)}` });
+    } catch (error) {
+      onMessage({ kind: "error", text: error instanceof ApiError ? error.message : "清理测试产物失败" });
+    } finally {
+      setStoragePending(false);
+      setCleanupRunIds([]);
+    }
+  };
+
   return <div className="project-catalog-workspace">
     <section className="project-catalog-intro">
       <div>
@@ -349,6 +421,13 @@ export function ProjectCatalogWorkspace({
           onPreviewSetup={step => void previewSetup(selectedProject.id, step)}
           onMessage={onMessage}
         />}
+        {selectedProject && <ProjectStoragePanel
+          runtimeActive={selectedProject.id === runtimeProjectId}
+          retention={retention}
+          pending={storagePending}
+          onPreview={() => void previewCleanup()}
+          onCleanup={() => void prepareCleanup()}
+        />}
     </div>}
     {setupPlan && <ProjectSetupPlanDialog
       plan={setupPlan}
@@ -359,7 +438,189 @@ export function ProjectCatalogWorkspace({
       }}
       onConfirm={() => void applySetupPlan()}
     />}
+    {cleanupPickerOpen && <ArtifactCleanupConfirmation
+      plan={cleanupConfirmation}
+      pending={storagePending}
+      activeRunIds={cleanupRunIds}
+      onCancel={() => {
+        setCleanupConfirmation(null);
+        setCleanupPickerOpen(false);
+      }}
+      onConfirm={runIds => void confirmCleanup(runIds)}
+    />}
   </div>;
+}
+
+function ProjectStoragePanel({
+  runtimeActive,
+  retention,
+  pending,
+  onPreview,
+  onCleanup,
+}: {
+  runtimeActive: boolean;
+  retention: ArtifactRetentionSnapshot | null;
+  pending: boolean;
+  onPreview: () => void;
+  onCleanup: () => void;
+}) {
+  if (!runtimeActive) return <section className="section-panel project-storage-panel inactive">
+    <div className="section-heading"><div><p className="eyebrow">TEST STORAGE</p><h2>测试存储</h2></div><HardDrive size={18} /></div>
+    <p className="project-storage-placeholder">激活该项目后，可读取产物占用、磁盘状态和清理计划。</p>
+  </section>;
+  if (!retention) return <section className="section-panel project-storage-panel">
+    <div className="section-heading"><div><p className="eyebrow">TEST STORAGE</p><h2>测试存储</h2></div><HardDrive size={18} /></div>
+    <p className="project-storage-placeholder">{pending ? "正在统计测试存储..." : "当前项目尚未提供测试存储信息。"}</p>
+  </section>;
+  const plan = retention.latestPlan;
+  return <section className="section-panel project-storage-panel">
+    <div className="section-heading">
+      <div><p className="eyebrow">TEST STORAGE</p><h2>测试存储</h2></div>
+      <span className={`storage-health ${retention.storage.issue ? "warning" : "ready"}`}>{retention.storage.issue || "存储可用"}</span>
+    </div>
+    <div className="project-storage-metrics">
+      <div><span>项目产物</span><strong>{formatBytes(retention.storage.usedBytes)}</strong></div>
+      <div><span>剩余空间</span><strong>{formatBytes(retention.storage.freeBytes)}</strong></div>
+      <div><span>空间软上限</span><strong>{formatBytes(retention.policy.maxBytes)}</strong></div>
+      <div><span>保留运行</span><strong>{retention.retainedRunIds.length}</strong></div>
+    </div>
+    <div className="project-storage-location">
+      <span><strong>产物目录</strong><code>{retention.storage.artifactRoot || "未声明"}</code></span>
+      <span><strong>存储卷</strong><code>{[retention.storage.fileSystem, retention.storage.mountPoint].filter(Boolean).join(" · ") || "未识别"}</code></span>
+      <span><strong>保留策略</strong><code>{retention.policy.maxAgeDays} 天 · 最近 {retention.policy.maxRuns} 次 · {retention.autoCleanup ? "自动清理" : "确认后清理"}</code></span>
+    </div>
+    {plan && <details className="artifact-cleanup-preview" open={plan.items.length > 0}>
+      <summary><span>清理预览</span><strong>{plan.items.length} 个运行 · {formatBytes(plan.estimatedBytes)}</strong><ChevronDown size={14} /></summary>
+      <div className="artifact-cleanup-list">
+        {plan.items.length === 0 && <p>当前运行均处于保留范围。</p>}
+        {plan.items.map(item => <div key={item.runId}><code>{item.runId}</code><span>{item.files} 个文件</span><strong>{formatBytes(item.bytes)}</strong></div>)}
+        {plan.warnings.map(warning => <p className="artifact-cleanup-warning" key={warning}>{warning}</p>)}
+      </div>
+    </details>}
+    <div className="project-storage-actions">
+      <button className="secondary-button" type="button" onClick={onPreview} disabled={pending || !retention.enabled}><Eye size={14} />查看清理计划</button>
+      <button className="danger-button" type="button" onClick={onCleanup} disabled={pending || !retention.enabled}><Trash2 size={14} />{pending ? "扫描中..." : "选择清理"}</button>
+    </div>
+  </section>;
+}
+
+export function ArtifactCleanupConfirmation({
+  plan,
+  pending,
+  activeRunIds = [],
+  onCancel,
+  onConfirm,
+}: {
+  plan: ArtifactCleanupPlan | null;
+  pending: boolean;
+  activeRunIds?: string[];
+  onCancel: () => void;
+  onConfirm: (runIds: string[]) => void;
+}) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const selectableItems = (plan?.items ?? []).filter(item => item.status === "planned");
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  const selected = new Set(selectedRunIds);
+  const selectedItems = selectableItems.filter(item => selected.has(item.runId));
+  const selectedBytes = selectedItems.reduce((total, item) => total + item.bytes, 0);
+  const selectedFiles = selectedItems.reduce((total, item) => total + item.files, 0);
+  const allSelected = selectableItems.length > 0 && selectedItems.length === selectableItems.length;
+  const cleanupRunning = pending && activeRunIds.length > 0;
+  const active = new Set(activeRunIds);
+  const activeItems = selectableItems.filter(item => active.has(item.runId));
+  const activeFiles = activeItems.reduce((total, item) => total + item.files, 0);
+  const activeBytes = activeItems.reduce((total, item) => total + item.bytes, 0);
+  useEffect(() => {
+    if (!cleanupRunning) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const updateElapsed = () => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(timer);
+  }, [cleanupRunning]);
+  const toggleRun = (runId: string, checked: boolean) => {
+    setSelectedRunIds(current => checked
+      ? [...new Set([...current, runId])]
+      : current.filter(item => item !== runId));
+  };
+  return <div className="confirm-overlay">
+    <section className="confirm-dialog artifact-cleanup-dialog" role="dialog" aria-modal="true" aria-labelledby="artifact-cleanup-confirm-title">
+      <div className="confirm-icon"><Trash2 size={20} /></div>
+      <div className="confirm-copy">
+        <h2 id="artifact-cleanup-confirm-title">选择要清理的测试产物</h2>
+        <p>{plan ? `已扫描 ${plan.items.length} 个运行。活动任务、长期保留运行和活动修复任务受到保护。` : "正在读取产物目录并统计文件数量与占用空间。"}</p>
+      </div>
+      <div className="artifact-cleanup-selection">
+        {cleanupRunning ? <div className="artifact-cleanup-running" aria-live="polite">
+          <div className="artifact-cleanup-running-heading">
+            <span><LoaderCircle className="spin" size={20} /></span>
+            <div><strong>正在清理测试产物</strong><small>已用时 {formatDuration(elapsedSeconds)}</small></div>
+          </div>
+          <div className="artifact-cleanup-progress" role="progressbar" aria-label="测试产物清理进度" aria-valuetext={`正在处理，已用时 ${formatDuration(elapsedSeconds)}`}>
+            <span />
+          </div>
+          <div className="artifact-cleanup-running-summary">
+            <span><strong>{activeItems.length}</strong><small>个运行</small></span>
+            <span><strong>{activeFiles.toLocaleString()}</strong><small>个文件</small></span>
+            <span><strong>{formatBytes(activeBytes)}</strong><small>预计释放</small></span>
+          </div>
+          <p>{elapsedSeconds >= 15 ? "目录包含大量文件，系统仍在持续处理，请保持页面打开。" : "正在删除所选运行及关联证据，请保持页面打开。"}</p>
+        </div> : !plan ? <div className="artifact-cleanup-selection-empty">
+          <LoaderCircle className="spin" size={20} />
+          <strong>正在扫描测试产物...</strong>
+          <span>目录较大时需要一些时间，扫描过程只读取文件信息。</span>
+        </div> : selectableItems.length > 0 ? <>
+          <label className="artifact-cleanup-select-all">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={event => setSelectedRunIds(event.currentTarget.checked ? selectableItems.map(item => item.runId) : [])}
+            />
+            <span>全选可清理运行</span>
+            <strong>{selectableItems.length} 项</strong>
+          </label>
+          <div className="artifact-cleanup-selection-list">
+            {selectableItems.map(item => <label key={item.runId}>
+              <input
+                type="checkbox"
+                checked={selected.has(item.runId)}
+                onChange={event => toggleRun(item.runId, event.currentTarget.checked)}
+              />
+              <span><code title={item.runId}>{item.runId}</code><small>{item.files.toLocaleString()} 个文件</small></span>
+              <strong>{formatBytes(item.bytes)}</strong>
+            </label>)}
+          </div>
+          <div className="artifact-cleanup-selection-summary">
+            <span>已选择 {selectedItems.length} 个运行，共 {selectedFiles.toLocaleString()} 个文件</span>
+            <strong>预计释放 {formatBytes(selectedBytes)}</strong>
+          </div>
+        </> : <div className="artifact-cleanup-selection-empty">
+          <HardDrive size={20} />
+          <strong>当前没有可清理的测试产物</strong>
+          <span>产物目录为空，或现有运行全部处于保护范围。</span>
+        </div>}
+      </div>
+      <div className="confirm-actions">
+        <button type="button" className="secondary-button" onClick={onCancel} disabled={cleanupRunning}>{cleanupRunning ? "处理中" : plan && selectableItems.length > 0 ? "取消" : "关闭"}</button>
+        {plan && selectableItems.length > 0 && <button type="button" className="danger-button" onClick={() => onConfirm(selectedRunIds)} disabled={pending || selectedRunIds.length === 0}>{cleanupRunning ? `清理中 ${formatDuration(elapsedSeconds)}` : "清理所选内容"}</button>}
+      </div>
+    </section>
+  </div>;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(0, Math.round(bytes / 1024))} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
+function formatDuration(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function ProjectCatalogCard({
@@ -393,10 +654,11 @@ function ProjectCatalogCard({
     PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.some(id => id === step.id)
   ));
   const executionPrerequisiteVerifiedCount = executionPrerequisites.filter(step => step.status === "verified").length;
+  const miniProgram = project.integrationType === "mini-program";
   return <section className={`section-panel project-card ${runtimeActive ? "active" : ""}`}>
     <div className="project-card-header">
       <div className="project-card-title">
-        <span className="project-card-icon"><Smartphone size={17} /></span>
+        <span className="project-card-icon">{miniProgram ? <PanelsTopLeft size={17} /> : <Smartphone size={17} />}</span>
         <div><strong>{project.name}</strong><small>{project.id} · {integrationLabels[project.integrationType]}</small></div>
       </div>
       <div className="project-card-tools">
@@ -407,7 +669,7 @@ function ProjectCatalogCard({
         </button>
       </div>
     </div>
-    <div className="project-card-meta"><span>{project.root}</span><span>{detail?.executionReady ? "运行前检查已通过" : `${executionPrerequisiteVerifiedCount}/${executionPrerequisites.length} 项运行前检查通过`}</span><span>{project.platforms.map(platform => platformLabels[platform]).join(" · ")}</span></div>
+    <div className="project-card-meta"><span>{project.root}</span><span>{detail?.executionReady ? "运行前检查已通过" : `${executionPrerequisiteVerifiedCount}/${executionPrerequisites.length} 项运行前检查通过`}</span><span>{miniProgram ? "项目声明运行目标" : project.platforms.map(platform => platformLabels[platform]).join(" · ")}</span></div>
     {detailLoading && <div className="project-detail-loading"><LoaderCircle className="spin" size={17} />正在读取项目支持的测试</div>}
     {detailError && <div className="project-detail-error"><AlertCircle size={16} />{detailError}</div>}
     {!detailLoading && <section className="project-onboarding-section">
@@ -417,28 +679,28 @@ function ProjectCatalogCard({
         {project.onboarding.map(step => <details className={`project-step ${step.status}`} key={step.id} open={step.status === "waiting" || step.status === "blocked"}>
           <summary className="project-step-summary">
             <span className="project-step-marker">{step.status === "verified" ? <CheckCircle2 size={15} /> : step.status === "blocked" ? <AlertCircle size={15} /> : <span />}</span>
-            <span className="project-step-content"><strong>{stepLabels[step.id]}</strong><small>{step.summary}</small></span>
+            <span className="project-step-content"><strong>{miniProgram && step.id === "devices" ? "运行环境" : stepLabels[step.id]}</strong><small>{step.summary}</small></span>
             <span className="project-step-status">{statusLabels[step.status]}<ChevronDown size={14} className="project-step-chevron" /></span>
           </summary>
           <div className="project-step-detail">
-            <p>{stepDescriptions[step.id]}</p>
+            <p>{miniProgram && step.id === "devices" ? "执行项目声明的 healthCheck，验证 Node、包管理器和小程序开发工具运行条件。" : stepDescriptions[step.id]}</p>
             <div><strong>完成后</strong><span>{step.id === "project" ? "项目目录状态变为已验证。" : "MTC 会自动复检该步骤，并根据最新项目状态开放对应工作区。"}</span></div>
-            <div><strong>下一步</strong><span>{stepNextActions[step.id]}</span></div>
+            <div><strong>下一步</strong><span>{miniProgram && step.id === "devices" ? "按 healthCheck 输出完善运行环境，再重新验证。" : stepNextActions[step.id]}</span></div>
             {step.id === "template" && <ProjectTestEntryChecks testEntries={step.testEntries ?? []} />}
             {step.id === "devices" && <ProjectToolChecks tools={step.tools ?? []} />}
             {step.id === "capabilities" && <ProjectCapabilityChecks capabilities={step.capabilities ?? []} />}
             {step.issues.length > 0 && <div className="project-step-issues"><strong>需要处理</strong>{step.issues.map(issue => <code key={issue}>{issue}</code>)}</div>}
             {step.status !== "verified" && step.id === "template" && <button className="secondary-button project-step-action" type="button" onClick={onPreviewInitialization} disabled={setupPending}><FileText size={14} />预览初始化配置</button>}
-            {step.status !== "verified" && step.id === "devices" && <button className="secondary-button project-step-action" type="button" onClick={() => onPreviewSetup("devices")} disabled={setupPending}><Terminal size={14} />修复设备环境</button>}
+            {step.status !== "verified" && step.id === "devices" && !miniProgram && <button className="secondary-button project-step-action" type="button" onClick={() => onPreviewSetup("devices")} disabled={setupPending}><Terminal size={14} />修复设备环境</button>}
             {step.status !== "verified" && step.id === "capabilities" && <button className="secondary-button project-step-action" type="button" onClick={() => onPreviewSetup("capabilities")} disabled={setupPending}><Wrench size={14} />生成能力模板</button>}
           </div>
         </details>)}
       </div>
     </section>}
-    {project.integrationType === "mini-program" && <p className="project-card-note">小程序目标已纳入项目协议，执行 Connector 将在后续阶段接入。</p>}
-    <button className="text-button project-doc-hint" type="button" onClick={() => void navigator.clipboard.writeText("examples/lynx-app-starter").then(() => onMessage({ kind: "info", text: "已复制 Lynx App Starter 路径" })).catch(() => onMessage({ kind: "error", text: "复制 Starter 路径失败" }))}>
+    {miniProgram && <p className="project-card-note">小程序测试通过项目 Runner 调度，结果统一进入 Result Bundle。</p>}
+    {!miniProgram && <button className="text-button project-doc-hint" type="button" onClick={() => void navigator.clipboard.writeText("examples/lynx-app-starter").then(() => onMessage({ kind: "info", text: "已复制 Lynx App Starter 路径" })).catch(() => onMessage({ kind: "error", text: "复制 Starter 路径失败" }))}>
       参考 Lynx App Starter：examples/lynx-app-starter
-    </button>
+    </button>}
   </section>;
 }
 
@@ -454,7 +716,7 @@ function ProjectTestEntryChecks({ testEntries }: { testEntries: ProjectTestEntry
           <code>{test.id}</code>
           <p>{test.description || "该测试入口暂未填写用途说明。"}</p>
           <div className="project-test-entry-check-meta">
-            <span><strong>平台</strong>{test.platforms.map(platform => platformLabels[platform]).join(" · ")}</span>
+            <span><strong>{test.targetKeys?.length ? "运行目标" : "平台"}</strong>{test.targetKeys?.length ? test.targetKeys.join(" · ") : test.platforms.map(platform => platformLabels[platform]).join(" · ")}</span>
             <span><strong>Runner</strong><code>{test.runnerId}</code></span>
             <span><strong>参数</strong>{test.parameterLabels.length > 0 ? test.parameterLabels.join(" · ") : "无需参数"}</span>
           </div>

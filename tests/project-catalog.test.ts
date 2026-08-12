@@ -223,6 +223,58 @@ describe("项目目录与接入验证", () => {
     await expect(service.detail("device-tool-app")).resolves.toMatchObject({ executionReady: false });
   });
 
+  it("小程序项目使用运行目标 healthCheck 完成运行环境验证", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-mini-health-"));
+    tempDirs.push(root);
+    const calls: Array<{ executable: string; args: string[]; cwd?: string }> = [];
+    const runner: CommandRunner = {
+      async capture(executable, args, _timeoutMs, options) {
+        calls.push({ executable, args, cwd: options?.cwd });
+        return { code: 0, stdout: "runtime-ready\n", stderr: "" };
+      },
+    };
+    await writeMiniProgramConfig(root, "mini-health", "Mini Health");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), runner);
+    await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
+
+    const verified = await service.verify("mini-health");
+    expect(step(verified, "mini-health", "devices")).toMatchObject({
+      status: "verified",
+      summary: "已验证 1 个小程序运行环境",
+      tools: [{
+        id: "wechat-devtools",
+        label: "微信开发者工具",
+        executable: "node",
+        status: "ready",
+        version: "wechat-devtools",
+        detail: "runtime-ready",
+      }],
+    });
+    expect(calls).toEqual([expect.objectContaining({
+      executable: "node",
+      args: ["health-check.mjs", "--app-id", "wx-test", "--runtime", "wechat-devtools"],
+      cwd: root,
+    })]);
+  });
+
+  it("小程序运行环境 healthCheck 失败时阻止执行并保留工具明细", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-mini-health-blocked-"));
+    tempDirs.push(root);
+    const runner: CommandRunner = {
+      async capture() { return { code: 1, stdout: "", stderr: "WECHAT_DEVTOOLS_DIR missing" }; },
+    };
+    await writeMiniProgramConfig(root, "mini-blocked", "Mini Blocked");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), runner);
+    await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
+
+    const verified = await service.verify("mini-blocked");
+    expect(step(verified, "mini-blocked", "devices")).toMatchObject({
+      status: "blocked",
+      issues: ["微信开发者工具：WECHAT_DEVTOOLS_DIR missing"],
+      tools: [{ status: "blocked", guidance: ["按项目运行环境检查输出完成配置后重新验证。"] }],
+    });
+  });
+
   it("通用 App 的基础命令测试无需 Project Provider 即可执行", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-command-app-ready-"));
     tempDirs.push(root);
@@ -503,6 +555,30 @@ async function writeConfig(root: string, id: string, name: string, provider = fa
       platforms: ["android"],
       commands: { default: { executable: "node", args: ["--version"] } },
     }],
+  };\n`);
+}
+
+async function writeMiniProgramConfig(root: string, id: string, name: string): Promise<void> {
+  await fs.writeFile(path.join(root, "health-check.mjs"), "process.exit(0);\n");
+  await fs.writeFile(path.join(root, "mobile-test.config.cjs"), `module.exports = {
+    schemaVersion: "mobile-test-console.config.v1",
+    project: { id: "${id}", name: "${name}", root: ".", integrationType: "mini-program" },
+    deviceProviders: [],
+    testing: {
+      environments: [{ id: "qa", label: "QA", description: "" }],
+      capabilities: [],
+      targets: [{
+        key: "wechat-devtools",
+        label: "微信开发者工具",
+        kind: "mini-program",
+        platform: "wechat",
+        runtime: "wechat-devtools",
+        appId: "wx-test",
+        concurrencyKey: "${id}-wechat",
+        healthCheck: { executable: "node", args: ["health-check.mjs", "--app-id", "{{target.appId}}", "--runtime", "{{target.runtime}}"] },
+      }],
+    },
+    tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat-devtools"], commands: { default: { executable: "node", args: ["--version"] } } }],
   };\n`);
 }
 

@@ -1,3 +1,6 @@
+import {
+  appRunTargetOf,
+} from "../shared/contracts.js";
 import type {
   ConnectorCapabilityId,
   ConnectorCapabilityManifest,
@@ -274,12 +277,15 @@ export function assertRunnerPlugin(value: unknown): asserts value is RunnerPlugi
 }
 
 export function createRunPlan(task: TestTask, command?: RunnerCommand): RunPlan {
+  const device = task.device ?? (task.target?.kind === "app" ? task.target.device : undefined);
+  if (!device) throw new Error(`运行任务缺少 App 设备兼容信息: ${task.runId}`);
   return {
     runId: task.runId,
     projectId: task.projectId,
     testId: task.testId,
     runnerId: task.runnerId ?? LEGACY_COMMAND_RUNNER_ID,
-    device: structuredClone(task.device),
+    device: structuredClone(device),
+    ...(task.target ? { target: structuredClone(task.target) } : { target: appRunTargetOf(device) }),
     ...(command ? { command: structuredClone(command) } : {}),
     metadata: { taskId: task.id, parameters: structuredClone(task.parameters) },
   };

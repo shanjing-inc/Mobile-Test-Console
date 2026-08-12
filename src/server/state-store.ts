@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { TestTask } from "../shared/contracts.js";
+import { appRunTargetOf, type TestTask } from "../shared/contracts.js";
 
 interface StoredState {
   schemaVersion: "mobile-test-console.state.v1";
@@ -22,15 +22,18 @@ export class StateStore {
         return [];
       }
       const recoveredAt = new Date().toISOString();
-      return payload.tasks.map(task => ["queued", "preparing", "running"].includes(task.status)
-        ? {
-            ...task,
-            status: "interrupted" as const,
-            phase: "服务重启，任务已中断",
-            finishedAt: recoveredAt,
-            error: task.error || "控制服务在任务执行期间退出",
-          }
-        : task);
+      return payload.tasks.map(task => {
+        const migrated = task.target ? task : { ...task, target: appRunTargetOf(task.device) };
+        return ["queued", "preparing", "running"].includes(task.status)
+          ? {
+              ...migrated,
+              status: "interrupted" as const,
+              phase: "服务重启，任务已中断",
+              finishedAt: recoveredAt,
+              error: task.error || "控制服务在任务执行期间退出",
+            }
+          : migrated;
+      });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;

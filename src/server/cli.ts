@@ -20,6 +20,7 @@ import { loadRunnerRuntime } from "./runner-runtime.js";
 import { ProjectCatalogService, ProjectCatalogStore } from "./project-catalog.js";
 import { DirectoryPicker } from "./directory-picker.js";
 import { isConfiguredProject, resolveProjectCatalogPath, resolveStartupProject } from "./startup-project.js";
+import { ArtifactRetentionService, ArtifactRetentionStore } from "./artifact-retention.js";
 
 applyDeviceToolEnv();
 
@@ -75,6 +76,14 @@ const repairs = config.codexRepair?.enabled
   ? new RepairJobManager(config, new RepairJobStore(config.stateDir), tasks, taskResults, devices, runner)
   : undefined;
 if (repairs) await repairs.initialize();
+const artifacts = new ArtifactRetentionService(
+  config,
+  tasks,
+  new ArtifactRetentionStore(config.stateDir),
+  repairs,
+  runner,
+);
+await artifacts.initialize();
 const lifecycle = new ProjectLifecycle(config);
 const lifecycleManaged = process.env.MTC_LIFECYCLE_MANAGED === "1";
 if (!lifecycleManaged && isConfiguredProject(startupProject)) await lifecycle.startup();
@@ -86,6 +95,7 @@ const app = await createApp({
   tasks,
   taskResults,
   repairs,
+  artifacts,
   resultBundles,
   projectProviders: runnerRuntime.providers.manifests(),
   projectCatalog,
@@ -132,6 +142,7 @@ const close = async (requestedExitCode = 0) => {
   let exitCode = requestedExitCode;
   for (const [label, action] of [
     ...(repairs ? [["停止 Codex 修复", () => repairs.shutdown()]] as const : []),
+    ["停止产物治理", () => artifacts.shutdown()],
     ["停止任务", () => tasks.shutdown()],
     ["关闭 HTTP 服务", () => app.close()],
     ["清理项目", () => lifecycleManaged ? Promise.resolve() : lifecycle.shutdown()],

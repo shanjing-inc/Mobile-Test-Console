@@ -3,12 +3,15 @@ import { randomUUID } from "node:crypto";
 import {
   ACTIVE_TASK_STATUSES,
   TERMINAL_TASK_STATUSES,
+  appRunTargetOf,
   type Device,
+  type MiniProgramRunTarget,
+  type RunTarget,
   type StartTasksRequest,
   type TestTask,
 } from "../shared/contracts.js";
 import {
-  resolveOptionalCommand,
+  resolveTargetCommand,
   resolveTaskDeletionCommand,
   validateParameters,
   type LoadedProjectConfig,
@@ -43,6 +46,7 @@ export class TaskManager {
   private readonly managedRunners = new Set<InProcessRunner>();
   private readonly commandOverrides = new Map<string, ResolvedCommand>();
   private readonly cancelRequests = new Set<string>();
+  private readonly completionListeners = new Set<TaskCompletionListener>();
   private readonly runnerResolver: RunnerResolver;
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -51,14 +55,16 @@ export class TaskManager {
     private readonly store: StateStore,
     runner: InProcessRunner = new LegacyTaskRunner(),
     runnerResolver?: RunnerResolver,
-    private readonly onTaskCompleted?: TaskCompletionListener,
+    onTaskCompleted?: TaskCompletionListener,
   ) {
     this.runnerResolver = runnerResolver ?? { resolve: () => runner };
     if (!runnerResolver) this.managedRunners.add(runner);
+    if (onTaskCompleted) this.completionListeners.add(onTaskCompleted);
   }
 
   async initialize(): Promise<void> {
     for (const task of await this.store.load()) {
+      if (!task.target) task.target = appRunTargetOf(task.device);
       this.tasks.set(task.id, task);
     }
     await this.persistNow();
@@ -76,20 +82,52 @@ export class TaskManager {
     return task ? structuredClone(task) : null;
   }
 
+  addCompletionListener(listener: TaskCompletionListener): () => void {
+    this.completionListeners.add(listener);
+    return () => this.completionListeners.delete(listener);
+  }
+
   async start(
     request: StartTasksRequest,
     devices: Device[],
     workspaceRoot?: string,
     repairJobId?: string,
     commandFactory?: (task: TestTask) => ResolvedCommand | null,
+    targets: RunTarget[] = [],
   ): Promise<TestTask[]> {
     const test = this.config.tests.find(item => item.id === request.testId);
     if (!test) throw new ConsoleError("TEST_UNKNOWN", `测试不存在: ${request.testId}`, 404);
     const parameters = validateParameters(test, request.parameters ?? {});
-    const uniqueKeys = [...new Set(request.deviceKeys)];
-    if (uniqueKeys.length === 0) throw new ConsoleError("DEVICE_REQUIRED", "请至少选择一台设备");
+    const targetKeys = [...new Set(request.targetKeys ?? [])];
+    const deviceKeys = [...new Set(request.deviceKeys ?? [])];
+    if (targetKeys.length > 0 && deviceKeys.length > 0) {
+      throw new ConsoleError("TARGET_SELECTION_INVALID", "运行目标和设备不能同时选择");
+    }
+    if (targetKeys.length > 0) {
+      const declaredKeys = new Set(test.targetKeys ?? []);
+      const selectedConcurrencyKeys = new Set<string>();
+      const selectedTargets = targetKeys.map(key => {
+        if (!declaredKeys.has(key)) throw new ConsoleError("TARGET_UNSUPPORTED", `${test.label} 未声明运行目标: ${key}`);
+        const target = targets.find(item => item.key === key);
+        if (!target || target.kind !== "mini-program") {
+          throw new ConsoleError("TARGET_UNKNOWN", `运行目标不存在: ${key}`, 404);
+        }
+        if (selectedConcurrencyKeys.has(target.concurrencyKey)) {
+          throw new ConsoleError("TARGET_BUSY", `${target.label} 与本次选择的其他运行目标共享执行环境`, 409);
+        }
+        selectedConcurrencyKeys.add(target.concurrencyKey);
+        const active = this.list().find(task => task.target?.concurrencyKey === target.concurrencyKey && ACTIVE_STATUSES.has(task.status));
+        if (active) throw new ConsoleError("TARGET_BUSY", `${target.label} 正在执行 ${active.testLabel}`, 409);
+        return target;
+      });
+      const createdAt = new Date().toISOString();
+      const tasks = selectedTargets.map(target => this.createTask(test, target, parameters, createdAt, workspaceRoot, repairJobId));
+      await this.enqueueTasks(tasks, test, commandFactory);
+      return tasks.map(task => structuredClone(task));
+    }
+    if (deviceKeys.length === 0) throw new ConsoleError("DEVICE_REQUIRED", "请至少选择一台设备");
 
-    const selected = uniqueKeys.map(key => {
+    const selected = deviceKeys.map(key => {
       const device = devices.find(item => item.key === key);
       if (!device) throw new ConsoleError("DEVICE_UNKNOWN", `设备当前未连接: ${key}`, 404);
       if (device.connectionState !== "available") {
@@ -104,7 +142,16 @@ export class TaskManager {
     });
 
     const createdAt = new Date().toISOString();
-    const tasks = selected.map(device => this.createTask(test, device, parameters, createdAt, workspaceRoot, repairJobId));
+    const tasks = selected.map(device => this.createTask(test, appRunTargetOf(device), parameters, createdAt, workspaceRoot, repairJobId));
+    await this.enqueueTasks(tasks, test, commandFactory);
+    return tasks.map(task => structuredClone(task));
+  }
+
+  private async enqueueTasks(
+    tasks: TestTask[],
+    test: TestDefinition,
+    commandFactory?: (task: TestTask) => ResolvedCommand | null,
+  ): Promise<void> {
     for (const task of tasks) {
       this.tasks.set(task.id, task);
       const override = commandFactory?.(structuredClone(task));
@@ -112,7 +159,6 @@ export class TaskManager {
     }
     await this.persistNow();
     for (const task of tasks) queueMicrotask(() => void this.execute(task.id, test));
-    return tasks.map(task => structuredClone(task));
   }
 
   async waitForTerminal(taskId: string, timeoutMs = 120_000): Promise<TestTask> {
@@ -155,6 +201,32 @@ export class TaskManager {
     return structuredClone(task);
   }
 
+  async setRetained(taskId: string, retained: boolean): Promise<TestTask> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${taskId}`, 404);
+    if (!TERMINAL_STATUSES.has(task.status)) {
+      throw new ConsoleError("TASK_ACTIVE", `活动任务暂不支持修改保留状态: ${taskId}`, 409);
+    }
+    task.retained = retained;
+    await this.persistNow();
+    return structuredClone(task);
+  }
+
+  async forgetRuns(runIds: string[]): Promise<TestTask[]> {
+    const selected = new Set(runIds);
+    const removed: TestTask[] = [];
+    for (const task of this.tasks.values()) {
+      if (!selected.has(task.runId)) continue;
+      if (!TERMINAL_STATUSES.has(task.status)) {
+        throw new ConsoleError("TASK_ACTIVE", `活动任务不能从清理索引移除: ${task.id}`, 409);
+      }
+      removed.push(structuredClone(task));
+    }
+    for (const task of removed) this.tasks.delete(task.id);
+    if (removed.length > 0) await this.persistNow();
+    return removed;
+  }
+
   async shutdown(): Promise<void> {
     const activeIds = [...this.runnerControllers.keys()];
     await Promise.all(activeIds.map(taskId => this.stop(taskId)));
@@ -168,7 +240,7 @@ export class TaskManager {
 
   private createTask(
     test: TestDefinition,
-    device: Device,
+    target: RunTarget,
     parameters: Record<string, string>,
     createdAt: string,
     workspaceRoot?: string,
@@ -183,7 +255,8 @@ export class TaskManager {
       testId: test.id,
       testLabel: test.label,
       runnerId: test.runnerId ?? LEGACY_COMMAND_RUNNER_ID,
-      device,
+      target,
+      device: target.kind === "app" ? target.device : createVirtualDevice(target),
       parameters: { ...parameters },
       status: "queued",
       phase: "等待执行",
@@ -208,12 +281,12 @@ export class TaskManager {
     task.status = "preparing";
     task.phase = "准备运行计划";
     task.startedAt = new Date().toISOString();
-    this.appendLog(task, `[console] 开始 ${task.testLabel} · ${task.device.name}`);
+    this.appendLog(task, `[console] 开始 ${task.testLabel} · ${task.target?.label ?? task.device.name}`);
     this.schedulePersist();
 
     try {
       const command = this.commandOverrides.get(taskId)
-        ?? resolveOptionalCommand(this.config, test, task.device, task, task.parameters, task.workspaceRoot);
+        ?? resolveTargetCommand(this.config, test, task.target ?? appRunTargetOf(task.device), task, task.parameters, task.workspaceRoot);
       this.appendLog(task, `[console] runner: ${task.runnerId ?? LEGACY_COMMAND_RUNNER_ID}`);
       if (command) {
         this.appendLog(task, `[console] cwd: ${command.cwd}`);
@@ -312,10 +385,12 @@ export class TaskManager {
     this.cancelRequests.delete(task.id);
     await this.persistNow(next);
     Object.assign(task, next);
-    try {
-      await this.onTaskCompleted?.(structuredClone(next));
-    } catch (listenerError) {
-      console.error("[task] 更新项目接入进度失败", listenerError);
+    for (const listener of this.completionListeners) {
+      try {
+        await listener(structuredClone(next));
+      } catch (listenerError) {
+        console.error("[task] 任务完成监听器执行失败", listenerError);
+      }
     }
   }
 
@@ -357,4 +432,21 @@ function waitForProcess(child: ChildProcess): Promise<{ code: number | null; err
 
 function formatCommand(executable: string, args: string[]): string {
   return [executable, ...args].map(value => /^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : JSON.stringify(value)).join(" ");
+}
+
+function createVirtualDevice(target: MiniProgramRunTarget): Device {
+  return {
+    key: target.key,
+    id: target.key,
+    name: target.label,
+    platform: "android",
+    type: "physical",
+    connectionState: "available",
+    osVersion: "",
+    detail: `${target.platform} / ${target.runtime}`,
+    controlState: "ready",
+    controlReason: "",
+    connectorId: target.runtime,
+    capabilities: [],
+  };
 }

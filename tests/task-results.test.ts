@@ -231,6 +231,70 @@ describe("测试结果服务", () => {
     expect(artifact.absolutePath).toBe(await fs.realpath(screenshotPath));
     await manager.shutdown();
   });
+
+  it("未配置旧结果提供器时从项目根目录读取 Result Bundle 截图", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-bundle-project-root-"));
+    tempDirs.push(root);
+    const stateDir = path.join(root, "state");
+    const screenshotPath = path.join(root, ".test", "results", "run-one", "screenshots", "screen.png");
+    await fs.mkdir(path.dirname(screenshotPath), { recursive: true });
+    await fs.writeFile(screenshotPath, "mini-program-image");
+
+    const bundleStore = new ResultBundleStore(stateDir);
+    const ingestion = await bundleStore.ingest({
+      schemaVersion: "test-analysis.run.v1",
+      project: { id: "demo", name: "Demo" },
+      target: { kind: "mini-program", runtime: "wechat-devtools", platform: "wechat" },
+      run: {
+        runId: "run-one",
+        status: "passed",
+        environment: "e2e",
+        startedAt: "2026-08-11T00:00:00.000Z",
+        finishedAt: "2026-08-11T00:00:02.000Z",
+      },
+      cases: [{
+        caseRunId: "run-one-flow",
+        caseId: "flow",
+        title: "业务流程",
+        status: "passed",
+        targetPage: "pages/index",
+        scenario: "小程序流程",
+        steps: [],
+        assertions: [],
+        evidenceRefs: ["screen"],
+        apiCalls: [],
+        errorSummary: "",
+      }],
+      artifacts: [{
+        id: "screen",
+        uri: "project://demo/.test/results/run-one/screenshots/screen.png",
+        role: "screenshot",
+        mimeType: "image/png",
+      }],
+      warnings: [],
+      provenance: { adapter: "demo", adapterVersion: "1", generatedAt: "2026-08-11T00:00:02.000Z" },
+      metadata: {},
+    }, "test");
+
+    const task = { ...createTask(), resultUri: ingestion.resultUri };
+    const config: LoadedProjectConfig = {
+      ...createConfig(root, stateDir, path.join(root, "artifacts"), path.join(root, "provider.cjs")),
+      taskResults: undefined,
+    };
+    const store = new StateStore(stateDir);
+    await store.save([task]);
+    const manager = new TaskManager(config, store);
+    await manager.initialize();
+    const results = new TaskResultService(config, manager, bundleStore);
+
+    const result = await results.load(task.id);
+
+    expect(result.runs[0].screenshots).toHaveLength(1);
+    expect(result.warnings).toEqual([]);
+    const artifact = await results.artifact(task.id, result.runs[0].screenshots[0].id);
+    expect(artifact.absolutePath).toBe(await fs.realpath(screenshotPath));
+    await manager.shutdown();
+  });
 });
 
 async function createFixture() {

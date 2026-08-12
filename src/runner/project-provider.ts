@@ -1,4 +1,4 @@
-import { PLATFORMS, type Platform, type TestTarget } from "../shared/contracts.js";
+import { type TargetPlatform, type TestTarget } from "../shared/contracts.js";
 import {
   RUNNER_ID_PATTERN,
   type RunPlan,
@@ -22,7 +22,7 @@ export interface ProjectProviderManifest {
   scope: {
     targetKinds: TestTarget["kind"][];
     runtimes?: string[];
-    platforms?: Platform[];
+    platforms?: TargetPlatform[];
   };
   capabilities: ProjectProviderCapability[];
 }
@@ -193,7 +193,11 @@ export function validateProjectProviderManifest(
     validateUniqueValues(manifest.scope.runtimes, value => typeof value === "string" && value.trim().length > 0, "项目 Provider runtime");
   }
   if (manifest.scope.platforms) {
-    validateUniqueValues(manifest.scope.platforms, value => PLATFORMS.includes(value), "项目 Provider 平台");
+    validateUniqueValues(
+      manifest.scope.platforms,
+      value => typeof value === "string" && value.trim().length > 0,
+      "项目 Provider 平台",
+    );
   }
   if (!Array.isArray(manifest.capabilities) || manifest.capabilities.length === 0) {
     throw new Error(`项目 Provider 必须声明能力: ${manifest.providerId}`);

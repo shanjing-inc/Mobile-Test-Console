@@ -13,7 +13,7 @@ MTC 的“项目”工作区将接入拆成可恢复的步骤：
 5. 接入项目能力：加载 Provider manifest，验证构建、安装、账号和页面参数准备。
 6. 接入结果分析：运行 `collectResult()`，检查 Result Bundle、截图和诊断证据。
 
-`mobile-test.config.cjs` 是单一接入清单。`testing.environments` 描述可选运行环境，`testing.capabilities` 声明能力名称、Provider 和修复引导，`tests[]` 声明页面测试、流程测试或通用测试及其能力依赖，`taskResults` 声明结果协议、产物目录和兼容 Provider。MTC 负责读取和校验这些声明，项目 Adapter 负责实现能力与解释项目测试语义。
+`mobile-test.config.cjs` 是单一接入清单。`testing.environments` 描述可选运行环境，`testing.capabilities` 声明能力名称、Provider 和修复引导，`tests[]` 声明页面测试、流程测试或通用测试及其能力依赖，`taskResults` 声明结果协议、产物目录和兼容 Provider，`artifactRetention` 声明产物根目录、保留策略和清理适配器。MTC 负责读取和校验这些声明，项目 Adapter 负责实现能力与解释项目测试语义。
 
 每个项目会记录步骤状态、最近检测时间和失败原因。Smoke 与 Result Bundle 证据会保存项目配置摘要和 Provider 能力版本摘要；MTC 启动或点击“验证接入”时发现摘要变化，会将这两步恢复为待验证并显示变化原因。当前 MTC 进程继续使用 `--config` 指定的项目执行任务，项目目录工作区负责登记和接入验收。
 
@@ -139,6 +139,31 @@ Bundle 必须满足：
 
 MTC 会在写入前校验 `runId`、`projectId` 和终态；相同 `runId` 与相同内容保持幂等，冲突内容会被拒绝。
 
+### 产物保留与清理
+
+```js
+artifactRetention: {
+  enabled: true,
+  autoCleanup: false,
+  artifactsRoot: "qa/artifacts",
+  policy: {
+    maxAgeDays: 7,
+    maxRuns: 20,
+    maxBytes: 10 * 1024 ** 3,
+    minimumFreeBytes: 5 * 1024 ** 3,
+    keepSuccessfulPerPlatform: 1,
+    keepFailedPerPlatform: 3,
+    repairWorktreeMaxAgeDays: 7,
+  },
+  cleanup: {
+    executable: "node",
+    args: ["qa/artifact-cleanup.cjs", "--request", "{{cleanup.requestPath}}", "--artifacts-root", "{{results.artifactsRoot}}"],
+  },
+},
+```
+
+项目脚本实现 `plan/apply`，只根据受校验的 `runId` 操作 `artifactsRoot` 内的项目产物。请求设置 `discoverCandidates: true` 时，脚本返回可供用户勾选的运行清单。MTC 手工清理保护活动任务、活动修复任务和用户长期保留运行；自动清理继续保护最近成功与失败运行。清理预览展示候选文件数与预计释放空间。首次接入建议保持 `autoCleanup: false`，确认历史 dry-run 后再决定自动策略。
+
 ## 4. 配置与插件
 
 ### 最小配置
@@ -190,7 +215,7 @@ pnpm dev -- --config examples/lynx-app-starter/mobile-test.config.cjs
 
 日常启动直接运行 `pnpm dev` 即可。MTC 会进入项目接入中心，用户在后台选择项目并切换运行后加载项目环境。`--config` 适合临时指定项目或调试独立配置。
 
-模板中的 `qa/prepare.cjs`、`qa/lynx-suite.cjs` 和 `qa/result-bundle.cjs` 是项目适配边界。迁移到真实 App 时保留 Provider、Runner 和参数契约，替换这三个脚本的示例实现。
+模板中的 `qa/prepare.cjs`、`qa/lynx-suite.cjs`、`qa/result-bundle.cjs` 和 `qa/artifact-cleanup.cjs` 是项目适配边界。迁移到真实 App 时保留 Provider、Runner、结果与清理协议，替换这些脚本的示例实现。
 
 仓库中的 [examples/com.shanjing.example](../examples/com.shanjing.example) 提供可实际构建的 Android、iOS 和 HarmonyOS 最小宿主。它演示三端构建、签名、安装、启动、运行事件、截图和 Result Bundle 生成，同时让全部平台实现留在接入项目内。iOS 真机签名使用 `MTC_IOS_DEVELOPMENT_TEAM`，HarmonyOS 签名 HAP 使用 `MTC_HARMONY_HAP_PATH`。
 

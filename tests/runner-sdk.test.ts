@@ -27,6 +27,7 @@ import {
   SIDECAR_PROTOCOL_VERSION,
   assertSidecarHandshake,
 } from "../src/runner/sidecar-protocol.js";
+import { validateProjectProviderManifest } from "../src/runner/project-provider.js";
 
 describe("Runner SDK", () => {
   it("按 RunPlan.runnerId 从进程内 Registry 选择 Runner", () => {
@@ -94,6 +95,15 @@ describe("Runner SDK", () => {
     };
     expect(supportsMiniProgramTarget(manifest, target, ["target.mini-program.attach"])).toBe(true);
     expect(() => assertMiniProgramTarget({ ...target, appId: "" })).toThrow("appId");
+  });
+
+  it("项目 Provider 清单接受开放的小程序平台", () => {
+    expect(() => validateProjectProviderManifest({
+      schemaVersion: "mobile-test-console.project-provider.v1",
+      providerId: "wechat-provider",
+      scope: { targetKinds: ["mini-program"], runtimes: ["wechat-devtools"], platforms: ["wechat"] },
+      capabilities: [{ id: "mini-program.smoke", version: 1 }],
+    })).not.toThrow();
   });
 
   it("注册连接器并拒绝重复 ID", () => {

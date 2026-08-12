@@ -7,6 +7,7 @@ import {
   PROJECT_EXECUTION_PREREQUISITE_STEP_IDS,
   PROJECT_INTEGRATION_TYPES,
   PROJECT_ONBOARDING_STEP_IDS,
+  projectFamilyOf,
   type Platform,
   type ApplyProjectInitializationRequest,
   type ApplyProjectSetupRequest,
@@ -28,7 +29,7 @@ import {
   type RegisterProjectRequest,
 } from "../shared/contracts.js";
 import { resolveDeviceExecutable, SystemCommandRunner, type CommandRunner } from "./command-runner.js";
-import { loadProjectConfig, toPublicTests, type LoadedProjectConfig } from "./config.js";
+import { loadProjectConfig, resolveTargetHealthCheckCommand, toPublicTests, type LoadedProjectConfig } from "./config.js";
 import { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import { ResultBundleStore } from "./result-bundle-store.js";
@@ -64,6 +65,7 @@ const onboardingStepSchema = z.object({
     description: z.string(),
     runnerId: z.string(),
     platforms: z.array(z.enum(PLATFORMS)),
+    targetKeys: z.array(z.string()).optional(),
     parameterLabels: z.array(z.string()),
   })).optional(),
 });
@@ -74,7 +76,7 @@ const catalogEntrySchema = z.object({
   root: z.string().min(1),
   configPath: z.string().min(1),
   integrationType: z.enum(PROJECT_INTEGRATION_TYPES),
-  platforms: z.array(z.enum(PLATFORMS)).min(1),
+  platforms: z.array(z.enum(PLATFORMS)),
   active: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -389,6 +391,10 @@ export class ProjectCatalogService {
   }
 
   private async verifyDevices(entry: ProjectCatalogEntry, config: LoadedProjectConfig, checkedAt: string): Promise<void> {
+    if (projectFamilyOf(config.project.integrationType ?? "app") === "mini-program") {
+      await this.verifyRunTargets(entry, config, checkedAt);
+      return;
+    }
     const requestedPlatforms = entry.platforms.filter(platform => config.deviceProviders.includes(platform));
     if (requestedPlatforms.length === 0) {
       updateStep(entry, "devices", "blocked", "项目配置未声明登记的平台", [
@@ -437,6 +443,70 @@ export class ProjectCatalogService {
       [],
       checkedAt,
       { tools: toolchain.tools },
+    );
+  }
+
+  private async verifyRunTargets(entry: ProjectCatalogEntry, config: LoadedProjectConfig, checkedAt: string): Promise<void> {
+    const targets = config.testing?.targets ?? [];
+    if (targets.length === 0) {
+      updateStep(entry, "devices", "blocked", "项目尚未声明小程序运行环境", [
+        "在 mobile-test.config.cjs 的 testing.targets 中声明运行目标。",
+      ], checkedAt);
+      return;
+    }
+    const tools = await Promise.all(targets.map(async target => {
+      const command = resolveTargetHealthCheckCommand(config, target.key);
+      if (!command) {
+        return {
+          id: target.key,
+          label: target.label,
+          executable: "",
+          status: "blocked" as const,
+          path: "",
+          version: target.runtime,
+          detail: "运行目标缺少 healthCheck",
+          guidance: ["为 testing.targets[].healthCheck 配置可重复执行的环境检查命令。"],
+        };
+      }
+      try {
+        const result = await this.runner.capture(command.executable, command.args, 30_000, {
+          cwd: command.cwd,
+          env: command.env,
+        });
+        return {
+          id: target.key,
+          label: target.label,
+          executable: command.executable,
+          status: result.code === 0 ? "ready" as const : "blocked" as const,
+          path: command.cwd,
+          version: target.runtime,
+          detail: result.code === 0
+            ? String(result.stdout || "运行环境可用").trim()
+            : String(result.stderr || result.stdout || `退出码 ${result.code}`).trim(),
+          guidance: result.code === 0 ? [] : ["按项目运行环境检查输出完成配置后重新验证。"],
+        };
+      } catch (error) {
+        return {
+          id: target.key,
+          label: target.label,
+          executable: command.executable,
+          status: "blocked" as const,
+          path: command.cwd,
+          version: target.runtime,
+          detail: errorMessage(error),
+          guidance: ["确认项目 Node、包管理器和小程序开发工具配置后重新验证。"],
+        };
+      }
+    }));
+    const blocked = tools.filter(tool => tool.status === "blocked");
+    updateStep(
+      entry,
+      "devices",
+      blocked.length === 0 ? "verified" : "blocked",
+      blocked.length === 0 ? `已验证 ${tools.length} 个小程序运行环境` : `${blocked.length} 个运行环境需要处理`,
+      blocked.map(tool => `${tool.label}：${tool.detail}`),
+      checkedAt,
+      { tools },
     );
   }
 
@@ -758,6 +828,7 @@ function createTestEntryChecks(tests: ReturnType<typeof toPublicTests>): Project
     description: test.description,
     runnerId: test.runnerId,
     platforms: [...test.platforms],
+    targetKeys: [...(test.targetKeys ?? [])],
     parameterLabels: test.parameters.map(parameter => parameter.label),
   }));
 }

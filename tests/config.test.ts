@@ -11,9 +11,12 @@ import {
   resolveDevicePreparationCommand,
   resolveLifecycleCommand,
   resolveAccountProfileProviderCommand,
+  resolveArtifactCleanupCommand,
   resolvePageParameterProviderCommand,
   resolveTaskDeletionCommand,
   resolveTaskResultCommand,
+  resolveTargetCommand,
+  resolveTargetHealthCheckCommand,
   toPublicTests,
   validateParameters,
   type LoadedProjectConfig,
@@ -26,6 +29,62 @@ afterEach(async () => {
 });
 
 describe("项目配置", () => {
+  it("加载小程序运行目标并解析 target 命令模板", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-target-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "mini-demo", name: "Mini Demo", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [{
+        key: "wechat-devtools", label: "微信开发者工具", kind: "mini-program",
+        platform: "wechat", runtime: "wechat-devtools", appId: "wx-demo",
+        concurrencyKey: "mini-demo-wechat",
+        healthCheck: { executable: "node", args: ["check.mjs", "{{target.runtime}}"] }
+      }] },
+      tests: [{
+        id: "smoke", label: "Smoke", targetKeys: ["wechat-devtools"],
+        commands: { default: { executable: "pnpm", args: ["test:smoke", "--run", "{{task.runId}}", "--target", "{{target.key}}", "--app-id", "{{target.appId}}"] } }
+      }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+    const target = config.testing?.targets?.[0];
+    if (!target) throw new Error("缺少运行目标");
+    expect(toPublicTests(config.tests)[0]).toMatchObject({ platforms: [], targetKeys: ["wechat-devtools"] });
+    expect(resolveTargetHealthCheckCommand(config, target.key)?.args).toEqual(["check.mjs", "wechat-devtools"]);
+    expect(resolveTargetCommand(config, config.tests[0], {
+      key: target.key,
+      kind: "mini-program",
+      label: target.label,
+      platform: target.platform,
+      runtime: target.runtime,
+      appId: target.appId,
+      concurrencyKey: target.concurrencyKey,
+    }, { id: "task-1", runId: "run-1" }, {})?.args).toEqual([
+      "test:smoke", "--run", "run-1", "--target", "wechat-devtools", "--app-id", "wx-demo",
+    ]);
+  });
+
+  it("校验运行目标唯一性与测试引用", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-target-invalid-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "mini-demo", name: "Mini Demo", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [
+        { key: "wechat", label: "微信一", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-1", concurrencyKey: "wechat" },
+        { key: "wechat", label: "微信二", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-2", concurrencyKey: "wechat" }
+      ] },
+      tests: [{ id: "smoke", label: "Smoke", targetKeys: ["missing"], commands: { default: { executable: "node" } } }]
+    };`);
+
+    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
   it("从单一配置读取环境、能力、测试类型和结果契约", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-testing-manifest-"));
     tempDirs.push(dir);
@@ -377,6 +436,39 @@ describe("项目配置", () => {
     ]);
     config.taskDeletion.cleanup.args = ["{{task.unknown}}"];
     expect(() => resolveTaskDeletionCommand(config, createTask())).toThrow("命令模板变量未定义");
+  });
+
+  it("加载产物保留策略并解析平台中立清理请求命令", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-artifact-config-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      taskResults: {
+        artifactsRoot: "qa/artifacts",
+        provider: { executable: "node", args: ["result.cjs"] }
+      },
+      artifactRetention: {
+        cleanup: { executable: "node", args: ["cleanup.cjs", "--request", "{{cleanup.requestPath}}", "--root", "{{results.artifactsRoot}}"] },
+        policy: { maxAgeDays: 14, maxRuns: 30 }
+      },
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+    const command = resolveArtifactCleanupCommand(config, path.join(dir, "request.json"));
+
+    expect(config.artifactRetention).toMatchObject({
+      enabled: true,
+      autoCleanup: false,
+      policy: { maxAgeDays: 14, maxRuns: 30, keepSuccessfulPerPlatform: 1 },
+    });
+    expect(command?.args).toEqual([
+      "cleanup.cjs",
+      "--request", path.join(dir, "request.json"),
+      "--root", path.join(dir, "qa/artifacts"),
+    ]);
   });
 
   it("项目任务命令可透传设备厂商", () => {

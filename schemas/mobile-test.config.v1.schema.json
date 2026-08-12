@@ -127,6 +127,86 @@
             "additionalProperties": false
           },
           "default": []
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "const": "mini-program"
+              },
+              "platform": {
+                "type": "string",
+                "minLength": 1
+              },
+              "runtime": {
+                "type": "string",
+                "minLength": 1
+              },
+              "appId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "concurrencyKey": {
+                "type": "string",
+                "minLength": 1
+              },
+              "healthCheck": {
+                "type": "object",
+                "properties": {
+                  "executable": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "env": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "executable"
+                ],
+                "additionalProperties": false
+              },
+              "extensions": {
+                "type": "object",
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "kind",
+              "platform",
+              "runtime",
+              "appId",
+              "concurrencyKey"
+            ],
+            "additionalProperties": false
+          },
+          "default": []
         }
       },
       "additionalProperties": false,
@@ -279,6 +359,95 @@
         "artifactsRoot",
         "provider"
       ],
+      "additionalProperties": false
+    },
+    "artifactRetention": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "autoCleanup": {
+          "type": "boolean",
+          "default": false
+        },
+        "artifactsRoot": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cleanup": {
+          "type": "object",
+          "properties": {
+            "executable": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "cwd": {
+              "type": "string"
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "executable"
+          ],
+          "additionalProperties": false
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "maxAgeDays": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 7
+            },
+            "maxRuns": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 20
+            },
+            "maxBytes": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 10737418240
+            },
+            "minimumFreeBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 5368709120
+            },
+            "keepSuccessfulPerPlatform": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 1
+            },
+            "keepFailedPerPlatform": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 3
+            },
+            "repairWorktreeMaxAgeDays": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 7
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        }
+      },
       "additionalProperties": false
     },
     "pageParameters": {
@@ -903,7 +1072,15 @@
                 "harmony"
               ]
             },
-            "minItems": 1
+            "default": []
+          },
+          "targetKeys": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$"
+            },
+            "default": []
           },
           "parameters": {
             "type": "array",
@@ -1215,8 +1392,7 @@
         },
         "required": [
           "id",
-          "label",
-          "platforms"
+          "label"
         ],
         "additionalProperties": false
       },

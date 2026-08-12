@@ -1,8 +1,8 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Device } from "../src/shared/contracts.js";
-import { DeviceRow } from "../src/web/App.js";
+import type { Device, MiniProgramRunTarget, PublicTestDefinition, TestTask } from "../src/shared/contracts.js";
+import { DeviceRow, reconcileSelectedKeysForTest, TargetRow } from "../src/web/App.js";
 import { installDevicePreparation, startDevice } from "../src/web/api.js";
 
 afterEach(() => {
@@ -128,6 +128,71 @@ describe("网页 iOS 模拟器启动", () => {
       method: "POST",
       body: JSON.stringify({ deviceKey: device.key, preparationId: "maestro-driver" }),
     }));
+  });
+
+  it("小程序运行目标展示运行时并在任务执行时锁定选择", () => {
+    const target: MiniProgramRunTarget = {
+      key: "wechat-devtools",
+      kind: "mini-program",
+      label: "微信开发者工具",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-test",
+      concurrencyKey: "mini-wechat",
+    };
+    const task: TestTask = {
+      id: "task-1", runId: "run-1", projectId: "mini", testId: "smoke", testLabel: "Smoke",
+      target, device: { key: "target:wechat-devtools", id: "wechat-devtools", name: "微信开发者工具", platform: "android", type: "emulator", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "" },
+      parameters: {}, status: "running" as const, phase: "running", createdAt: "", startedAt: "", finishedAt: "", exitCode: null, error: "", logs: [],
+    };
+    const html = renderToStaticMarkup(React.createElement(TargetRow, { target, task, selected: true, onToggle: () => undefined }));
+    expect(html).toContain("微信开发者工具");
+    expect(html).toContain("wechat · wechat-devtools");
+    expect(html).toContain("测试中");
+    expect(html).toContain("disabled=\"\"");
+  });
+
+  it("切换小程序测试入口时保留共享目标并移除失效目标", () => {
+    const nextTest: PublicTestDefinition = {
+      id: "smoke",
+      label: "Smoke 测试",
+      description: "",
+      kind: "general",
+      runnerId: "wechat-runner",
+      requiredCapabilities: [],
+      platforms: [],
+      targetKeys: ["wechat-devtools"],
+      parameters: [],
+    };
+
+    expect(reconcileSelectedKeysForTest(
+      ["wechat-devtools", "unsupported-target"],
+      nextTest,
+      "mini-program",
+      [],
+    )).toEqual(["wechat-devtools"]);
+  });
+
+  it("切换 App 测试入口时保留平台匹配设备并移除失效设备", () => {
+    const nextTest: PublicTestDefinition = {
+      id: "android-smoke",
+      label: "Android Smoke 测试",
+      description: "",
+      kind: "general",
+      runnerId: "app-runner",
+      requiredCapabilities: [],
+      platforms: ["android"],
+      parameters: [],
+    };
+    const androidDevice = createSimulator({ key: "android:device-1", platform: "android" });
+    const iosDevice = createSimulator({ key: "ios:device-1", platform: "ios" });
+
+    expect(reconcileSelectedKeysForTest(
+      [androidDevice.key, iosDevice.key],
+      nextTest,
+      "app",
+      [androidDevice, iosDevice],
+    )).toEqual([androidDevice.key]);
   });
 });
 

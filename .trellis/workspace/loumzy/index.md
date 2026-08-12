@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
+- **Total Sessions**: 7
 - **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~39 | Active |
+| `journal-1.md` | ~245 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,12 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-08-11 | 完成 MTC 小程序接入与提交审核 | `1e26b8e`, `8a63e87`, `a6e895a` | `main` |
+| 6 | 2026-08-01 | 修复页面列表滚动并显示总数（迁移） | `bd46f16` | `main` |
+| 5 | 2026-08-01 | 完成 Lynx 页面列表与单页测试入口（迁移） | `3d15f99bf`, `3e138ef` | `main` |
+| 4 | 2026-07-21 | QA 测试结果分析控制台（迁移） | `f66140aaf`, `8a1c7c7` | `main` |
+| 3 | 2026-07-21 | 运行记录手动删除（迁移） | `b113c79f0`, `8788bf7` | `main` |
+| 2 | 2026-08-05 | Mobile Test Console 平台与项目拆分 Phase 1-3（迁移） | - | `main` |
 | 1 | 2026-08-11 | 完善三端 Lynx 示例与开源发布门禁 | `00a9d5c` | `main` |
 <!-- @@@/auto:session-history -->
 

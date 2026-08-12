@@ -292,6 +292,9 @@ export class TaskResultService {
     const warnings = [...bundle.warnings];
     const artifacts = new Map<string, ResolvedTaskArtifact>();
     const bundleArtifacts = new Map(bundle.artifacts.map(artifact => [artifact.id, artifact]));
+    const bundleArtifactsRoot = this.config.taskResults
+      ? resolveTaskArtifactsRoot(this.config, task)
+      : task.workspaceRoot || this.config.project.root;
     const runs: TaskResultRun[] = [];
 
     for (const bundleCase of bundle.cases) {
@@ -308,7 +311,13 @@ export class TaskResultService {
         if (!bundleArtifact || bundleArtifact.role !== "screenshot") continue;
         const reference = bundleArtifactReference(this.config, task, bundleArtifact, warnings);
         if (!reference) continue;
-        const artifact = await resolveImageArtifact(this.config, task, reference, warnings);
+        const artifact = await resolveImageArtifact(
+          this.config,
+          task,
+          reference,
+          warnings,
+          bundleArtifactsRoot,
+        );
         if (!artifact) continue;
         artifacts.set(artifact.id, artifact);
         screenshots.push(publicArtifact(artifact));
@@ -457,14 +466,14 @@ async function resolveImageArtifact(
   task: TestTask,
   reference: z.infer<typeof artifactReferenceSchema>,
   warnings: string[],
+  artifactsRoot = resolveTaskArtifactsRoot(config, task),
 ): Promise<ResolvedTaskArtifact | null> {
-  const root = resolveTaskArtifactsRoot(config, task);
   const workspaceRoot = task.workspaceRoot || config.project.root;
   const candidate = path.isAbsolute(reference.path)
     ? path.resolve(reference.path)
     : path.resolve(workspaceRoot, reference.path);
   try {
-    const [realRoot, realCandidate] = await Promise.all([fs.realpath(root), fs.realpath(candidate)]);
+    const [realRoot, realCandidate] = await Promise.all([fs.realpath(artifactsRoot), fs.realpath(candidate)]);
     const relativePath = path.relative(realRoot, realCandidate);
     if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) {
       warnings.push(`忽略产物目录外的截图: ${reference.path}`);

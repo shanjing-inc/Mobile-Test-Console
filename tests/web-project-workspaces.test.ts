@@ -39,4 +39,10 @@ describe("项目工作台注册", () => {
       .toContain("adapter.workspaces");
     expect(reconcileWorkspaceView("business-scripts", readyAccess)).toBe("projects");
   });
+
+  it("小程序只开放项目概览与测试套件工作区", () => {
+    expect(resolveWorkspaceViews("mini-program")).toEqual(["projects", "tests"]);
+    expect(workspaceDisabledReason("page-parameters", { ...readyAccess, family: "mini-program" }))
+      .toBe("小程序项目使用测试套件与结果报告工作区");
+  });
 });

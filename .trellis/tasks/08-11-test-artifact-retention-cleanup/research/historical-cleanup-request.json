@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mobile-test-console.artifact-cleanup-request.v1",
+  "mode": "plan",
+  "projectId": "fanli",
+  "artifactsRoot": "/Users/loumzy/workspace/app/fanli/qa/history/artifacts",
+  "candidateRunIds": [
+    "fanli-20260810090447-5e5296f9",
+    "fanli-20260810050424-6793042b"
+  ],
+  "protectedRunIds": [],
+  "policy": {
+    "reason": "historical-read-only-audit"
+  }
+}

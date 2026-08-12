@@ -1,8 +1,8 @@
 # Mobile Test Console
 
-Mobile Test Console 是一个运行在开发机上的跨 App 移动测试控制台。它发现 Android、iOS、HarmonyOS 设备，按项目配置展示测试入口，支持多设备并行启动、停止任务、查看运行状态和日志。
+Mobile Test Console 是一个运行在开发机上的多终端测试控制台。它按项目配置管理 App 设备与小程序运行目标，支持测试调度、并发控制、停止任务、运行状态、日志和统一结果展示。
 
-当前版本为 `0.1.0-beta.1`，面向 Lynx App 项目开放接入验证。平台核心使用 MIT License，项目能力通过配置、Runner、Project Provider 和 Result Bundle 契约注册。
+当前版本为 `0.1.0-beta.1`，面向 App 与小程序项目开放接入验证。平台核心使用 MIT License，项目能力通过配置、Runner、Project Provider 和 Result Bundle 契约注册。
 
 ## 环境
 
@@ -11,6 +11,7 @@ Mobile Test Console 是一个运行在开发机上的跨 App 移动测试控制�
 - Android：`adb` 在 PATH 中
 - iOS：macOS + `xcrun simctl`；真机发现需要 `xcrun devicectl`
 - HarmonyOS：`hdc` 在 PATH 中
+- 微信小程序：项目侧准备 Node、包管理器、微信开发者工具和测试环境
 
 ## 启动
 
@@ -47,11 +48,13 @@ pnpm start -- --config examples/demo.config.cjs --port 4312
 
 服务默认只监听 `127.0.0.1`。可以通过 `--host`、`--port` 和 `--open` 调整启动行为。
 
-## Lynx App 接入引导
+## App 与小程序接入引导
 
 首次打开一个没有运行记录的项目时，控制台会进入“接入引导”工作区。引导页会复用设备快照检查 Android、iOS、HarmonyOS 工具链和设备状态，展示项目已注册的 Provider 能力，并提供最小配置复制入口。完成一次检查后仍可从顶部的“接入引导”入口重新打开。
 
 通用 Lynx App 接入结构已经整理为 [Lynx App 接入指南](docs/lynx-app-onboarding.md) 和 [Lynx App Starter](examples/lynx-app-starter)。Starter 的 Provider、Runner 和结果转换脚本可以直接复制到新的 Lynx App，再替换项目构建、安装、页面驱动和原始报告转换逻辑。`examples/com.shanjing.example` 提供了可直接选择的最小完整示例。
+
+小程序项目通过 `testing.targets` 声明开发者工具等运行环境，通过 `tests[].targetKeys` 绑定测试入口。MTC 执行目标 health check、调度项目 Runner，并将项目 Provider 生成的 Result Bundle 纳入统一任务详情。项目仓库继续管理构建、开发者工具生命周期、测试数据和资源清理。
 
 ## 项目接入中心
 
@@ -80,7 +83,7 @@ iosSimulator: {
 
 `workspace` 相对项目根目录解析。网页启动关机模拟器时，服务端依次执行 `simctl boot`、打开 Simulator 和 `simctl bootstatus -b`。
 
-目标 App 在自己的仓库中维护 `mobile-test.config.cjs`，控制台通过 `--config` 加载。配置协议为 `mobile-test-console.config.v1`：
+被测项目在自己的仓库中维护 `mobile-test.config.cjs`，控制台通过 `--config` 加载。配置协议为 `mobile-test-console.config.v1`。App 项目示例：
 
 ```js
 module.exports = {
@@ -101,6 +104,16 @@ module.exports = {
     provider: {
       executable: "node",
       args: ["qa/result.cjs", "--run-id", "{{task.runId}}", "--root", "{{results.artifactsRoot}}"],
+    },
+  },
+  artifactRetention: {
+    enabled: true,
+    autoCleanup: false,
+    artifactsRoot: "qa/history/artifacts",
+    policy: { maxAgeDays: 7, maxRuns: 20, maxBytes: 10 * 1024 ** 3 },
+    cleanup: {
+      executable: "node",
+      args: ["qa/artifact-cleanup.cjs", "--request", "{{cleanup.requestPath}}", "--artifacts-root", "{{results.artifactsRoot}}"],
     },
   },
   tests: [{
@@ -126,11 +139,61 @@ module.exports = {
 };
 ```
 
-`testing` 是项目测试能力的声明入口：项目在这里列出运行环境和 Provider 能力；每个 `tests[]` 通过 `kind`、`providerId` 与 `requiredCapabilities` 声明自己的执行依赖；`taskResults.schemaVersion` 和 `artifactsRoot` 声明结果结构与存放位置。MTC 会把配置声明与运行时 Provider manifest 对照，缺少能力的测试保持不可执行。
+小程序项目使用运行目标和默认命令：
+
+```js
+module.exports = {
+  schemaVersion: "mobile-test-console.config.v1",
+  project: {
+    id: "demo-mini-program",
+    name: "Demo 小程序",
+    root: ".",
+    integrationType: "mini-program",
+  },
+  deviceProviders: [],
+  testing: {
+    targets: [{
+      key: "wechat-devtools",
+      label: "微信开发者工具",
+      kind: "mini-program",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx0000000000000000",
+      concurrencyKey: "demo-mini-program-wechat",
+      healthCheck: {
+        executable: "node",
+        args: ["tests/mtc/check-runtime.mjs", "--app-id", "{{target.appId}}"],
+      },
+    }],
+  },
+  tests: [{
+    id: "wechat-smoke",
+    label: "Smoke",
+    targetKeys: ["wechat-devtools"],
+    commands: {
+      default: {
+        executable: "pnpm",
+        args: ["test:e2e:smoke"],
+        env: { E2E_RUN_ID: "{{task.runId}}" },
+      },
+    },
+  }],
+};
+```
+
+`testing` 是项目测试能力的声明入口：项目在这里列出运行环境和 Provider 能力；每个 `tests[]` 通过 `kind`、`providerId` 与 `requiredCapabilities` 声明自己的执行依赖；`taskResults.schemaVersion` 和 `artifactsRoot` 声明结果结构与存放位置。`artifactRetention` 独立声明产物根目录、保留策略和项目清理适配器，Project Provider 项目可以直接使用该字段。MTC 会把配置声明与运行时 Provider manifest 对照，缺少能力的测试保持不可执行。
+
+### 测试产物治理
+
+MTC 在项目概览展示产物占用、磁盘剩余空间、实际挂载点和清理预览。默认策略保留最近 20 次运行、7 天内运行、各平台最近成功与失败运行、活动任务、活动修复任务以及用户标记为长期保留的运行。点击“选择清理”会扫描项目适配器提供的运行清单，用户勾选具体运行后确认调用项目适配器；适配器成功返回后，MTC 才同步移除任务索引并记录审计结果。
+
+项目适配器接收 `mobile-test-console.artifact-cleanup-request.v1`，支持 `plan` 与 `apply`，并返回 `mobile-test-console.artifact-cleanup-result.v1`。请求设置 `discoverCandidates: true` 时，适配器返回可选运行清单；项目负责把 `runId` 映射到自身的报告、截图、录屏和诊断目录，并执行路径边界检查；MTC 负责候选计算、保护集合、后台触发和用户确认。Starter 的 `qa/artifact-cleanup.cjs` 可以作为实现模板。
+
+`artifactRetention.artifactsRoot` 支持项目目录、外接磁盘和已挂载 NAS。MTC 在启动测试前检查可写权限与 `minimumFreeBytes` 安全水位。内置磁盘上的另一个目录仍写入同一设备；外接磁盘或 NAS 可以迁移测试证据的实际写入压力。
 
 页面测试使用 `kind: "page"` 和 `page-selection` 参数。预设只包含通用筛选条件，页面 ID、优先级、标签、平台和测试范围由项目的页面目录 Provider 返回。流程测试使用 `kind: "flow"`，流程分组及其执行命令继续由项目配置和 Runner 解释。
 
-命令使用 `executable + args` 启动。`lifecycle.startup` 在 HTTP 服务监听前执行一次，`lifecycle.shutdown` 在任务停止和服务关闭后执行一次；准备命令失败会终止服务启动。生命周期命令可使用 `{{projectRoot}}`、`{{configPath}}` 和 `{{process.pid}}`，设备测试命令还可使用 `{{device.id}}`、`{{device.platform}}`、`{{device.type}}`、`{{task.id}}`、`{{task.runId}}` 和 `{{params.<id>}}`。结果提供器额外支持 `{{results.artifactsRoot}}`。页面提交的测试 ID、平台和参数都必须在配置中声明。
+命令使用 `executable + args` 启动。`lifecycle.startup` 在 HTTP 服务监听前执行一次，`lifecycle.shutdown` 在任务停止和服务关闭后执行一次；准备命令失败会终止服务启动。生命周期命令可使用 `{{projectRoot}}`、`{{configPath}}` 和 `{{process.pid}}`。设备测试命令支持 `{{device.id}}`、`{{device.platform}}`、`{{device.type}}`；运行目标命令支持 `{{target.key}}`、`{{target.platform}}`、`{{target.runtime}}`、`{{target.appId}}`。全部测试命令支持 `{{task.id}}`、`{{task.runId}}` 和 `{{params.<id>}}`，结果提供器额外支持 `{{results.artifactsRoot}}`。页面提交的测试 ID、目标和参数都必须在配置中声明。
 
 失败结果的用例诊断区提供“复制错误”操作。复制内容包含脱敏后的错误摘要、失败日志、页面、参数、缺失事件、失败接口、失败交互和截图引用，可直接用于人工诊断或交给外部编程工具处理。控制台启动过程不依赖 Codex。
 

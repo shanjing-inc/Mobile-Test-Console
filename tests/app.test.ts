@@ -274,6 +274,82 @@ describe("HTTP API", () => {
     await app.close();
   });
 
+  it("返回小程序运行目标并通过 targetKeys 启动任务", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-mini-program-"));
+    tempDirs.push(dir);
+    const config = createMiniProgramConfig(dir);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, []),
+      tasks,
+    });
+
+    try {
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      expect(snapshot.statusCode).toBe(200);
+      expect(snapshot.json()).toMatchObject({
+        project: { id: "mini-demo", integrationType: "mini-program" },
+        devices: [],
+        targets: [{
+          key: "wechat-devtools",
+          kind: "mini-program",
+          platform: "wechat",
+          runtime: "wechat-devtools",
+          appId: "wx-test",
+        }],
+        tests: [expect.objectContaining({ id: "smoke", targetKeys: ["wechat-devtools"], platforms: [] })],
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { testId: "smoke", targetKeys: ["wechat-devtools"], parameters: {} },
+      });
+      expect(response.statusCode).toBe(200);
+      const [task] = response.json().tasks;
+      expect(task).toMatchObject({
+        testId: "smoke",
+        target: { key: "wechat-devtools", kind: "mini-program", runtime: "wechat-devtools" },
+        device: { key: "wechat-devtools" },
+      });
+      await tasks.waitForTerminal(task.id);
+      expect(tasks.get(task.id)).toMatchObject({ status: "passed", target: { key: "wechat-devtools" } });
+
+      const mixed = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { testId: "smoke", deviceKeys: ["android:device-1"], targetKeys: ["wechat-devtools"], parameters: {} },
+      });
+      expect(mixed.statusCode).toBe(400);
+      expect(mixed.json().error.code).toBe("REQUEST_INVALID");
+    } finally {
+      await tasks.shutdown();
+      await app.close();
+    }
+  });
+
+  it("拒绝空的设备或运行目标选择", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-empty-selection-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, ["android"]),
+      tasks,
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/tasks", payload: { testId: "pass", deviceKeys: [], targetKeys: [], parameters: {} } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("REQUEST_INVALID");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("默认快照立即返回运行状态并在后台发现设备", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-swr-"));
     tempDirs.push(dir);
@@ -589,6 +665,40 @@ function createConfig(stateDir: string): LoadedProjectConfig {
         commands: { default: { executable: process.execPath, args: ["-e", "setInterval(() => {}, 20)"] } },
       },
     ],
+  };
+}
+
+function createMiniProgramConfig(stateDir: string): LoadedProjectConfig {
+  return {
+    schemaVersion: "mobile-test-console.config.v1",
+    configPath: path.join(stateDir, "config.cjs"),
+    project: { id: "mini-demo", name: "Mini Demo", root: stateDir, integrationType: "mini-program" },
+    stateDir,
+    deviceProviders: [],
+    testing: {
+      environments: [{ id: "qa", label: "QA", description: "" }],
+      capabilities: [],
+      targets: [{
+        key: "wechat-devtools",
+        label: "微信开发者工具",
+        kind: "mini-program",
+        platform: "wechat",
+        runtime: "wechat-devtools",
+        appId: "wx-test",
+        concurrencyKey: "mini-demo-wechat",
+      }],
+    },
+    lifecycle: {},
+    taskDeletion: {},
+    tests: [{
+      id: "smoke",
+      label: "Smoke",
+      description: "",
+      platforms: [],
+      targetKeys: ["wechat-devtools"],
+      parameters: [],
+      commands: { default: { executable: process.execPath, args: ["-e", "process.exit(0)"] } },
+    }],
   };
 }
 

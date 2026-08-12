@@ -1,16 +1,135 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectCatalogResponse } from "../src/shared/contracts.js";
+import type { ArtifactCleanupPlan, ProjectCatalogResponse } from "../src/shared/contracts.js";
 import { ProjectDeleteConfirmation, ProjectSidebar } from "../src/web/App.js";
 import { waitForProjectActivation } from "../src/web/api.js";
-import { ProjectCatalogWorkspace } from "../src/web/ProjectCatalogWorkspace.js";
+import { ArtifactCleanupConfirmation, ProjectCatalogWorkspace } from "../src/web/ProjectCatalogWorkspace.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("项目目录工作区", () => {
+  it("清理弹窗展示可勾选运行和选择后的确认入口", () => {
+    const plan: ArtifactCleanupPlan = {
+      schemaVersion: "mobile-test-console.artifact-cleanup-plan.v1",
+      projectId: "demo-lynx",
+      mode: "plan",
+      generatedAt: "2026-08-11T00:00:00.000Z",
+      supported: true,
+      protectedRunIds: [],
+      items: [{
+        runId: "demo-20260810090447-5e5296f9",
+        taskIds: [],
+        status: "planned",
+        reason: "可手动清理",
+        relativePaths: ["demo-20260810090447-5e5296f9"],
+        files: 120,
+        bytes: 2 * 1024 * 1024 * 1024,
+      }],
+      estimatedBytes: 2 * 1024 * 1024 * 1024,
+      estimatedFiles: 120,
+      bytesFreed: 0,
+      filesRemoved: 0,
+      storage: {
+        artifactRoot: "/tmp/artifacts",
+        available: true,
+        writable: true,
+        totalBytes: 10,
+        usedBytes: 2,
+        freeBytes: 8,
+        mountPoint: "/tmp",
+        fileSystem: "test",
+        checkedAt: "2026-08-11T00:00:00.000Z",
+        issue: "",
+      },
+      warnings: [],
+      errors: [],
+    };
+
+    const markup = renderToStaticMarkup(createElement(ArtifactCleanupConfirmation, {
+      plan,
+      pending: false,
+      onCancel: vi.fn(),
+      onConfirm: vi.fn(),
+    }));
+
+    expect(markup).toContain("选择要清理的测试产物");
+    expect(markup).toContain("全选可清理运行");
+    expect(markup).toContain("demo-20260810090447-5e5296f9");
+    expect(markup).toContain("120 个文件");
+    expect(markup).toContain("清理所选内容");
+    expect(markup).toContain("disabled");
+  });
+
+  it("清理扫描期间立即展示可关闭的进度弹窗", () => {
+    const markup = renderToStaticMarkup(createElement(ArtifactCleanupConfirmation, {
+      plan: null,
+      pending: true,
+      onCancel: vi.fn(),
+      onConfirm: vi.fn(),
+    }));
+
+    expect(markup).toContain("正在扫描测试产物...");
+    expect(markup).toContain("扫描过程只读取文件信息");
+    expect(markup).toContain(">关闭<");
+  });
+
+  it("清理执行期间展示活动进度、已用时和处理规模", () => {
+    const plan: ArtifactCleanupPlan = {
+      schemaVersion: "mobile-test-console.artifact-cleanup-plan.v1",
+      projectId: "demo-lynx",
+      mode: "plan",
+      generatedAt: "2026-08-11T00:00:00.000Z",
+      supported: true,
+      protectedRunIds: [],
+      items: [{
+        runId: "demo-run",
+        taskIds: [],
+        status: "planned",
+        reason: "可手动清理",
+        relativePaths: ["demo-run"],
+        files: 120,
+        bytes: 2 * 1024 * 1024 * 1024,
+      }],
+      estimatedBytes: 2 * 1024 * 1024 * 1024,
+      estimatedFiles: 120,
+      bytesFreed: 0,
+      filesRemoved: 0,
+      storage: {
+        artifactRoot: "/tmp/artifacts",
+        available: true,
+        writable: true,
+        totalBytes: 10,
+        usedBytes: 2,
+        freeBytes: 8,
+        mountPoint: "/tmp",
+        fileSystem: "test",
+        checkedAt: "2026-08-11T00:00:00.000Z",
+        issue: "",
+      },
+      warnings: [],
+      errors: [],
+    };
+
+    const markup = renderToStaticMarkup(createElement(ArtifactCleanupConfirmation, {
+      plan,
+      pending: true,
+      activeRunIds: ["demo-run"],
+      onCancel: vi.fn(),
+      onConfirm: vi.fn(),
+    }));
+
+    expect(markup).toContain("正在清理测试产物");
+    expect(markup).toContain("已用时 00:00");
+    expect(markup).toContain("120");
+    expect(markup).toContain("2.0 GiB");
+    expect(markup).toContain("role=\"progressbar\"");
+    expect(markup).toContain("清理中 00:00");
+    expect(markup).toContain("处理中");
+  });
+
   it("展示登记入口、当前项目和接入步骤", () => {
     const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
       catalog,
@@ -146,6 +265,47 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("platform-oneclick");
     expect(markup).toContain("sample-platform-oneclick-runner");
     expect(markup).toContain("无需参数");
+  });
+
+  it("小程序项目卡展示运行环境、目标和项目 Runner 边界", () => {
+    const miniCatalog = structuredClone(catalog);
+    miniCatalog.projects[0] = {
+      ...miniCatalog.projects[0],
+      name: "SaaS 微信小程序",
+      integrationType: "mini-program",
+      platforms: [],
+      onboarding: miniCatalog.projects[0].onboarding.map(step => step.id === "devices"
+        ? {
+          ...step,
+          status: "verified",
+          summary: "已验证 1 个小程序运行环境",
+          tools: [{ id: "wechat-devtools", label: "微信开发者工具", executable: "node", status: "ready", path: "/tmp/saas", version: "wechat-devtools", detail: "runtime-ready", guidance: [] }],
+        }
+        : step),
+    };
+    const templateStep = miniCatalog.projects[0].onboarding.find(step => step.id === "template");
+    if (!templateStep) throw new Error("缺少接入配置步骤");
+    templateStep.status = "verified";
+    templateStep.testEntries = [{
+      id: "saas-smoke",
+      label: "Smoke 测试",
+      description: "",
+      runnerId: "saas-mini-program-runner",
+      platforms: [],
+      targetKeys: ["wechat-devtools"],
+      parameterLabels: [],
+    }];
+    const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
+      catalog: miniCatalog,
+      loading: false,
+      onRegister: vi.fn(), onSelectDirectory: vi.fn(), onSelectConfig: vi.fn(), onVerify: vi.fn(), onActivate: vi.fn(),
+      onPreviewInitialization: vi.fn(), onApplyInitialization: vi.fn(), onPreviewSetup: vi.fn(), onApplySetup: vi.fn(),
+      runtimeProjectId: "demo-lynx", onCloseAdd: vi.fn(), onMessage: vi.fn(),
+    }));
+    expect(markup).toContain("运行环境");
+    expect(markup).toContain("项目声明运行目标");
+    expect(markup).toContain("微信开发者工具");
+    expect(markup).toContain("小程序测试通过项目 Runner 调度");
   });
 
   it("当前运行项目提供删除入口和页面内确认弹窗", () => {

@@ -16,6 +16,49 @@ describe("QA 结果分析界面", () => {
     expect(markup).toContain("1 截图");
     expect(markup).toContain('aria-label="查看 case-one 失败详情"');
     expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain("测试条目");
+    expect(markup).toContain("隐藏图片");
+    expect(markup).toContain('aria-controls="analysis-run-list"');
+    expect(markup).toContain('/api/tasks/task-one/artifacts/artifact-one');
+    expect(markup).toContain('class="analysis-run-preview"');
+  });
+
+  it("概览支持隐藏图片并停止渲染图片节点", () => {
+    const markup = renderToStaticMarkup(createElement(ResultPanel, {
+      taskId: "task-one",
+      tab: "overview",
+      state: { taskId: "task-one", loading: false, result, error: "" },
+      initialOverviewImagesVisible: false,
+      onCopy: vi.fn(),
+    }));
+
+    expect(markup).toContain("显示图片");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).not.toContain("<img");
+  });
+
+  it("概览按测试条目展示各自的截图", () => {
+    const resultWithMultipleRuns: TaskResult = {
+      ...result,
+      total: 2,
+      caseRunCount: 2,
+      runs: [
+        result.runs[0],
+        {
+          ...result.runs[0],
+          runId: "run-one-case-two",
+          caseRunId: "run-one-case-two",
+          caseId: "case-two",
+          screenshots: [{ id: "artifact-two", label: "case-two.png", mimeType: "image/png", sizeBytes: 200 }],
+        },
+      ],
+    };
+    const markup = renderResult("overview", "", resultWithMultipleRuns);
+
+    expect(markup).toContain('alt="case-one screen.png"');
+    expect(markup).toContain('/api/tasks/task-one/artifacts/artifact-one');
+    expect(markup).toContain('alt="case-two case-two.png"');
+    expect(markup).toContain('/api/tasks/task-one/artifacts/artifact-two');
   });
 
   it("选中失败用例后展示参数、页面事件和定位分类", () => {

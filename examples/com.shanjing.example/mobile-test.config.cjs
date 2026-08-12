@@ -33,6 +33,15 @@ module.exports = {
   },
   projectProviderPlugins: [{ module: "./qa/lynx-project-provider.cjs" }],
   runnerPlugins: [{ module: "./qa/lynx-runner.cjs" }],
+  artifactRetention: {
+    enabled: true,
+    autoCleanup: false,
+    artifactsRoot: "qa/artifacts",
+    cleanup: {
+      executable: "node",
+      args: ["qa/artifact-cleanup.cjs", "--request", "{{cleanup.requestPath}}", "--artifacts-root", "{{results.artifactsRoot}}"],
+    },
+  },
   tests: [{
     id: "lynx-smoke",
     label: "Lynx 单页 Smoke",

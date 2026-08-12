@@ -11,6 +11,8 @@ import type {
   ApplyProjectSetupRequest,
   RegisterProjectRequest,
   AccountProfileRecordingSummary,
+  ArtifactCleanupPlan,
+  ArtifactRetentionSnapshot,
   AccountProfileProvider,
   AccountProfileReplay,
   AccountProfileSourceResponse,
@@ -158,6 +160,25 @@ export function fetchProjectCatalogDetail(projectId: string): Promise<ProjectCat
   return request<ProjectCatalogDetailResponse>(`/api/projects/${encodeURIComponent(projectId)}/detail`);
 }
 
+export function fetchArtifactRetention(): Promise<ArtifactRetentionSnapshot> {
+  return request<ArtifactRetentionSnapshot>("/api/artifact-retention");
+}
+
+export function previewArtifactCleanup(): Promise<ArtifactCleanupPlan> {
+  return request<ArtifactCleanupPlan>("/api/artifact-retention/preview", { method: "POST" });
+}
+
+export function inventoryArtifactCleanup(): Promise<ArtifactCleanupPlan> {
+  return request<ArtifactCleanupPlan>("/api/artifact-retention/inventory", { method: "POST" });
+}
+
+export function applyArtifactCleanup(runIds?: string[]): Promise<ArtifactCleanupPlan> {
+  return request<ArtifactCleanupPlan>("/api/artifact-retention/apply", {
+    method: "POST",
+    body: JSON.stringify(runIds ? { runIds } : {}),
+  });
+}
+
 export function selectProjectCatalogDirectory(): Promise<ProjectConfigSelection> {
   return request<ProjectConfigSelection>("/api/projects/select-directory", { method: "POST" });
 }
@@ -271,6 +292,13 @@ export function stopTask(taskId: string): Promise<{ task: TestTask }> {
 
 export function deleteTask(taskId: string): Promise<{ task: TestTask }> {
   return request<{ task: TestTask }>(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+}
+
+export function setTaskRetained(taskId: string, retained: boolean): Promise<{ task: TestTask }> {
+  return request<{ task: TestTask }>(`/api/tasks/${encodeURIComponent(taskId)}/retention`, {
+    method: "PUT",
+    body: JSON.stringify({ retained }),
+  });
 }
 
 export function fetchRepairs(): Promise<RepairJobsResponse> {

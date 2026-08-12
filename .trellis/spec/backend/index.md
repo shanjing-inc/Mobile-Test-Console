@@ -19,7 +19,7 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Error Handling](./error-handling.md) | Error types, handling strategies | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Code standards, forbidden patterns | To fill |
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
-| [Mobile Test Console Integration](./mobile-test-console-integration.md) | Platform core, Runner SDK, compatibility, and Fanli adapter contracts | Active |
+| [Mobile Test Console Integration](./mobile-test-console-integration.md) | App / mini-program targets, scheduling, plugins, and Result Bundle contracts | Active |
 
 ---
 

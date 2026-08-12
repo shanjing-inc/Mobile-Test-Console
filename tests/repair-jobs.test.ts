@@ -138,6 +138,26 @@ describe("Codex 修复任务", () => {
     await fixture.tasks.shutdown();
   });
 
+  it("回收过期终态 worktree 前归档修复补丁并保留审计记录", async () => {
+    const fixture = await createFixture("pass");
+    const created = await fixture.repairs.create(fixture.originalTask.id);
+    const fixed = await waitForRepair(fixture.repairs, created.repairJobId, "fixed");
+    const originalWorktree = fixed.worktreePath;
+
+    const cleanup = await fixture.repairs.cleanupExpiredWorktrees(0);
+    const archived = fixture.repairs.get(fixed.repairJobId)!;
+
+    expect(cleanup).toMatchObject({ removed: 1, errors: [] });
+    expect(cleanup.bytesFreed).toBeGreaterThan(0);
+    expect(archived.worktreePath).toBe("");
+    expect(archived.patchPath).toContain(path.join("repair-snapshots", fixed.repairJobId, "repair.patch"));
+    expect(await fs.readFile(archived.patchPath, "utf8")).toBe(fixed.diff);
+    await expect(fs.stat(originalWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(archived.logs.at(-1)).toContain("已回收过期修复工作目录");
+    await fixture.repairs.shutdown();
+    await fixture.tasks.shutdown();
+  }, 15_000);
+
   it("复测前置条件失败时保留修复轮次并提示处理环境问题", async () => {
     const fixture = await createFixture("precondition-fail");
     const created = await fixture.repairs.create(fixture.originalTask.id);

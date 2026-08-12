@@ -313,6 +313,38 @@ export class RepairJobManager {
     await this.persist();
   }
 
+  async cleanupExpiredWorktrees(maxAgeDays: number): Promise<{ removed: number; bytesFreed: number; errors: string[] }> {
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1_000;
+    const terminalStatuses = new Set<RepairJobStatus>(["fixed", "blocked", "failed", "cancelled"]);
+    const result = { removed: 0, bytesFreed: 0, errors: [] as string[] };
+    for (const job of this.jobs.values()) {
+      if (!terminalStatuses.has(job.status) || !job.worktreePath || Date.parse(job.updatedAt) > cutoff) continue;
+      if (this.processes.has(job.repairJobId) || this.waitTimers.has(job.repairJobId)) continue;
+      try {
+        const bytes = await measureDirectory(job.worktreePath);
+        const snapshotDir = path.join(this.config.stateDir, "repair-snapshots", job.repairJobId);
+        const archivedPatchPath = path.join(snapshotDir, "repair.patch");
+        const patchExists = await fs.stat(job.patchPath).then(stat => stat.isFile()).catch(() => false);
+        if (patchExists) {
+          await fs.mkdir(snapshotDir, { recursive: true });
+          await fs.copyFile(job.patchPath, archivedPatchPath);
+        }
+        await this.worktreeManager(job.snapshot.workspace).cleanup(job.worktreePath);
+        await removeOrphanedWorktree(job.worktreePath, this.config.codexRepair?.worktreeRoot
+          || path.join(this.config.stateDir, "repair-worktrees"));
+        job.worktreePath = "";
+        if (patchExists) job.patchPath = archivedPatchPath;
+        this.appendLog(job, `[cleanup] 已回收过期修复工作目录，释放 ${formatBytes(bytes)}`);
+        result.removed += 1;
+        result.bytesFreed += bytes;
+      } catch (error) {
+        result.errors.push(`${job.repairJobId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (result.removed > 0) await this.persist();
+    return result;
+  }
+
   private async runAttempt(repairJobId: string): Promise<void> {
     const job = this.jobs.get(repairJobId);
     if (!job || job.status === "cancelled") return;
@@ -854,6 +886,41 @@ export class RepairJobManager {
       try { process.kill(pid, signal); } catch { /* 进程已结束。 */ }
     }
   }
+}
+
+async function measureDirectory(directory: string): Promise<number> {
+  const stack = [directory];
+  let bytes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries;
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      const entryPath = path.join(current, entry.name);
+      const stat = await fs.lstat(entryPath);
+      if (stat.isDirectory()) stack.push(entryPath);
+      else bytes += stat.size;
+    }
+  }
+  return bytes;
+}
+
+async function removeOrphanedWorktree(worktreePath: string, worktreeRoot: string): Promise<void> {
+  const relative = path.relative(path.resolve(worktreeRoot), path.resolve(worktreePath));
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ConsoleError("REPAIR_WORKTREE_CLEANUP_FAILED", `修复 worktree 路径越界: ${worktreePath}`, 500);
+  }
+  await fs.rm(worktreePath, { recursive: true, force: true });
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 const MAX_FAILURE_CONTEXT_LENGTH = 12_000;

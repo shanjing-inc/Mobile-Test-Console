@@ -1,9 +1,9 @@
 {
-  "id": "mtc-mini-program-planning",
-  "name": "mtc-mini-program-planning",
-  "title": "评估 MTC 并规划小程序测试支持",
+  "id": "test-artifact-retention-cleanup",
+  "name": "test-artifact-retention-cleanup",
+  "title": "brainstorm: 测试产物保留与清理策略",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

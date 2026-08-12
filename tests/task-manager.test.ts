@@ -9,7 +9,7 @@ import {
   type RunnerResolver,
   type RunnerResult,
 } from "../src/runner/sdk.js";
-import type { Device, TaskStatus } from "../src/shared/contracts.js";
+import type { Device, MiniProgramRunTarget, TaskStatus } from "../src/shared/contracts.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { ConsoleError } from "../src/server/errors.js";
 import { StateStore } from "../src/server/state-store.js";
@@ -363,7 +363,82 @@ describe("任务管理器", () => {
     const manager = new TaskManager(createConfig(dir), store);
     await manager.initialize();
 
-    expect(manager.list()[0]).toMatchObject({ status: "interrupted", phase: "服务重启，任务已中断" });
+    expect(manager.list()[0]).toMatchObject({
+      status: "interrupted",
+      phase: "服务重启，任务已中断",
+      target: { key: device.key, kind: "app", label: device.name },
+    });
+    await manager.shutdown();
+  });
+
+  it("按小程序运行目标创建任务、冻结 target 并使用并发锁", async () => {
+    const dir = await createTempDir("mtc-mini-target-task-");
+    const config = createConfig(dir);
+    config.project.integrationType = "mini-program";
+    config.deviceProviders = [];
+    config.tests = [{
+      id: "mini-long",
+      label: "小程序 Smoke",
+      description: "",
+      platforms: [],
+      targetKeys: ["wechat-devtools", "wechat-devtools-secondary"],
+      parameters: [],
+      commands: {
+        default: {
+          executable: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)", "{{target.runtime}}"],
+        },
+      },
+    }];
+    const target: MiniProgramRunTarget = {
+      key: "wechat-devtools",
+      kind: "mini-program",
+      label: "微信开发者工具",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-demo",
+      concurrencyKey: "mini-wechat",
+    };
+    const sameRuntimeTarget: MiniProgramRunTarget = {
+      ...target,
+      key: "wechat-devtools-secondary",
+      label: "微信开发者工具备用入口",
+    };
+    const manager = new TaskManager(config, new StateStore(dir));
+    await manager.initialize();
+
+    await expect(manager.start(
+      { testId: "mini-long", targetKeys: [target.key, sameRuntimeTarget.key], parameters: {} },
+      [],
+      undefined,
+      undefined,
+      undefined,
+      [target, sameRuntimeTarget],
+    )).rejects.toMatchObject({ code: "TARGET_BUSY" });
+
+    const [created] = await manager.start(
+      { testId: "mini-long", targetKeys: [target.key], parameters: {} },
+      [],
+      undefined,
+      undefined,
+      undefined,
+      [target],
+    );
+    const running = await waitForStatus(manager, created.id, "running");
+    expect(running).toMatchObject({
+      target,
+      device: { key: target.key, name: target.label },
+    });
+    await expect(manager.start(
+      { testId: "mini-long", targetKeys: [target.key], parameters: {} },
+      [],
+      undefined,
+      undefined,
+      undefined,
+      [target],
+    )).rejects.toMatchObject({ code: "TARGET_BUSY" });
+    await manager.stop(created.id);
+    await expect(waitForStatus(manager, created.id, "cancelled")).resolves.toMatchObject({ target });
     await manager.shutdown();
   });
 

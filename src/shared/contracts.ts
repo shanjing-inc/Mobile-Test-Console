@@ -1,7 +1,10 @@
 export const PLATFORMS = ["android", "ios", "harmony"] as const;
 export const PAGE_PARAMETER_PLATFORMS = ["all", ...PLATFORMS] as const;
 
-export type Platform = (typeof PLATFORMS)[number];
+export type DevicePlatform = (typeof PLATFORMS)[number];
+/** 兼容既有设备相关 API；新代码优先使用 DevicePlatform。 */
+export type Platform = DevicePlatform;
+export type TargetPlatform = string;
 export type PageParameterPlatform = (typeof PAGE_PARAMETER_PLATFORMS)[number];
 
 export type DeviceConnectionState =
@@ -28,6 +31,42 @@ export interface TestTarget {
   connectorId?: string;
   /** 项目适配器可以放置领域字段，平台只透传并持久化。 */
   extensions?: Record<string, unknown>;
+}
+
+export interface AppRunTarget {
+  key: string;
+  kind: "app";
+  label: string;
+  platform: DevicePlatform;
+  runtime: "native";
+  concurrencyKey: string;
+  device: Device;
+}
+
+export interface MiniProgramRunTarget {
+  key: string;
+  kind: "mini-program";
+  label: string;
+  platform: TargetPlatform;
+  runtime: string;
+  appId: string;
+  concurrencyKey: string;
+  extensions?: Record<string, unknown>;
+}
+
+/** 创建任务时冻结的执行资源。 */
+export type RunTarget = AppRunTarget | MiniProgramRunTarget;
+
+export function appRunTargetOf(device: Device): AppRunTarget {
+  return {
+    key: device.key,
+    kind: "app",
+    label: device.name,
+    platform: device.platform,
+    runtime: "native",
+    concurrencyKey: device.key,
+    device: structuredClone(device),
+  };
 }
 
 export type ConnectorCapabilityId =
@@ -172,10 +211,30 @@ export interface ProjectTestResultContract {
   artifactsRoot: string;
 }
 
+export interface ProjectTestingTargetHealthCheck {
+  executable: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface ProjectTestingTarget {
+  key: string;
+  label: string;
+  kind: "mini-program";
+  platform: TargetPlatform;
+  runtime: string;
+  appId: string;
+  concurrencyKey: string;
+  healthCheck?: ProjectTestingTargetHealthCheck;
+  extensions?: Record<string, unknown>;
+}
+
 /** 项目配置声明的测试边界。平台只校验、调度和展示这些声明。 */
 export interface ProjectTestingManifest {
   environments: ProjectTestEnvironment[];
   capabilities: ProjectTestCapabilityDeclaration[];
+  targets?: ProjectTestingTarget[];
   result?: ProjectTestResultContract;
 }
 
@@ -188,6 +247,7 @@ export interface PublicTestDefinition {
   providerId?: string;
   requiredCapabilities: string[];
   platforms: Platform[];
+  targetKeys?: string[];
   parameters: TestParameterDefinition[];
 }
 
@@ -211,6 +271,9 @@ export interface TestTask {
   testLabel: string;
   /** 创建任务时冻结的 Runner 选择；旧状态文件允许省略。 */
   runnerId?: string;
+  /** 新任务的权威执行目标；历史状态加载时由 device 补齐。 */
+  target?: RunTarget;
+  /** App 任务兼容字段；小程序任务使用虚拟设备占位以兼容历史展示与存储。 */
   device: Device;
   parameters: Record<string, string>;
   status: TaskStatus;
@@ -226,6 +289,75 @@ export interface TestTask {
   /** 修复验证任务运行在独立 worktree 时记录其代码根目录。 */
   workspaceRoot?: string;
   repairJobId?: string;
+  /** 用户显式保留的运行不会进入自动或手动清理候选。 */
+  retained?: boolean;
+}
+
+export interface ArtifactRetentionPolicy {
+  maxAgeDays: number;
+  maxRuns: number;
+  maxBytes: number;
+  minimumFreeBytes: number;
+  keepSuccessfulPerPlatform: number;
+  keepFailedPerPlatform: number;
+  repairWorktreeMaxAgeDays: number;
+}
+
+export interface ArtifactStorageSnapshot {
+  artifactRoot: string;
+  available: boolean;
+  writable: boolean;
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  mountPoint: string;
+  fileSystem: string;
+  checkedAt: string;
+  issue: string;
+}
+
+export interface ArtifactCleanupPlanItem {
+  runId: string;
+  taskIds: string[];
+  status: "planned" | "deleted" | "missing" | "skipped" | "partial" | "failed";
+  reason: string;
+  relativePaths: string[];
+  files: number;
+  bytes: number;
+}
+
+export interface ArtifactCleanupPlan {
+  schemaVersion: "mobile-test-console.artifact-cleanup-plan.v1";
+  projectId: string;
+  mode: "plan" | "apply";
+  generatedAt: string;
+  supported: boolean;
+  protectedRunIds: string[];
+  items: ArtifactCleanupPlanItem[];
+  estimatedBytes: number;
+  estimatedFiles: number;
+  bytesFreed: number;
+  filesRemoved: number;
+  storage: ArtifactStorageSnapshot;
+  warnings: string[];
+  errors: string[];
+}
+
+export const ARTIFACT_RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export interface ArtifactCleanupApplyRequest {
+  runIds?: string[];
+}
+
+export interface ArtifactRetentionSnapshot {
+  schemaVersion: "mobile-test-console.artifact-retention.v1";
+  enabled: boolean;
+  autoCleanup: boolean;
+  policy: ArtifactRetentionPolicy;
+  storage: ArtifactStorageSnapshot;
+  retainedRunIds: string[];
+  latestPlan: ArtifactCleanupPlan | null;
+  latestCleanup: ArtifactCleanupPlan | null;
 }
 
 export interface TaskResultArtifact {
@@ -324,6 +456,11 @@ export interface ProjectSummary {
 
 export const PROJECT_INTEGRATION_TYPES = ["lynx-app", "app", "mini-program"] as const;
 export type ProjectIntegrationType = (typeof PROJECT_INTEGRATION_TYPES)[number];
+export type ProjectFamily = "app" | "mini-program";
+
+export function projectFamilyOf(integrationType: ProjectIntegrationType): ProjectFamily {
+  return integrationType === "mini-program" ? "mini-program" : "app";
+}
 
 export const PROJECT_EXECUTION_PREREQUISITE_STEP_IDS = [
   "project",
@@ -363,6 +500,7 @@ export interface ProjectTestEntryCheck {
   description: string;
   runnerId: string;
   platforms: Platform[];
+  targetKeys?: string[];
   parameterLabels: string[];
 }
 
@@ -482,7 +620,7 @@ export interface ProjectProviderManifestSummary {
   scope: {
     targetKinds: TargetKind[];
     runtimes?: string[];
-    platforms?: Platform[];
+    platforms?: TargetPlatform[];
   };
   capabilities: Array<{ id: string; version: number }>;
 }
@@ -546,6 +684,7 @@ export interface ConsoleSnapshot {
   connectors?: ConnectorCapabilityManifest[];
   projectProviders?: ProjectProviderManifestSummary[];
   devices: Device[];
+  targets?: RunTarget[];
   deviceErrors: Partial<Record<Platform, string>>;
   deviceDiscoveryPending?: boolean;
   tests: PublicTestDefinition[];
@@ -557,7 +696,8 @@ export interface ConsoleSnapshot {
 
 export interface StartTasksRequest {
   testId: string;
-  deviceKeys: string[];
+  deviceKeys?: string[];
+  targetKeys?: string[];
   parameters: Record<string, string>;
 }
 

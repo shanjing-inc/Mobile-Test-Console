@@ -15,6 +15,7 @@ import {
   type ProjectIntegrationType,
   type ProjectTestingManifest,
   type RepairJob,
+  type RunTarget,
   type TestTask,
 } from "../shared/contracts.js";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
@@ -45,6 +46,34 @@ const taskResultsSchema = z.object({
   provider: commandSchema,
 }).optional();
 
+const artifactRetentionSchema = z.object({
+  enabled: z.boolean().default(true),
+  autoCleanup: z.boolean().default(false),
+  artifactsRoot: z.string().min(1).optional(),
+  cleanup: commandSchema.optional(),
+  policy: z.object({
+    maxAgeDays: z.number().int().min(1).default(7),
+    maxRuns: z.number().int().min(1).default(20),
+    maxBytes: z.number().int().positive().default(10 * 1024 * 1024 * 1024),
+    minimumFreeBytes: z.number().int().nonnegative().default(5 * 1024 * 1024 * 1024),
+    keepSuccessfulPerPlatform: z.number().int().nonnegative().default(1),
+    keepFailedPerPlatform: z.number().int().nonnegative().default(3),
+    repairWorktreeMaxAgeDays: z.number().int().min(1).default(7),
+  }).default({}),
+}).optional();
+
+const testingTargetSchema = z.object({
+  key: z.string().regex(/^[a-z][a-z0-9-]*$/),
+  label: z.string().min(1),
+  kind: z.literal("mini-program"),
+  platform: z.string().min(1),
+  runtime: z.string().min(1),
+  appId: z.string().min(1),
+  concurrencyKey: z.string().min(1),
+  healthCheck: commandSchema.optional(),
+  extensions: z.record(z.unknown()).optional(),
+});
+
 const testingSchema = z.object({
   environments: z.array(z.object({
     id: z.string().regex(/^[a-z][a-z0-9-]*$/),
@@ -59,6 +88,7 @@ const testingSchema = z.object({
     providerId: z.string().regex(RUNNER_ID_PATTERN),
     required: z.boolean().default(true),
   })).default([]),
+  targets: z.array(testingTargetSchema).default([]),
 }).default({});
 
 const pageParametersSchema = z.object({
@@ -211,7 +241,8 @@ const testSchema = z.object({
   runnerId: z.string().regex(RUNNER_ID_PATTERN).default(LEGACY_COMMAND_RUNNER_ID),
   providerId: z.string().regex(RUNNER_ID_PATTERN).optional(),
   requiredCapabilities: z.array(z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)).default([]),
-  platforms: z.array(z.enum(PLATFORMS)).min(1),
+  platforms: z.array(z.enum(PLATFORMS)).default([]),
+  targetKeys: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)).default([]),
   parameters: z.array(testParameterSchema).default([]),
   commands: z.object({
     default: commandSchema.optional(),
@@ -235,6 +266,7 @@ export const configSchema = z.object({
   lifecycle: lifecycleSchema,
   taskDeletion: taskDeletionSchema,
   taskResults: taskResultsSchema,
+  artifactRetention: artifactRetentionSchema,
   pageParameters: pageParametersSchema,
   businessScripts: businessScriptsSchema,
   accountProfiles: accountProfilesSchema,
@@ -268,6 +300,17 @@ export const configSchema = z.object({
       });
     }
     capabilityIds.add(capability.id);
+  }
+  const targetKeys = new Set<string>();
+  for (const [targetIndex, target] of config.testing.targets.entries()) {
+    if (targetKeys.has(target.key)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `运行目标 key 重复: ${target.key}`,
+        path: ["testing", "targets", targetIndex, "key"],
+      });
+    }
+    targetKeys.add(target.key);
   }
   const runnerPluginModules = new Set<string>();
   for (const [pluginIndex, plugin] of config.runnerPlugins.entries()) {
@@ -312,6 +355,30 @@ export const configSchema = z.object({
       });
     }
     testIds.add(test.id);
+    if (test.platforms.length === 0 && test.targetKeys.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "测试至少需要声明 platforms 或 targetKeys",
+        path: ["tests", testIndex],
+      });
+    }
+    const referencedTargetKeys = new Set<string>();
+    for (const [targetKeyIndex, targetKey] of test.targetKeys.entries()) {
+      if (referencedTargetKeys.has(targetKey)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `测试运行目标重复: ${targetKey}`,
+          path: ["tests", testIndex, "targetKeys", targetKeyIndex],
+        });
+      } else if (!targetKeys.has(targetKey)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `测试引用了未声明的运行目标: ${targetKey}`,
+          path: ["tests", testIndex, "targetKeys", targetKeyIndex],
+        });
+      }
+      referencedTargetKeys.add(targetKey);
+    }
     if (test.runnerId === LEGACY_COMMAND_RUNNER_ID && !Object.values(test.commands).some(Boolean)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -375,10 +442,11 @@ export type ProjectConfigInput = z.input<typeof configSchema>;
 
 export type CommandDefinition = z.infer<typeof commandSchema>;
 type ParsedTestDefinition = z.infer<typeof testSchema>;
-export type TestDefinition = Omit<ParsedTestDefinition, "runnerId" | "kind" | "requiredCapabilities"> & {
+export type TestDefinition = Omit<ParsedTestDefinition, "runnerId" | "kind" | "requiredCapabilities" | "targetKeys"> & {
   runnerId?: string;
   kind?: ParsedTestDefinition["kind"];
   requiredCapabilities?: string[];
+  targetKeys?: string[];
 };
 export type DevicePreparationDefinition = z.infer<typeof devicePreparationSchema>;
 type ParsedRunnerPluginDefinition = z.infer<typeof runnerPluginSchema>;
@@ -413,6 +481,21 @@ export interface LoadedProjectConfig {
     schemaVersion?: string;
     artifactsRoot: string;
     provider: CommandDefinition;
+  };
+  artifactRetention?: {
+    enabled: boolean;
+    autoCleanup: boolean;
+    artifactsRoot?: string;
+    cleanup?: CommandDefinition;
+    policy: {
+      maxAgeDays: number;
+      maxRuns: number;
+      maxBytes: number;
+      minimumFreeBytes: number;
+      keepSuccessfulPerPlatform: number;
+      keepFailedPerPlatform: number;
+      repairWorktreeMaxAgeDays: number;
+    };
   };
   pageParameters?: {
     provider: CommandDefinition;
@@ -506,6 +589,14 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
       ...parsed.data.taskResults,
       artifactsRoot: path.resolve(projectRoot, parsed.data.taskResults.artifactsRoot),
     } : undefined,
+    artifactRetention: parsed.data.artifactRetention ? {
+      ...parsed.data.artifactRetention,
+      artifactsRoot: parsed.data.artifactRetention.artifactsRoot
+        ? path.resolve(projectRoot, parsed.data.artifactRetention.artifactsRoot)
+        : parsed.data.taskResults
+          ? path.resolve(projectRoot, parsed.data.taskResults.artifactsRoot)
+          : undefined,
+    } : undefined,
     testing: {
       ...parsed.data.testing,
       ...(parsed.data.taskResults ? {
@@ -552,6 +643,7 @@ export function toPublicTests(tests: TestDefinition[]): PublicTestDefinition[] {
     ...(test.providerId ? { providerId: test.providerId } : {}),
     requiredCapabilities: [...(test.requiredCapabilities ?? [])],
     platforms: test.platforms,
+    targetKeys: [...(test.targetKeys ?? [])],
     parameters: test.parameters,
   }));
 }
@@ -641,6 +733,50 @@ export function resolveOptionalCommand(
   return resolveCommandDefinition(config, definition, values, workspaceRoot);
 }
 
+export function resolveTargetCommand(
+  config: LoadedProjectConfig,
+  test: TestDefinition,
+  target: RunTarget,
+  task: { id: string; runId: string },
+  parameters: Record<string, string>,
+  workspaceRoot = config.project.root,
+): ResolvedCommand | null {
+  if (target.kind === "app") {
+    return resolveOptionalCommand(config, test, target.device, task, parameters, workspaceRoot);
+  }
+  const definition = test.commands.default;
+  if (!definition) return null;
+  return resolveCommandDefinition(config, definition, {
+    ...buildCommonTemplateValues(config, workspaceRoot),
+    ...buildTargetTemplateValues(target),
+    "task.id": task.id,
+    "task.runId": task.runId,
+    ...Object.fromEntries(Object.entries(parameters).map(([key, value]) => [`params.${key}`, value])),
+  }, workspaceRoot);
+}
+
+export function resolveTargetHealthCheckCommand(
+  config: LoadedProjectConfig,
+  targetKey: string,
+): ResolvedCommand | null {
+  const target = config.testing?.targets?.find(item => item.key === targetKey);
+  if (!target?.healthCheck) return null;
+  const runTarget: RunTarget = {
+    key: target.key,
+    kind: "mini-program",
+    label: target.label,
+    platform: target.platform,
+    runtime: target.runtime,
+    appId: target.appId,
+    concurrencyKey: target.concurrencyKey,
+    ...(target.extensions ? { extensions: structuredClone(target.extensions) } : {}),
+  };
+  return resolveCommandDefinition(config, target.healthCheck, {
+    ...buildCommonTemplateValues(config),
+    ...buildTargetTemplateValues(runTarget),
+  });
+}
+
 export function resolveLifecycleCommand(
   config: LoadedProjectConfig,
   phase: "startup" | "shutdown",
@@ -664,6 +800,20 @@ export function resolveTaskDeletionCommand(
   if (!definition) return null;
 
   return resolveCommandDefinition(config, definition, buildTaskTemplateValues(config, task));
+}
+
+export function resolveArtifactCleanupCommand(
+  config: LoadedProjectConfig,
+  requestPath: string,
+): ResolvedCommand | null {
+  const definition = config.artifactRetention?.cleanup;
+  const artifactsRoot = config.artifactRetention?.artifactsRoot ?? config.taskResults?.artifactsRoot;
+  if (!definition || !artifactsRoot) return null;
+  return resolveCommandDefinition(config, definition, {
+    ...buildCommonTemplateValues(config),
+    "cleanup.requestPath": requestPath,
+    "results.artifactsRoot": artifactsRoot,
+  });
 }
 
 export function resolveDevicePreparationCommand(
@@ -782,15 +932,7 @@ export function resolveAccountProfileProviderCommand(
 
 function buildTaskTemplateValues(config: LoadedProjectConfig, task: TestTask): Record<string, string> {
   const values: Record<string, string> = {
-    projectRoot: config.project.root,
-    configPath: config.configPath,
-    "process.pid": String(process.pid),
-    "device.id": task.device.id,
-    "device.key": task.device.key,
-    "device.name": task.device.name,
-    "device.manufacturer": task.device.manufacturer ?? "",
-    "device.platform": task.device.platform,
-    "device.type": task.device.type,
+    ...buildCommonTemplateValues(config),
     "task.id": task.id,
     "task.runId": task.runId,
     "task.testId": task.testId,
@@ -798,10 +940,48 @@ function buildTaskTemplateValues(config: LoadedProjectConfig, task: TestTask): R
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
     "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
   };
+  const target = task.target;
+  if (target) Object.assign(values, buildTargetTemplateValues(target));
+  if (task.device) {
+    Object.assign(values, {
+      "device.id": task.device.id,
+      "device.key": task.device.key,
+      "device.name": task.device.name,
+      "device.manufacturer": task.device.manufacturer ?? "",
+      "device.platform": task.device.platform,
+      "device.type": task.device.type,
+    });
+  }
   for (const [key, value] of Object.entries(task.parameters)) {
     values[`params.${key}`] = value;
   }
   return values;
+}
+
+function buildCommonTemplateValues(
+  config: LoadedProjectConfig,
+  workspaceRoot = config.project.root,
+): Record<string, string> {
+  return {
+    projectRoot: workspaceRoot,
+    configPath: config.configPath,
+    "process.pid": String(process.pid),
+    "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
+    "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
+    "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
+  };
+}
+
+function buildTargetTemplateValues(target: RunTarget): Record<string, string> {
+  return {
+    "target.key": target.key,
+    "target.kind": target.kind,
+    "target.label": target.label,
+    "target.platform": target.platform,
+    "target.runtime": target.runtime,
+    "target.appId": target.kind === "mini-program" ? target.appId : "",
+    "target.concurrencyKey": target.concurrencyKey,
+  };
 }
 
 function resolveCommandDefinition(
