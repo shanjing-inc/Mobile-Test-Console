@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"后端开发规范索引与移动测试控制台集成规范入口"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"Mobile Test Console API、Codex RepairJob 和跨仓库 replay 契约"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"RepairJob 跨持久化、服务、API、前端和 Fanli runner 的数据流检查"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"配置模板、状态机和结果诊断入口的复用检查"}
+{"file":".trellis/tasks/08-04-mobile-test-console-codex-loop/research/codex-integration.md","reason":"Codex CLI JSONL、sandbox、output schema 和 app-server 调研结论"}

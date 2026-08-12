@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Device } from "../src/shared/contracts.js";
+import { V1_PROJECT_ADAPTER_DEFAULTS } from "../src/compat/v1-project-adapter.js";
+import { EMPTY_PROJECT_ADAPTER } from "../src/shared/project-adapter-defaults.js";
 import {
   loadProjectConfig,
   resolveCommand,
@@ -12,6 +14,7 @@ import {
   resolvePageParameterProviderCommand,
   resolveTaskDeletionCommand,
   resolveTaskResultCommand,
+  toPublicTests,
   validateParameters,
   type LoadedProjectConfig,
 } from "../src/server/config.js";
@@ -23,6 +26,69 @@ afterEach(async () => {
 });
 
 describe("项目配置", () => {
+  it("从单一配置读取环境、能力、测试类型和结果契约", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-testing-manifest-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      testing: {
+        environments: [{ id: "qa", label: "QA", description: "QA 环境" }],
+        capabilities: [{ id: "page.execute", label: "页面执行", providerId: "demo-provider", description: "执行页面测试" }]
+      },
+      taskResults: {
+        schemaVersion: "test-analysis.run.v1",
+        artifactsRoot: "qa/results",
+        provider: { executable: "node", args: ["result.cjs"] }
+      },
+      tests: [{
+        id: "pages", label: "页面测试", kind: "page", runnerId: "demo-runner",
+        providerId: "demo-provider", requiredCapabilities: ["page.execute"], platforms: ["android"],
+        parameters: [{ id: "pages", label: "页面", type: "page-selection", source: "page-parameters", defaultValue: "all", presets: [{ value: "all", label: "全部", filter: {} }] }]
+      }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+    expect(config.testing).toMatchObject({
+      environments: [{ id: "qa", label: "QA", description: "QA 环境" }],
+      capabilities: [{ id: "page.execute", providerId: "demo-provider", required: true }],
+      result: { schemaVersion: "test-analysis.run.v1", artifactsRoot: path.join(dir, "qa/results") },
+    });
+    expect(toPublicTests(config.tests)[0]).toMatchObject({
+      kind: "page",
+      providerId: "demo-provider",
+      requiredCapabilities: ["page.execute"],
+    });
+    expect(validateParameters(config.tests[0], { pages: "pageHome,pageOrders" })).toEqual({
+      pages: "pageHome,pageOrders",
+    });
+  });
+
+  it("重新读取修改后的 CJS 配置元数据", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-config-reload-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    const write = (name: string, integrationType: string, providers: string[]) => fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "reload-app", name: "${name}", root: ".", integrationType: "${integrationType}" },
+      deviceProviders: ${JSON.stringify(providers)},
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }],
+    };\n`);
+
+    await write("Reload v1", "app", ["android"]);
+    expect(await loadProjectConfig(configPath)).toMatchObject({
+      project: { name: "Reload v1", integrationType: "app" },
+      deviceProviders: ["android"],
+    });
+
+    await write("Reload v2", "lynx-app", ["ios", "harmony"]);
+    expect(await loadProjectConfig(configPath)).toMatchObject({
+      project: { name: "Reload v2", integrationType: "lynx-app" },
+      deviceProviders: ["ios", "harmony"],
+    });
+  });
+
   it("加载独立 CJS 配置并解析相对项目路径", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-config-"));
     tempDirs.push(dir);
@@ -79,12 +145,15 @@ describe("项目配置", () => {
     };`);
 
     const config = await loadProjectConfig(configPath);
+    expect(config.project.integrationType).toBe("app");
     expect(config.project.root).toBe(path.resolve(dir, "../app"));
     expect(config.iosSimulator).toEqual({
       workspace: path.resolve(dir, "../app/ios/Demo.xcworkspace"),
       scheme: "Demo",
     });
     expect(config.tests[0].description).toBe("");
+    expect(config.tests[0].runnerId).toBe("legacy-command-runner");
+    expect(toPublicTests(config.tests)[0].runnerId).toBe("legacy-command-runner");
     const suiteParameter = config.tests[0].parameters[0];
     expect(suiteParameter.type).toBe("select");
     if (suiteParameter.type !== "select") throw new Error("测试套件参数类型错误");
@@ -139,6 +208,124 @@ describe("项目配置", () => {
       worktreeRoot: path.resolve(dir, "../app/.repair-worktrees"),
       worktreeLinks: [],
     });
+    expect(config.adapter).toEqual(EMPTY_PROJECT_ADAPTER);
+    expect(config.compatibility).toEqual({ v1ProjectAdapterDefaults: false });
+    expect(config.runnerPlugins).toEqual([]);
+    expect(config.projectProviderPlugins).toEqual([]);
+  });
+
+  it("显式兼容开关返回平台中立的 v1 适配器清单", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-v1-adapter-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "legacy", name: "Legacy App", root: "." },
+      compatibility: { v1ProjectAdapterDefaults: true },
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+
+    expect(config.compatibility).toEqual({ v1ProjectAdapterDefaults: true });
+    expect(config.adapter).toEqual(V1_PROJECT_ADAPTER_DEFAULTS);
+    expect(config.adapter).toEqual(EMPTY_PROJECT_ADAPTER);
+  });
+
+  it("加载项目适配器清单并保留平台默认值", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-adapter-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      compatibility: { v1ProjectAdapterDefaults: true },
+      adapter: {
+        workspaces: ["account-profiles"],
+        pageParameters: { defaultRoute: "demo://page", templateParameter: "bundle", pageReadyEvent: "page_ready", actionSucceededEvent: "action_ok" },
+        resultAnalysis: { pageOpenedEvents: ["page_opened", "page_ready"] },
+        accountProfiles: { providers: { "demo-auth": {
+          label: "Demo 登录", recordingLabel: "Demo 登录录制", defaultProfileId: "demo-account",
+          defaultAccountLabel: "Demo 账号", requiredCapability: "login", crossPlatformCapability: "login",
+          requiredCaptureKinds: ["native"], requiredResultFields: [], capabilityRules: []
+        } } },
+        repair: { displayName: "Demo 修复", threadNamePrefix: "Demo", fixingMessage: "Demo 修复中" }
+      },
+      tests: [{ id: "smoke", label: "Smoke", runnerId: "demo-runner", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+    expect(config.adapter).toMatchObject({
+      workspaces: ["account-profiles"],
+      pageParameters: { defaultRoute: "demo://page", templateParameter: "bundle", pageReadyEvent: "page_ready" },
+      resultAnalysis: { pageOpenedEvents: ["page_opened", "page_ready"] },
+      repair: { threadNamePrefix: "Demo" },
+    });
+    expect(config.adapter?.accountProfiles.providers["demo-auth"]?.requiredCaptureKinds).toEqual(["native"]);
+    expect(config.adapter?.accountProfiles.providers.wechat).toBeUndefined();
+    expect(config.tests[0].runnerId).toBe("demo-runner");
+  });
+
+  it("显式空适配器使用平台中立默认值", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-empty-adapter-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      adapter: {},
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+
+    expect(config.adapter).toEqual({
+      workspaces: [],
+      pageParameters: { defaultRoute: "", templateParameter: "", pageReadyEvent: "", actionSucceededEvent: "" },
+      resultAnalysis: { pageOpenedEvents: [] },
+      accountProfiles: { providers: {} },
+      repair: { displayName: "修复任务", threadNamePrefix: "修复", fixingMessage: "修复任务执行中" },
+    });
+  });
+
+  it("拒绝无效 Runner ID", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-runner-id-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      tests: [{ id: "smoke", label: "Smoke", runnerId: "Bad Runner", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }]
+    };`);
+
+    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("允许自定义 Runner 省略 legacy 命令", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-custom-runner-config-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      tests: [{ id: "smoke", label: "Smoke", runnerId: "custom-runner", platforms: ["android"] }]
+    };`);
+
+    const config = await loadProjectConfig(configPath);
+    expect(config.tests[0].commands).toEqual({});
+  });
+
+  it("legacy Runner 仍要求至少一条命令", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-legacy-command-config-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "demo", name: "Demo", root: "." },
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"] }]
+    };`);
+
+    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
   it("校验枚举参数并解析命令模板", () => {
@@ -192,7 +379,7 @@ describe("项目配置", () => {
     expect(() => resolveTaskDeletionCommand(config, createTask())).toThrow("命令模板变量未定义");
   });
 
-  it("Fanli 任务命令可透传设备厂商", () => {
+  it("项目任务命令可透传设备厂商", () => {
     const config = createConfig();
     const test = config.tests[0];
     test.commands.default = {

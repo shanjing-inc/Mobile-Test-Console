@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/mobile-test-console-integration.md", "reason": "检查平台与项目集成契约及回滚行为"}
+{"file": ".trellis/tasks/08-05-mobile-test-console-platform-project-split/research/result-bundle-contract.md", "reason": "检查结果协议兼容、幂等和路径安全"}
+{"file": ".trellis/tasks/08-05-mobile-test-console-platform-project-split/research/runner-plugin-boundaries.md", "reason": "检查 runner/connector contract 与测试覆盖"}

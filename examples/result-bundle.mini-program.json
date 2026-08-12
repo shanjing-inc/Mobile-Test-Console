@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "test-analysis.run.v1",
+  "project": {
+    "id": "demo-mini-program",
+    "name": "Demo 小程序"
+  },
+  "target": {
+    "kind": "mini-program",
+    "runtime": "wechat-devtools",
+    "platform": "wechat",
+    "appId": "wx-demo"
+  },
+  "run": {
+    "runId": "demo-mini-program-run",
+    "status": "passed",
+    "environment": "qa",
+    "startedAt": "2026-08-05T08:00:00.000Z",
+    "finishedAt": "2026-08-05T08:00:03.000Z"
+  },
+  "cases": [
+    {
+      "caseRunId": "demo-mini-program-run-home",
+      "caseId": "home-render",
+      "title": "首页渲染",
+      "status": "passed",
+      "targetPage": "pages/home/index",
+      "steps": [
+        {
+          "stepId": "open-home",
+          "name": "打开首页",
+          "status": "passed",
+          "durationMs": 1200,
+          "evidenceRefs": ["home-screen"]
+        }
+      ],
+      "assertions": [
+        {
+          "assertionId": "home-visible",
+          "kind": "visible",
+          "passed": true,
+          "description": "首页主体区域可见",
+          "evidenceRefs": ["home-screen"]
+        }
+      ],
+      "evidenceRefs": ["home-screen"]
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "home-screen",
+      "uri": "project://demo-mini-program/artifacts/home.png",
+      "label": "首页截图",
+      "role": "screenshot",
+      "mimeType": "image/png"
+    }
+  ],
+  "warnings": [],
+  "provenance": {
+    "adapter": "demo-mini-program-adapter",
+    "adapterVersion": "1",
+    "sourceRevision": "demo",
+    "generatedAt": "2026-08-05T08:00:03.000Z"
+  }
+}

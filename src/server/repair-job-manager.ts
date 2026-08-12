@@ -3,7 +3,6 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import type { DeviceDiscoveryService } from "./devices.js";
 import type { CommandRunner } from "./command-runner.js";
 import { SystemCommandRunner } from "./command-runner.js";
@@ -21,6 +20,8 @@ import { RepairJobStore } from "./repair-job-store.js";
 import type { TaskManager } from "./task-manager.js";
 import type { TaskResultService } from "./task-results.js";
 import { WorktreeManager } from "./worktree-manager.js";
+import { resolveProjectAdapter } from "./project-adapter.js";
+import { DirectoryPicker } from "./directory-picker.js";
 
 const MAX_LOG_LINES = 600;
 const MAX_LOG_LINE_LENGTH = 8_000;
@@ -69,6 +70,7 @@ export class RepairJobManager {
   private readonly waitTimers = new Map<string, NodeJS.Timeout>();
   private readonly worktrees = new Map<string, WorktreeManager>();
   private readonly runner: CommandRunner;
+  private readonly directoryPicker: DirectoryPicker;
   private createQueue: Promise<void> = Promise.resolve();
 
   constructor(
@@ -80,6 +82,7 @@ export class RepairJobManager {
     runner?: CommandRunner,
   ) {
     this.runner = runner ?? new SystemCommandRunner();
+    this.directoryPicker = new DirectoryPicker(this.runner);
   }
 
   async initialize(): Promise<void> {
@@ -165,7 +168,15 @@ export class RepairJobManager {
   }
 
   async selectProjectDirectory(): Promise<string> {
-    const selected = await this.openDirectoryPicker();
+    let selected: string;
+    try {
+      selected = await this.directoryPicker.pickDirectory("选择 Codex 修复项目目录");
+    } catch (error) {
+      if (error instanceof ConsoleError && error.code === "DIRECTORY_PICKER_UNAVAILABLE") {
+        throw new ConsoleError("REPAIR_DIRECTORY_PICKER_UNAVAILABLE", error.message, error.statusCode);
+      }
+      throw error;
+    }
     if (!selected) throw new ConsoleError("REPAIR_DIRECTORY_SELECTION_CANCELLED", "已取消选择项目目录", 409);
     return this.resolveProjectDirectory(selected);
   }
@@ -640,9 +651,10 @@ export class RepairJobManager {
           const thread = (payload.result as { thread?: { id?: string } }).thread;
           if (thread?.id) {
             job.codexThreadId = thread.id;
-            this.appendLog(job, `[codex app-server] Fanli 工作台任务 ${thread.id}`);
+            const repairAdapter = resolveProjectAdapter(this.config).repair;
+            this.appendLog(job, `[codex app-server] ${repairAdapter.displayName} ${thread.id}`);
             void this.persist();
-            send("thread/name/set", { threadId: thread.id, name: `Fanli 修复 · ${job.targetPage} · ${job.caseRunId}` });
+            send("thread/name/set", { threadId: thread.id, name: `${repairAdapter.threadNamePrefix} · ${job.targetPage} · ${job.caseRunId}` });
             const prompt = this.buildPrompt(job);
             turnStartRequestId = send("turn/start", {
               threadId: thread.id,
@@ -666,7 +678,7 @@ export class RepairJobManager {
             void this.persist();
           }
         } else if (method === "turn/started") {
-          this.setStatus(job, "fixing", "Codex 正在 Fanli 工作台中修复");
+          this.setStatus(job, "fixing", resolveProjectAdapter(this.config).repair.fixingMessage);
           void this.persist();
         } else if (method === "item/agentMessage/delta") {
           const delta = String(params.delta || "");
@@ -818,31 +830,6 @@ export class RepairJobManager {
       throw new ConsoleError("REPAIR_PROJECT_DIRECTORY_REQUIRED", "所选目录不是有效的 Git 项目，请重新选择", 409);
     }
     return path.resolve(result.stdout.trim());
-  }
-
-  private async openDirectoryPicker(): Promise<string> {
-    if (process.platform === "darwin") {
-      const result = await this.runner.capture("osascript", [
-        "-e",
-        'POSIX path of (choose folder with prompt "选择 Codex 修复项目目录")',
-      ], 120_000);
-      return result.code === 0 ? result.stdout.trim() : "";
-    }
-    if (process.platform === "win32") {
-      const script = [
-        "Add-Type -AssemblyName System.Windows.Forms",
-        "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
-        '$dialog.Description = "选择 Codex 修复项目目录"',
-        "if ($dialog.ShowDialog() -eq 'OK') { $dialog.SelectedPath }",
-      ].join("; " );
-      const result = await this.runner.capture("powershell", ["-NoProfile", "-Command", script], 120_000);
-      return result.code === 0 ? result.stdout.trim() : "";
-    }
-    const result = await this.runner.capture("zenity", ["--file-selection", "--directory", "--title=选择 Codex 修复项目目录"], 120_000);
-    if (result.code !== 0 && /ENOENT|not found/i.test(result.stderr)) {
-      throw new ConsoleError("REPAIR_DIRECTORY_PICKER_UNAVAILABLE", `当前系统缺少目录选择器，请安装 zenity。${os.platform()}`, 500);
-    }
-    return result.code === 0 ? result.stdout.trim() : "";
   }
 
   private clearWaitTimer(repairJobId: string): void {

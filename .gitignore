@@ -5,3 +5,6 @@ dist/
 .env
 .env.local
 coverage/
+.mtc-state/
+__pycache__/
+*.pyc

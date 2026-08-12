@@ -1,14 +1,12 @@
-import type { AccountProfileProvider, Device } from "./contracts.js";
-
-export function isHuaweiDevice(device: Pick<Device, "platform" | "manufacturer" | "name" | "detail">): boolean {
-  if (device.platform === "harmony") return true;
-  return [device.manufacturer, device.name, device.detail]
-    .some(value => /huawei|华为/i.test(String(value || "")));
-}
+import type { AccountProfileProviderAdapterManifest, Device } from "./contracts.js";
 
 export function supportsAccountProfileProvider(
-  provider: AccountProfileProvider,
+  definition: AccountProfileProviderAdapterManifest | undefined,
   device: Pick<Device, "platform" | "manufacturer" | "name" | "detail">,
 ): boolean {
-  return provider !== "huawei" || isHuaweiDevice(device);
+  if (!definition) return true;
+  if (definition.devicePlatforms.includes(device.platform)) return true;
+  if (definition.deviceTextIncludes.length === 0) return definition.devicePlatforms.length === 0;
+  const deviceText = [device.manufacturer, device.name, device.detail].join(" ").toLowerCase();
+  return definition.deviceTextIncludes.some(value => deviceText.includes(value.toLowerCase()));
 }

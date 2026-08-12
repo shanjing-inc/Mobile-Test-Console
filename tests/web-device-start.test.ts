@@ -52,6 +52,26 @@ describe("网页 iOS 模拟器启动", () => {
     expect(html).not.toContain("device-start-button");
   });
 
+  it("iOS 真机开发服务不可用时展示具体修复引导", () => {
+    const html = renderToStaticMarkup(React.createElement(DeviceRow, {
+      device: createSimulator({
+        name: "QA iPhone",
+        type: "physical",
+        connectionState: "available",
+        controlState: "unavailable",
+        controlReason: "开发者磁盘映像服务不可用，请升级到支持当前 iOS 版本的 Xcode，重新连接并解锁设备",
+      }),
+      selected: false,
+      starting: false,
+      onToggle: () => undefined,
+      onStart: () => undefined,
+    }));
+
+    expect(html).toContain("开发者磁盘映像服务不可用，请升级到支持当前 iOS 版本的 Xcode，重新连接并解锁设备");
+    expect(html).toContain("iOS · 真机");
+    expect(html).toContain("disabled=\"\"");
+  });
+
   it("启动请求发送当前设备 key", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ device: createSimulator({ controlState: "ready", connectionState: "available", detail: "已启动" }) }), {
       status: 200,

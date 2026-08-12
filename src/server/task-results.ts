@@ -11,8 +11,10 @@ import {
   type TaskResultRun,
   type TestTask,
 } from "../shared/contracts.js";
+import type { ResultBundle, ResultBundleArtifact } from "../shared/result-bundle.js";
 import { resolveTaskArtifactsRoot, resolveTaskResultCommand, type LoadedProjectConfig, type ResolvedCommand } from "./config.js";
 import { ConsoleError } from "./errors.js";
+import type { ResultBundleStore } from "./result-bundle-store.js";
 import type { TaskManager } from "./task-manager.js";
 
 const MAX_PROVIDER_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -113,6 +115,31 @@ const providerResultSchema = z.object({
   runs: z.array(providerRunSchema),
 });
 
+const bundleCaseCompatibilityMetadataSchema = z.object({
+  runId: z.string().default(""),
+  caseRunCount: z.number().int().positive().default(1),
+  executionKind: z.string().default("scenario"),
+  launchPage: z.string().default(""),
+  routeParams: z.record(z.unknown()).optional(),
+  parameterProfileId: z.string().optional(),
+  expectedFinalPage: z.string().default(""),
+  actualFinalPage: z.string().default(""),
+  assertions: z.array(z.record(z.unknown())).default([]),
+  fixture: z.string().default(""),
+  platform: z.string().default(""),
+  device: z.string().default(""),
+  requiredEvents: z.array(z.string()).default([]),
+  missingEvents: z.array(z.string()).default([]),
+  runtimeEventCount: z.number().int().nonnegative().default(0),
+  uiActionCount: z.number().int().nonnegative().default(0),
+  evidenceFiles: z.array(z.string()).default([]),
+}).passthrough();
+
+const bundleStepCompatibilityMetadataSchema = z.object({
+  bundleName: z.string().optional(),
+  events: z.array(z.string()).default([]),
+});
+
 type ProviderResult = z.infer<typeof providerResultSchema>;
 
 export interface ResolvedTaskArtifact extends TaskResultArtifact {
@@ -131,18 +158,26 @@ export class TaskResultService {
   constructor(
     private readonly config: LoadedProjectConfig,
     private readonly tasks: TaskManager,
+    private readonly resultBundles?: ResultBundleStore,
   ) {}
 
   async load(taskId: string, options: { refresh?: boolean } = {}): Promise<TaskResult> {
     const task = this.requireTerminalTask(taskId);
+    const fingerprint = `${task.runId}:${task.finishedAt}:${task.status}:${task.resultUri ?? ""}`;
+    const cached = this.cache.get(task.id);
+    if (!options.refresh && cached?.fingerprint === fingerprint) return structuredClone(cached.result);
+
+    if (task.resultUri && this.resultBundles) {
+      const bundle = await this.loadResultBundle(task);
+      const hydrated = await this.hydrateBundle(task, bundle);
+      this.cache.set(task.id, { fingerprint, ...hydrated });
+      return structuredClone(hydrated.result);
+    }
+
     const command = resolveTaskResultCommand(this.config, task);
     if (!command || !this.config.taskResults) {
       throw new ConsoleError("TASK_RESULT_UNAVAILABLE", "当前项目未配置测试结果分析", 404);
     }
-
-    const fingerprint = `${task.runId}:${task.finishedAt}:${task.status}`;
-    const cached = this.cache.get(task.id);
-    if (!options.refresh && cached?.fingerprint === fingerprint) return structuredClone(cached.result);
 
     const parsed = providerResultSchema.safeParse(await runProvider(command));
     if (!parsed.success) {
@@ -226,6 +261,169 @@ export class TaskResultService {
       artifacts,
     };
   }
+
+  private async loadResultBundle(task: TestTask): Promise<ResultBundle> {
+    let bundle: ResultBundle | null;
+    try {
+      bundle = await this.resultBundles!.getByUri(task.resultUri!);
+    } catch (error) {
+      throw new ConsoleError(
+        "TASK_RESULT_INVALID",
+        `任务 Result Bundle URI 无效: ${error instanceof Error ? error.message : String(error)}`,
+        500,
+      );
+    }
+    if (!bundle) {
+      throw new ConsoleError("TASK_RESULT_INVALID", `任务 Result Bundle 不存在: ${task.resultUri}`, 500);
+    }
+    if (bundle.run.runId !== task.runId) {
+      throw new ConsoleError("TASK_RESULT_INVALID", `Result Bundle runId 与任务不匹配: ${bundle.run.runId}`, 500);
+    }
+    if (bundle.project.id !== task.projectId) {
+      throw new ConsoleError("TASK_RESULT_INVALID", `Result Bundle projectId 与任务不匹配: ${bundle.project.id}`, 500);
+    }
+    return bundle;
+  }
+
+  private async hydrateBundle(task: TestTask, bundle: ResultBundle): Promise<{
+    result: TaskResult;
+    artifacts: Map<string, ResolvedTaskArtifact>;
+  }> {
+    const warnings = [...bundle.warnings];
+    const artifacts = new Map<string, ResolvedTaskArtifact>();
+    const bundleArtifacts = new Map(bundle.artifacts.map(artifact => [artifact.id, artifact]));
+    const runs: TaskResultRun[] = [];
+
+    for (const bundleCase of bundle.cases) {
+      const parsedMetadata = bundleCaseCompatibilityMetadataSchema.safeParse(bundleCase.metadata ?? {});
+      if (!parsedMetadata.success) {
+        warnings.push(`Result Bundle 用例兼容字段无效，已使用默认值: ${bundleCase.caseRunId}`);
+      }
+      const metadata = parsedMetadata.success
+        ? parsedMetadata.data
+        : bundleCaseCompatibilityMetadataSchema.parse({});
+      const screenshots: TaskResultArtifact[] = [];
+      for (const artifactId of bundleCase.evidenceRefs) {
+        const bundleArtifact = bundleArtifacts.get(artifactId);
+        if (!bundleArtifact || bundleArtifact.role !== "screenshot") continue;
+        const reference = bundleArtifactReference(this.config, task, bundleArtifact, warnings);
+        if (!reference) continue;
+        const artifact = await resolveImageArtifact(this.config, task, reference, warnings);
+        if (!artifact) continue;
+        artifacts.set(artifact.id, artifact);
+        screenshots.push(publicArtifact(artifact));
+      }
+      const apiCalls = bundleCase.apiCalls.flatMap((apiCall, index) => {
+        const parsed = apiCallSchema.safeParse(apiCall);
+        if (parsed.success) return [parsed.data];
+        warnings.push(`Result Bundle 接口记录无效，已忽略: ${bundleCase.caseRunId}#${index}`);
+        return [];
+      });
+      runs.push({
+        runId: metadata.runId || bundleCase.caseRunId,
+        caseRunId: bundleCase.caseRunId,
+        caseRunCount: metadata.caseRunCount,
+        caseId: bundleCase.caseId,
+        executionKind: metadata.executionKind,
+        targetPage: bundleCase.targetPage,
+        launchPage: metadata.launchPage,
+        ...(metadata.routeParams ? { routeParams: metadata.routeParams } : {}),
+        ...(metadata.parameterProfileId ? { parameterProfileId: metadata.parameterProfileId } : {}),
+        expectedFinalPage: metadata.expectedFinalPage,
+        actualFinalPage: metadata.actualFinalPage,
+        pageSequence: bundleCase.steps.map(step => {
+          const parsedStepMetadata = bundleStepCompatibilityMetadataSchema.safeParse(step.metadata ?? {});
+          if (!parsedStepMetadata.success) {
+            warnings.push(`Result Bundle 步骤兼容字段无效，已使用默认值: ${step.stepId}`);
+          }
+          const stepMetadata = parsedStepMetadata.success
+            ? parsedStepMetadata.data
+            : bundleStepCompatibilityMetadataSchema.parse({});
+          return {
+            page: step.name,
+            ...(stepMetadata.bundleName ? { bundleName: stepMetadata.bundleName } : {}),
+            events: stepMetadata.events,
+            ...(step.startedAt ? { startedAt: step.startedAt } : {}),
+            ...(step.finishedAt ? { finishedAt: step.finishedAt } : {}),
+          };
+        }),
+        assertions: metadata.assertions,
+        passBasis: bundleCase.assertions.map(assertion => ({
+          kind: assertion.kind,
+          passed: assertion.passed,
+          description: assertion.description,
+        })),
+        scenario: bundleCase.scenario,
+        fixture: metadata.fixture,
+        platform: metadata.platform || bundle.target.platform,
+        device: metadata.device,
+        status: bundleCase.status,
+        errorSummary: bundleCase.errorSummary,
+        requiredEvents: metadata.requiredEvents,
+        missingEvents: metadata.missingEvents,
+        runtimeEventCount: metadata.runtimeEventCount,
+        uiActionCount: metadata.uiActionCount,
+        apiCalls: apiCalls as TaskResultApiCall[],
+        screenshots,
+        evidenceFiles: metadata.evidenceFiles,
+        failureLogExcerpt: bundleCase.logs.join("\n"),
+      });
+    }
+
+    const preconditions = providerPreconditionSchema.array().safeParse(bundle.metadata.legacyPreconditions);
+    if (!preconditions.success && bundle.metadata.legacyPreconditions !== undefined) {
+      warnings.push("Result Bundle 的旧任务前置条件无效，已忽略");
+    }
+    return {
+      result: {
+        schemaVersion: "mobile-test-console.task-result.v1",
+        generatedAt: bundle.provenance.generatedAt || bundle.run.finishedAt || bundle.run.startedAt,
+        taskId: task.id,
+        runId: task.runId,
+        total: runs.length,
+        caseRunCount: runs.length,
+        passed: runs.filter(run => run.status === "passed").length,
+        failed: runs.filter(run => run.status !== "passed").length,
+        warnings,
+        preconditions: preconditions.success ? preconditions.data : [],
+        runs,
+      },
+      artifacts,
+    };
+  }
+}
+
+function bundleArtifactReference(
+  config: LoadedProjectConfig,
+  task: TestTask,
+  artifact: ResultBundleArtifact,
+  warnings: string[],
+): z.infer<typeof artifactReferenceSchema> | null {
+  const prefix = `project://${config.project.id}/`;
+  if (!artifact.uri.startsWith(prefix)) {
+    warnings.push(`忽略无法映射到项目产物的截图: ${artifact.uri}`);
+    return null;
+  }
+  const encodedPath = artifact.uri.slice(prefix.length);
+  if (!encodedPath || encodedPath.includes("?") || encodedPath.includes("#")) {
+    warnings.push(`忽略路径无效的截图: ${artifact.uri}`);
+    return null;
+  }
+  let segments: string[];
+  try {
+    segments = encodedPath.split("/").map(segment => decodeURIComponent(segment));
+  } catch {
+    warnings.push(`忽略路径编码无效的截图: ${artifact.uri}`);
+    return null;
+  }
+  if (segments.some(segment => !segment || segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\"))) {
+    warnings.push(`忽略路径无效的截图: ${artifact.uri}`);
+    return null;
+  }
+  return {
+    path: path.resolve(task.workspaceRoot || config.project.root, ...segments),
+    label: artifact.label || path.basename(segments.at(-1) ?? ""),
+  };
 }
 
 async function runProvider(command: ResolvedCommand): Promise<unknown> {

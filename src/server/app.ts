@@ -3,7 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ACCOUNT_PROFILE_PROVIDERS, PAGE_PARAMETER_PLATFORMS, PLATFORMS, type BusinessSuite, type ConsoleSnapshot, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest } from "../shared/contracts.js";
+import { ACTIVE_TASK_STATUSES, PAGE_PARAMETER_PLATFORMS, PLATFORMS, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type BusinessSuite, type ConsoleSnapshot, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest } from "../shared/contracts.js";
 import { toPublicTests, validateParameters, type LoadedProjectConfig } from "./config.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
@@ -13,16 +13,22 @@ import { PageParameterStore } from "./page-parameter-store.js";
 import { PageParameterService } from "./page-parameters.js";
 import { AccountProfileStore } from "./account-profile-store.js";
 import { AccountProfileService, toAccountProfileRecordingSummary, toAccountProfileSummary } from "./account-profiles.js";
+import { resolveProjectAdapter } from "./project-adapter.js";
 import { BusinessScriptStore } from "./business-script-store.js";
 import { BusinessScriptService } from "./business-scripts.js";
 import type { RepairJobManager } from "./repair-job-manager.js";
 import type { TaskResultService as TaskResultServiceType } from "./task-results.js";
+import type { ResultBundleStore } from "./result-bundle-store.js";
+import { resolveProjectConfigSelection, scanProjectDirectory, type ProjectCatalogService } from "./project-catalog.js";
+import { DirectoryPicker } from "./directory-picker.js";
 
 const startRequestSchema = z.object({
   testId: z.string().min(1),
   deviceKeys: z.array(z.string().min(1)).min(1),
   parameters: z.record(z.string()).default({}),
 });
+
+const accountProfileProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
 
 const startDeviceRequestSchema = z.object({
   deviceKey: z.string().min(1),
@@ -90,17 +96,17 @@ const startAccountProfileRecordingSchema = z.object({
   deviceKey: z.string().min(1),
   profileId: z.string().regex(/^[A-Za-z0-9._-]+$/),
   accountLabel: z.string().min(1).max(80),
-  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+  provider: accountProfileProviderSchema,
   environment: z.string().min(1).max(40),
 });
 
 const replayAccountProfileSchema = z.object({
   deviceKey: z.string().min(1),
-  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+  provider: accountProfileProviderSchema,
 });
 
 const accountProfileSourceSchema = z.object({
-  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+  provider: accountProfileProviderSchema,
 });
 
 const startBusinessScriptRecordingSchema = z.object({
@@ -154,25 +160,54 @@ const saveBusinessSuiteSchema = z.object({
   platformMatrix: z.array(z.enum(PLATFORMS)).min(1),
 });
 
+const registerProjectSchema = z.object({
+  projectDirectory: z.string().trim().min(1),
+  configFile: z.string().trim().min(1).default("mobile-test.config.cjs"),
+});
+
+const previewProjectInitializationSchema = z.object({
+  projectDirectory: z.string().trim().min(1),
+  platforms: z.array(z.enum(PLATFORMS)).min(1),
+});
+
+const applyProjectInitializationSchema = previewProjectInitializationSchema.extend({
+  planId: z.string().min(1),
+});
+
+const previewProjectSetupSchema = z.object({
+  step: z.enum(["devices", "capabilities"]),
+});
+
+const applyProjectSetupSchema = previewProjectSetupSchema.extend({
+  planId: z.string().min(1),
+});
+
 export interface CreateAppOptions {
   config: LoadedProjectConfig;
   devices: DeviceDiscoveryService;
   tasks: TaskManager;
   repairs?: RepairJobManager;
   taskResults?: TaskResultServiceType;
+  resultBundles?: ResultBundleStore;
+  projectProviders?: ProjectProviderManifestSummary[];
+  projectCatalog?: ProjectCatalogService;
+  directoryPicker?: DirectoryPicker;
+  onProjectSwitch?: (configPath: string) => void | Promise<void>;
   staticDir?: string;
 }
 
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
-  const taskResults = options.taskResults ?? new TaskResultService(options.config, options.tasks);
+  const directoryPicker = options.directoryPicker ?? new DirectoryPicker();
+  const taskResults = options.taskResults
+    ?? new TaskResultService(options.config, options.tasks, options.resultBundles);
   const pageParameters = new PageParameterService(
     options.config,
     new PageParameterStore(options.config.stateDir),
   );
   const accountProfiles = new AccountProfileService(
     options.config,
-    new AccountProfileStore(options.config.stateDir),
+    new AccountProfileStore(options.config.stateDir, options.config.adapter),
   );
   const businessScripts = new BusinessScriptService(
     options.config,
@@ -186,10 +221,115 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
 
   app.get("/api/health", async () => ({ ok: true }));
 
+  app.get("/api/projects", async () => requireProjectCatalog(options).snapshot());
+
+  app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/detail", async request => (
+    requireProjectCatalog(options).detail(request.params.projectId)
+  ));
+
+  app.post("/api/projects/select-directory", async () => {
+    requireProjectCatalog(options);
+    const selectedDirectory = await directoryPicker.pickDirectory("选择 Mobile Test Console 项目目录");
+    if (!selectedDirectory) {
+      throw new ConsoleError("PROJECT_DIRECTORY_SELECTION_CANCELLED", "已取消选择项目目录", 409);
+    }
+    return scanProjectDirectory(selectedDirectory);
+  });
+
+  app.post("/api/projects/select-config", async () => {
+    requireProjectCatalog(options);
+    const selectedConfig = await directoryPicker.pickFile("选择 mobile-test.config.cjs");
+    if (!selectedConfig) {
+      throw new ConsoleError("PROJECT_CONFIG_SELECTION_CANCELLED", "已取消选择项目配置", 409);
+    }
+    return resolveProjectConfigSelection(selectedConfig);
+  });
+
+  app.post<{ Body: RegisterProjectRequest }>("/api/projects", async request => {
+    const parsed = registerProjectSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireProjectCatalog(options).register(parsed.data);
+  });
+
+  app.post<{ Body: PreviewProjectInitializationRequest }>("/api/projects/setup/preview", async request => {
+    const parsed = previewProjectInitializationSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireProjectCatalog(options).previewInitialization(parsed.data);
+  });
+
+  app.post<{ Body: ApplyProjectInitializationRequest }>("/api/projects/setup/apply", async request => {
+    const parsed = applyProjectInitializationSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireProjectCatalog(options).applyInitialization(parsed.data);
+  });
+
+  app.post<{ Params: { projectId: string }; Body: ApplyProjectSetupRequest }>("/api/projects/:projectId/setup/preview", async request => {
+    const parsed = previewProjectSetupSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireProjectCatalog(options).previewSetup(request.params.projectId, parsed.data.step);
+  });
+
+  app.post<{ Params: { projectId: string }; Body: ApplyProjectSetupRequest }>("/api/projects/:projectId/setup/apply", async request => {
+    const parsed = applyProjectSetupSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireProjectCatalog(options).applySetup(request.params.projectId, parsed.data);
+  });
+
+  app.delete<{ Params: { projectId: string } }>("/api/projects/:projectId", async request => (
+    requireProjectCatalog(options).remove(request.params.projectId)
+  ));
+
+  app.post<{ Params: { projectId: string } }>("/api/projects/:projectId/onboarding/verify", async request => (
+    requireProjectCatalog(options).verify(request.params.projectId)
+  ));
+
+  app.post<{ Params: { projectId: string } }>("/api/projects/:projectId/activate", async (request, reply) => {
+    const activeTaskCount = options.tasks.list().filter(task => ACTIVE_TASK_STATUSES.includes(task.status)).length;
+    const activation = await requireProjectCatalog(options).activate(request.params.projectId, activeTaskCount);
+    if (options.onProjectSwitch && activation.projectId !== options.config.project.id) {
+      const switchProject = () => {
+        void Promise.resolve(options.onProjectSwitch!(activation.configPath)).catch(error => {
+          console.error("[server] 项目切换失败", error);
+        });
+      };
+      // 等响应完成后再关闭 API，避免 Vite 代理收到半截响应并转换成 500。
+      if (typeof reply.raw.once === "function") {
+        reply.raw.once("finish", switchProject);
+      } else {
+        setTimeout(switchProject, 0).unref?.();
+      }
+    }
+    return activation;
+  });
+
+  if (options.resultBundles) {
+    app.get("/api/result-bundles", async () => ({
+      schemaVersion: "test-analysis.result-bundles.v1" as const,
+      bundles: await options.resultBundles!.list(),
+    }));
+
+    app.get<{ Params: { runId: string } }>("/api/result-bundles/:runId", async request => {
+      const bundle = await options.resultBundles!.get(request.params.runId);
+      if (!bundle) throw new ConsoleError("RESULT_BUNDLE_UNKNOWN", `Result Bundle 不存在: ${request.params.runId}`, 404);
+      return bundle;
+    });
+
+    app.post<{ Body: unknown }>("/api/result-bundles", async request => {
+      const ingestion = await options.resultBundles!.ingest(request.body, "HTTP push");
+      return { ingestion };
+    });
+  }
+
   app.get<{ Querystring: { refresh?: string } }>("/api/snapshot", async (request): Promise<ConsoleSnapshot> => {
     const discovery = await options.devices.snapshot({ refresh: request.query.refresh === "1" });
     return {
       project: options.config.project,
+      testing: options.config.testing ?? { environments: [], capabilities: [] },
+      adapter: resolveProjectAdapter(options.config),
+      ...(typeof options.devices.connectorManifests === "function"
+        ? { connectors: options.devices.connectorManifests() }
+        : {}),
+      projectProviders: options.projectProviders ?? [],
       devices: discovery.devices,
       deviceErrors: discovery.errors,
       deviceDiscoveryPending: discovery.refreshing,
@@ -352,7 +492,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     recording: toAccountProfileRecordingSummary(await accountProfiles.terminateRecording(request.params.recordingId)),
   }));
 
-  app.post<{ Params: { profileId: string }; Body: { deviceKey: string; provider: typeof ACCOUNT_PROFILE_PROVIDERS[number] } }>("/api/account-profiles/:profileId/replay", async request => {
+  app.post<{ Params: { profileId: string }; Body: { deviceKey: string; provider: AccountProfileProvider } }>("/api/account-profiles/:profileId/replay", async request => {
     const parsed = replayAccountProfileSchema.safeParse(request.body);
     if (!parsed.success) throw invalidRequest(parsed.error);
     const device = await findAvailableDevice(options, parsed.data.deviceKey);
@@ -394,7 +534,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         if (selection === "current-session") continue;
         const separator = selection.lastIndexOf(":");
         const profileId = selection.slice(0, separator);
-        const provider = selection.slice(separator + 1) as (typeof ACCOUNT_PROFILE_PROVIDERS)[number];
+        const provider = selection.slice(separator + 1) as AccountProfileProvider;
         await accountProfiles.validateTaskSelection(
           profileId,
           provider,
@@ -535,4 +675,11 @@ function requireRepairJob(options: CreateAppOptions, repairJobId: string) {
   const job = requireRepairs(options).get(repairJobId);
   if (!job) throw new ConsoleError("REPAIR_JOB_UNKNOWN", `修复任务不存在: ${repairJobId}`, 404);
   return job;
+}
+
+function requireProjectCatalog(options: CreateAppOptions): ProjectCatalogService {
+  if (!options.projectCatalog) {
+    throw new ConsoleError("PROJECT_CATALOG_UNAVAILABLE", "项目目录服务尚未初始化", 503);
+  }
+  return options.projectCatalog;
 }

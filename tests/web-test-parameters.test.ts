@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { AccountProfileSummary, Device } from "../src/shared/contracts.js";
 import { resolveAccountProfileOptions } from "../src/web/App.js";
+import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
+
+const providers = TEST_PROJECT_ADAPTER.accountProfiles.providers;
 
 describe("测试账号参数", () => {
   it("按目标设备、环境、能力和有效期筛选跨平台登录画像", () => {
@@ -18,6 +21,7 @@ describe("测试账号参数", () => {
       ["harmony:1"],
       "login",
       "qa",
+      providers,
     );
 
     expect(options.map(option => option.value)).toEqual([
@@ -34,9 +38,9 @@ describe("测试账号参数", () => {
     ];
     const devices = [device("harmony:1", "harmony"), device("android:1", "android")];
 
-    expect(resolveAccountProfileOptions(profiles, devices, [], "login", "qa").map(option => option.value))
+    expect(resolveAccountProfileOptions(profiles, devices, [], "login", "qa", providers).map(option => option.value))
       .toEqual(["current-session"]);
-    expect(resolveAccountProfileOptions(profiles, devices, ["harmony:1", "android:1"], "login", "qa").map(option => option.value))
+    expect(resolveAccountProfileOptions(profiles, devices, ["harmony:1", "android:1"], "login", "qa", providers).map(option => option.value))
       .toEqual(["current-session", "harmony-login:wechat", "android-login:wechat"]);
   });
 
@@ -46,11 +50,11 @@ describe("测试账号参数", () => {
     const huawei = { ...device("android:huawei", "android"), manufacturer: "Huawei" };
     const harmony = device("harmony:1", "harmony");
 
-    expect(resolveAccountProfileOptions(profiles, [redmi], [redmi.key], "login", "qa").map(option => option.value))
+    expect(resolveAccountProfileOptions(profiles, [redmi], [redmi.key], "login", "qa", providers).map(option => option.value))
       .toEqual(["current-session"]);
-    expect(resolveAccountProfileOptions(profiles, [huawei], [huawei.key], "login", "qa").map(option => option.value))
+    expect(resolveAccountProfileOptions(profiles, [huawei], [huawei.key], "login", "qa", providers).map(option => option.value))
       .toEqual(["current-session", "huawei-login:huawei"]);
-    expect(resolveAccountProfileOptions(profiles, [harmony], [harmony.key], "login", "qa").map(option => option.value))
+    expect(resolveAccountProfileOptions(profiles, [harmony], [harmony.key], "login", "qa", providers).map(option => option.value))
       .toEqual(["current-session", "huawei-login:huawei"]);
   });
 });

@@ -19,6 +19,7 @@ import {
 import { resolvePageParameterProviderCommand, type LoadedProjectConfig, type ResolvedCommand } from "./config.js";
 import { ConsoleError } from "./errors.js";
 import { PageParameterStore } from "./page-parameter-store.js";
+import { resolveProjectAdapter } from "./project-adapter.js";
 
 interface CatalogPayload {
   schemaVersion: "mobile-test-console.page-parameter-provider.v1";
@@ -57,6 +58,7 @@ export class PageParameterService {
     const now = Date.now();
     return {
       schemaVersion: "mobile-test-console.page-parameters.v1",
+      adapter: resolveProjectAdapter(this.config).pageParameters,
       pages: catalog.pages.map(page => {
         const profiles = state.profiles.filter(profile => profile.pageId === page.pageId);
         const expired = profiles.length > 0 && profiles.every(profile => profile.expiresAt && Date.parse(profile.expiresAt) <= now);
@@ -217,7 +219,7 @@ export class PageParameterService {
     }
     const targetMap = new Map((page.targets ?? []).map(target => [target.id, target]));
     const assertionTargets = new Set(page.assertionTargets ?? []);
-    const profileAssertions = ensurePageReadyAssertion(input.assertions);
+    const profileAssertions = ensurePageReadyAssertion(input.assertions, resolveProjectAdapter(this.config).pageParameters.pageReadyEvent);
     for (const action of input.actions ?? []) {
       if (action.type !== "screenshot") {
         const target = targetMap.get(action.target);
@@ -250,10 +252,7 @@ export class PageParameterService {
       environment: input.environment,
       accountLabel: input.accountLabel,
       values: input.values,
-      navigation: input.navigation ?? page.navigation ?? {
-        route: "huigou://lynx",
-        params: { _tpl: page.bundle || page.pageId },
-      },
+      navigation: input.navigation ?? page.navigation ?? buildDefaultNavigation(page.bundle || page.pageId, resolveProjectAdapter(this.config).pageParameters),
       actions: input.actions ?? [],
       assertions: profileAssertions,
       source: input.source ?? "manual",
@@ -351,12 +350,23 @@ function hasProfileValue(
   return parameter.strategy === "literal" && capturedKeys.has(key);
 }
 
-function ensurePageReadyAssertion(assertions: SavePageParameterProfileRequest["assertions"]): NonNullable<SavePageParameterProfileRequest["assertions"]> {
+function ensurePageReadyAssertion(
+  assertions: SavePageParameterProfileRequest["assertions"],
+  pageReadyEvent: string,
+): NonNullable<SavePageParameterProfileRequest["assertions"]> {
   const next = [...(assertions ?? [])];
-  if (!next.some(assertion => assertion.type === "runtimeEvent" && assertion.event === "lynx_page_ready")) {
-    next.unshift({ type: "runtimeEvent", event: "lynx_page_ready" });
+  if (pageReadyEvent && !next.some(assertion => assertion.type === "runtimeEvent" && assertion.event === pageReadyEvent)) {
+    next.unshift({ type: "runtimeEvent", event: pageReadyEvent });
   }
   return next;
+}
+
+function buildDefaultNavigation(
+  bundle: string,
+  adapter: ReturnType<typeof resolveProjectAdapter>["pageParameters"],
+): SavePageParameterProfileRequest["navigation"] {
+  if (!adapter.defaultRoute) return undefined;
+  return { route: adapter.defaultRoute, params: { [adapter.templateParameter]: bundle } };
 }
 
 function findRecording(recordings: PageParameterRecording[], recordingId: string): PageParameterRecording {

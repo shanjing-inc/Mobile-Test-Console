@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"质量检查范围和后端规范索引"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"RepairJob、replay API、状态恢复和跨仓库契约审查"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查存储到服务、API、UI 和 Fanli 的跨层数据完整性"}
+{"file":".trellis/tasks/08-04-mobile-test-console-codex-loop/research/codex-integration.md","reason":"核对 Codex CLI 集成假设与验证边界"}

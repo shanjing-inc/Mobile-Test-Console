@@ -1,7 +1,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createRunnerEvent,
+  type InProcessRunner,
+  type RunPlan,
+  type RunnerResolver,
+  type RunnerResult,
+} from "../src/runner/sdk.js";
 import type { Device, TaskStatus } from "../src/shared/contracts.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { ConsoleError } from "../src/server/errors.js";
@@ -15,14 +22,308 @@ afterEach(async () => {
 });
 
 describe("任务管理器", () => {
-  it("执行白名单命令并保存通过状态和日志", async () => {
-    const { manager } = await createManager();
+  it("默认使用 legacy runner 执行白名单命令并保存通过状态和日志", async () => {
+    const { manager, dir } = await createManager();
     const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
     const finished = await waitForStatus(manager, created.id, "passed");
 
+    expect(created.runnerId).toBe("legacy-command-runner");
     expect(finished.exitCode).toBe(0);
     expect(finished.logs.join("\n")).toContain("runner output");
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as {
+      tasks: Array<{ runnerId?: string }>;
+    };
+    expect(stored.tasks[0].runnerId).toBe("legacy-command-runner");
     await manager.shutdown();
+  });
+
+  it("通过 resolver 将 RunPlan 交给自定义 runner 并映射日志事件", async () => {
+    const dir = await createTempDir("mtc-task-resolver-");
+    const resolverPlans: RunPlan[] = [];
+    const runnerPlans: RunPlan[] = [];
+    const fallbackShutdown = vi.fn();
+    const fallbackRunner: InProcessRunner = {
+      id: "fallback-runner",
+      async run(plan) {
+        throw new Error(`不应调用 fallback runner: ${plan.runId}`);
+      },
+      shutdown: fallbackShutdown,
+    };
+    const customRunner: InProcessRunner = {
+      id: "custom-runner",
+      async run(plan, context) {
+        runnerPlans.push(plan);
+        context.emit(createRunnerEvent(plan.runId, "log", {
+          source: "stdout",
+          message: "custom runner output",
+        }));
+        context.emit(createRunnerEvent(plan.runId, "log", {
+          source: "stderr",
+          message: "custom runner warning",
+        }));
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const resolver: RunnerResolver = {
+      resolve(plan) {
+        resolverPlans.push(plan);
+        return customRunner;
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), fallbackRunner, resolver);
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const finished = await waitForStatus(manager, created.id, "passed");
+
+    expect(resolverPlans).toHaveLength(1);
+    expect(runnerPlans).toHaveLength(1);
+    expect(runnerPlans[0]).toBe(resolverPlans[0]);
+    expect(runnerPlans[0]).toMatchObject({
+      runId: created.runId,
+      projectId: "demo",
+      testId: "pass",
+      runnerId: "legacy-command-runner",
+      device: { key: device.key },
+      command: {
+        executable: process.execPath,
+        args: ["-e", "console.log('runner output')"],
+      },
+      metadata: { taskId: created.id, parameters: {} },
+    });
+    expect(finished.logs).toContain("custom runner output");
+    expect(finished.logs).toContain("[stderr] custom runner warning");
+    await manager.shutdown();
+    expect(fallbackShutdown).not.toHaveBeenCalled();
+  });
+
+  it("自定义 Runner 可以在没有 legacy 命令时直接接收运行计划", async () => {
+    const dir = await createTempDir("mtc-task-plugin-only-");
+    const config = createConfig(dir);
+    config.tests.push({
+      id: "plugin-only",
+      label: "Plugin Only",
+      description: "",
+      runnerId: "custom-runner",
+      platforms: ["android"],
+      parameters: [],
+      commands: {},
+    });
+    let receivedPlan: RunPlan | undefined;
+    const runner: InProcessRunner = {
+      id: "custom-runner",
+      async run(plan) {
+        receivedPlan = plan;
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const manager = new TaskManager(config, new StateStore(dir), runner, { resolve: () => runner });
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "plugin-only", deviceKeys: [device.key], parameters: {} }, [device]);
+    await expect(waitForStatus(manager, created.id, "passed")).resolves.toMatchObject({ runnerId: "custom-runner" });
+    expect(receivedPlan).toMatchObject({ runnerId: "custom-runner", testId: "plugin-only" });
+    expect(receivedPlan?.command).toBeUndefined();
+    await manager.shutdown();
+  });
+
+  it("保留第三构造参数的单 runner 注入行为", async () => {
+    const dir = await createTempDir("mtc-task-runner-compat-");
+    const plans: RunPlan[] = [];
+    const runner: InProcessRunner = {
+      id: "injected-runner",
+      async run(plan) {
+        plans.push(plan);
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), runner);
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, created.id, "passed");
+
+    expect(plans).toHaveLength(1);
+    expect(plans[0].runId).toBe(created.runId);
+    await manager.shutdown();
+  });
+
+  it("映射自定义 runner 的失败结果、退出码和错误", async () => {
+    const dir = await createTempDir("mtc-task-runner-failure-");
+    const runner: InProcessRunner = {
+      id: "failing-runner",
+      async run(plan) {
+        return {
+          runId: plan.runId,
+          status: "failed",
+          exitCode: 23,
+          error: "custom runner failure",
+        };
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+    );
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const finished = await waitForStatus(manager, created.id, "failed");
+
+    expect(finished).toMatchObject({
+      status: "failed",
+      phase: "测试失败",
+      exitCode: 23,
+      error: "custom runner failure",
+    });
+    expect(finished.logs).toContain("[console] custom runner failure");
+    await manager.shutdown();
+  });
+
+  it("保存 Runner 返回的结果 URI", async () => {
+    const dir = await createTempDir("mtc-task-result-uri-");
+    const runner: InProcessRunner = {
+      id: "result-runner",
+      async run(plan) {
+        return {
+          runId: plan.runId,
+          status: "passed",
+          exitCode: 0,
+          resultUri: `result-bundle://runs/${plan.runId}`,
+        };
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), runner, { resolve: () => runner });
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const finished = await waitForStatus(manager, created.id, "passed");
+
+    expect(finished.resultUri).toBe(`result-bundle://runs/${created.runId}`);
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as {
+      tasks: Array<{ resultUri?: string }>;
+    };
+    expect(stored.tasks[0].resultUri).toBe(finished.resultUri);
+    await manager.shutdown();
+  });
+
+  it("任务终态持久化后通知接入进度监听器", async () => {
+    const dir = await createTempDir("mtc-task-completion-listener-");
+    const completed: Array<{ status: TaskStatus; resultUri?: string }> = [];
+    const runner: InProcessRunner = {
+      id: "result-runner",
+      async run(plan) {
+        return { runId: plan.runId, status: "passed", exitCode: 0, resultUri: `result-bundle://runs/${plan.runId}` };
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      task => { completed.push({ status: task.status, resultUri: task.resultUri }); },
+    );
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, created.id, "passed");
+    expect(completed).toEqual([{ status: "passed", resultUri: `result-bundle://runs/${created.runId}` }]);
+    await manager.shutdown();
+  });
+
+  it("resolver 抛错时仅将对应任务标记为失败", async () => {
+    const dir = await createTempDir("mtc-task-resolver-failure-");
+    const successfulRunner: InProcessRunner = {
+      id: "successful-runner",
+      async run(plan) {
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const resolver: RunnerResolver = {
+      resolve(plan) {
+        if (plan.device.key === device.key) throw new Error("runner selection failed");
+        return successfulRunner;
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), successfulRunner, resolver);
+    await manager.initialize();
+
+    const created = await manager.start({
+      testId: "pass",
+      deviceKeys: [device.key, secondDevice.key],
+      parameters: {},
+    }, [device, secondDevice]);
+    const failedTask = created.find(task => task.device.key === device.key)!;
+    const passedTask = created.find(task => task.device.key === secondDevice.key)!;
+
+    await expect(waitForStatus(manager, failedTask.id, "failed")).resolves.toMatchObject({
+      exitCode: null,
+      error: "runner selection failed",
+    });
+    await expect(waitForStatus(manager, passedTask.id, "passed")).resolves.toMatchObject({
+      exitCode: 0,
+      error: "",
+    });
+    await manager.shutdown();
+  });
+
+  it("按任务选择不同 runner 并将停止请求发给对应实例", async () => {
+    const dir = await createTempDir("mtc-task-multi-runner-");
+    const firstRunner = createControlledRunner("first-runner");
+    const secondRunner = createControlledRunner("second-runner");
+    const resolver: RunnerResolver = {
+      resolve(plan) {
+        return plan.device.key === device.key ? firstRunner.runner : secondRunner.runner;
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), firstRunner.runner, resolver);
+    await manager.initialize();
+
+    const created = await manager.start({
+      testId: "long",
+      deviceKeys: [device.key, secondDevice.key],
+      parameters: {},
+    }, [device, secondDevice]);
+    const firstTask = created.find(task => task.device.key === device.key)!;
+    const secondTask = created.find(task => task.device.key === secondDevice.key)!;
+    await Promise.all(created.map(task => waitForStatus(manager, task.id, "running")));
+
+    await manager.stop(firstTask.id);
+    await waitForStatus(manager, firstTask.id, "cancelled");
+    expect(firstRunner.cancelledRunIds).toEqual([firstTask.runId]);
+    expect(secondRunner.cancelledRunIds).toEqual([]);
+
+    await manager.stop(secondTask.id);
+    await waitForStatus(manager, secondTask.id, "cancelled");
+    expect(secondRunner.cancelledRunIds).toEqual([secondTask.runId]);
+    await manager.shutdown();
+  });
+
+  it("shutdown 对多任务共享 runner 只调用一次", async () => {
+    const dir = await createTempDir("mtc-task-shared-runner-");
+    const shutdown = vi.fn();
+    const sharedRunner: InProcessRunner = {
+      id: "shared-runner",
+      async run(plan) {
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+      shutdown,
+    };
+    const resolver: RunnerResolver = { resolve: () => sharedRunner };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), sharedRunner, resolver);
+    await manager.initialize();
+
+    const created = await manager.start({
+      testId: "pass",
+      deviceKeys: [device.key, secondDevice.key],
+      parameters: {},
+    }, [device, secondDevice]);
+    await Promise.all(created.map(task => waitForStatus(manager, task.id, "passed")));
+    await manager.shutdown();
+
+    expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
   it("同一设备保持互斥并支持停止任务", async () => {
@@ -154,6 +455,13 @@ const device: Device = {
   detail: "",
 };
 
+const secondDevice: Device = {
+  ...device,
+  key: "android:device-2",
+  id: "device-2",
+  name: "Device 2",
+};
+
 async function createManager() {
   const dir = await createTempDir("mtc-task-");
   const manager = new TaskManager(createConfig(dir), new StateStore(dir));
@@ -205,4 +513,31 @@ async function waitForStatus(manager: TaskManager, taskId: string, expected: Tas
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error(`等待任务状态超时: ${expected}`);
+}
+
+function createControlledRunner(id: string): {
+  runner: InProcessRunner;
+  cancelledRunIds: string[];
+} {
+  const pending = new Map<string, (result: RunnerResult) => void>();
+  const cancelledRuns = new Set<string>();
+  const cancelledRunIds: string[] = [];
+  return {
+    cancelledRunIds,
+    runner: {
+      id,
+      run(plan) {
+        if (cancelledRuns.has(plan.runId)) {
+          return Promise.resolve({ runId: plan.runId, status: "cancelled", exitCode: null });
+        }
+        return new Promise(resolve => pending.set(plan.runId, resolve));
+      },
+      cancel(runId) {
+        cancelledRuns.add(runId);
+        cancelledRunIds.push(runId);
+        pending.get(runId)?.({ runId, status: "cancelled", exitCode: null });
+        pending.delete(runId);
+      },
+    },
+  };
 }

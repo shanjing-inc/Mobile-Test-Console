@@ -6,6 +6,7 @@ import { AccountProfileStore } from "../src/server/account-profile-store.js";
 import { AccountProfileService } from "../src/server/account-profiles.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import type { AccountProfileCapture, AccountProfileProvider, AccountProfileRecording, Device } from "../src/shared/contracts.js";
+import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 
 const tempDirs: string[] = [];
 
@@ -467,7 +468,7 @@ describe("账号画像服务", () => {
     }), { mode: 0o644 });
     await fs.chmod(statePath, 0o644);
 
-    const store = new AccountProfileStore(root);
+    const store = new AccountProfileStore(root, TEST_PROJECT_ADAPTER);
     const firstLoad = await store.load();
     const profile = firstLoad.profiles.find(item => item.profileId === "qa-account");
     expect(profile?.providerEntries.map(item => item.provider)).toEqual(["huawei", "qq", "taobao", "taobao-commerce"]);
@@ -634,6 +635,7 @@ else emit();
     deviceProviders: ["android"],
     lifecycle: {},
     taskDeletion: {},
+    adapter: TEST_PROJECT_ADAPTER,
     accountProfiles: { provider: { executable: process.execPath, args: [providerPath] } },
     tests: [{ id: "smoke", label: "Smoke", description: "", platforms: ["android"], parameters: [], commands: { default: { executable: process.execPath, args: ["--version"] } } }],
   };
@@ -649,7 +651,12 @@ else emit();
     osVersion: "15",
     detail: "",
   };
-  return { stateDir, invocationPath, device, service: new AccountProfileService(config, new AccountProfileStore(stateDir)) };
+  return {
+    stateDir,
+    invocationPath,
+    device,
+    service: new AccountProfileService(config, new AccountProfileStore(stateDir, config.adapter)),
+  };
 }
 
 async function waitForRecording(service: AccountProfileService) {
@@ -693,7 +700,7 @@ function createCompleteCaptures(provider: AccountProfileProvider, recordingId: s
     captureId: `${recordingId}-native`,
     kind: "native",
     provider,
-    module: provider === "taobao-commerce" ? "LynxAlibcLoginModule" : "LynxAccountLoginModule",
+    module: provider === "taobao-commerce" ? "DemoCommerceLoginModule" : "DemoAccountLoginModule",
     method: provider === "taobao-commerce" ? "oauth2" : "authorize",
     params: {},
     result: { result: "success" },

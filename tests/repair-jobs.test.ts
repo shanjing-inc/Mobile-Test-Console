@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Device, RepairJob, TaskResult, TestTask } from "../src/shared/contracts.js";
 import { SystemCommandRunner } from "../src/server/command-runner.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
+import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 import type { DeviceDiscoveryService } from "../src/server/devices.js";
 import { buildCompleteFailureLogs, buildFailureContext, RepairJobManager, resolveCodexExecutable } from "../src/server/repair-job-manager.js";
 import { RepairJobStore } from "../src/server/repair-job-store.js";
@@ -44,7 +45,7 @@ describe("Codex 修复任务", () => {
     const context = buildFailureContext(fixed);
     expect(context).toContain("errorSummary: 页面打开失败");
     expect(context).toContain("failureLogExcerpt: fixture failed");
-    expect(context).toContain("missingEvents: lynx_page_ready");
+    expect(context).toContain("missingEvents: page_ready");
     expect(fixed.events.filter(event => event.status === "fixing" && event.message === "Codex 正在修改代码")).toHaveLength(1);
     expect(await fs.readFile(path.join(fixed.worktreePath, "untracked.txt"), "utf8")).toBe("untracked\n");
     expect(await fs.readFile(fixed.patchPath, "utf8")).toBe(fixed.diff);
@@ -167,7 +168,7 @@ describe("Codex 修复任务", () => {
     await fixture.tasks.shutdown();
   });
 
-  it("通过 App Server 创建 Fanli 工作台任务并在完成后复测", async () => {
+  it("通过 App Server 创建项目修复任务并在完成后复测", async () => {
     const fixture = await createFixture("pass");
     const executableDirectory = path.join(path.dirname(fixture.repo), "app-server-bin");
     const executable = path.join(executableDirectory, "codex");
@@ -189,7 +190,7 @@ input.on("line", line => {
   } else if (request.method === "thread/start") {
     if (!initialized) process.exit(8);
     fs.appendFileSync(request.params.runtimeWorkspaceRoots[0] + "/tracked.txt", "repair-app-server" + String.fromCharCode(10));
-    send({ id: request.id, result: { thread: { id: "fanli-repair-thread" } } });
+    send({ id: request.id, result: { thread: { id: "sample-repair-thread" } } });
   } else if (request.method === "thread/name/set") {
     send({ id: request.id, result: {} });
   } else if (request.method === "turn/start") {
@@ -208,7 +209,7 @@ input.on("line", line => {
     const created = await fixture.repairs.create(fixture.originalTask.id);
     const fixed = await waitForRepair(fixture.repairs, created.repairJobId, "fixed");
 
-    expect(fixed.codexThreadId).toBe("fanli-repair-thread");
+    expect(fixed.codexThreadId).toBe("sample-repair-thread");
     expect(fixed.diff).toContain("+repair-app-server");
     const prompt = await fs.readFile(path.join(fixed.worktreePath, ".codex-repair", "app-server-prompt.txt"), "utf8");
     expect(prompt).toContain("errorSummary: 页面打开失败");
@@ -412,6 +413,7 @@ function createConfig(projectRoot: string, stateDir: string, executable: string,
     deviceProviders: ["android"],
     lifecycle: {},
     taskDeletion: {},
+    adapter: TEST_PROJECT_ADAPTER,
     taskResults: {
       artifactsRoot: path.join(projectRoot, "artifacts"),
       provider: { executable: process.execPath, args: ["-e", "process.exit(0)"] },
@@ -501,8 +503,8 @@ function createTaskResult(taskId: string, status: "passed" | "failed"): TaskResu
     device: "device-1",
     status,
     errorSummary: status === "failed" ? "页面打开失败" : "",
-    requiredEvents: ["lynx_page_ready"],
-    missingEvents: status === "failed" ? ["lynx_page_ready"] : [],
+    requiredEvents: ["page_ready"],
+    missingEvents: status === "failed" ? ["page_ready"] : [],
     runtimeEventCount: status === "passed" ? 1 : 0,
     uiActionCount: 0,
     apiCalls: [],

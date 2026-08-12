@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/mobile-test-console-integration.md", "reason": "平台核心与 Fanli adapter 的边界、配置、CLI、API 与回滚契约"}
+{"file": ".trellis/tasks/08-05-mobile-test-console-platform-project-split/research/result-bundle-contract.md", "reason": "Result Bundle schema、导入幂等和 App/小程序目标模型"}
+{"file": ".trellis/tasks/08-05-mobile-test-console-platform-project-split/research/runner-plugin-boundaries.md", "reason": "Runner SDK、Connector/Sidecar 与兼容 facade 边界"}

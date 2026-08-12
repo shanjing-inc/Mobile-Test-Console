@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import open from "open";
 import { createApp } from "./app.js";
-import { SystemCommandRunner } from "./command-runner.js";
-import { loadProjectConfig } from "./config.js";
+import { applyDeviceToolEnv, SystemCommandRunner } from "./command-runner.js";
 import { DeviceDiscoveryService } from "./devices.js";
 import { ProjectLifecycle } from "./lifecycle.js";
 import { StateStore } from "./state-store.js";
@@ -14,11 +15,19 @@ import { TaskManager } from "./task-manager.js";
 import { RepairJobStore } from "./repair-job-store.js";
 import { RepairJobManager } from "./repair-job-manager.js";
 import { TaskResultService } from "./task-results.js";
+import { ResultBundleStore } from "./result-bundle-store.js";
+import { loadRunnerRuntime } from "./runner-runtime.js";
+import { ProjectCatalogService, ProjectCatalogStore } from "./project-catalog.js";
+import { DirectoryPicker } from "./directory-picker.js";
+import { isConfiguredProject, resolveProjectCatalogPath, resolveStartupProject } from "./startup-project.js";
+
+applyDeviceToolEnv();
 
 const { values } = parseArgs({
   args: process.argv.slice(2).filter(argument => argument !== "--"),
   options: {
     config: { type: "string", short: "c" },
+    "project-catalog": { type: "string" },
     host: { type: "string", default: "127.0.0.1" },
     port: { type: "string", default: "4310" },
     open: { type: "boolean", default: false },
@@ -27,14 +36,8 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  process.stdout.write(`用法：mobile-test-console --config <path> [--host 127.0.0.1] [--port 4310] [--open]\n`);
+  process.stdout.write(`用法：mobile-test-console [--config <path>] [--project-catalog <path>] [--host 127.0.0.1] [--port 4310] [--open]\n`);
   process.exit(0);
-}
-
-const configPath = String(values.config || process.env.MTC_CONFIG || "").trim();
-if (!configPath) {
-  process.stderr.write("缺少项目配置，请传入 --config 或设置 MTC_CONFIG\n");
-  process.exit(2);
 }
 
 const port = Number(values.port);
@@ -43,24 +46,62 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   process.exit(2);
 }
 
-const config = await loadProjectConfig(configPath);
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const productionBuild = path.basename(path.dirname(currentDir)) === "dist";
+const platformRoot = path.resolve(currentDir, "../..");
+const projectCatalogPath = resolveProjectCatalogPath(values["project-catalog"]);
+const projectCatalogStore = new ProjectCatalogStore(projectCatalogPath);
+const startupProject = await resolveStartupProject({
+  configPath: String(values.config || process.env.MTC_CONFIG || "").trim(),
+  platformRoot,
+});
+const config = startupProject.config;
 const runner = new SystemCommandRunner();
+const directoryPicker = new DirectoryPicker(runner);
+const projectCatalog = new ProjectCatalogService(projectCatalogStore, runner);
+await projectCatalog.initialize(isConfiguredProject(startupProject) ? config : undefined);
 const devices = new DeviceDiscoveryService(runner, config.deviceProviders, config.iosSimulator, config);
-const tasks = new TaskManager(config, new StateStore(config.stateDir));
+const resultBundles = new ResultBundleStore(config.stateDir);
+const runnerRuntime = await loadRunnerRuntime(config, [], resultBundles);
+const tasks = new TaskManager(
+  config,
+  new StateStore(config.stateDir),
+  runnerRuntime.compatibilityRunner,
+  runnerRuntime.resolver,
+);
 await tasks.initialize();
-const taskResults = new TaskResultService(config, tasks);
+const taskResults = new TaskResultService(config, tasks, resultBundles);
 const repairs = config.codexRepair?.enabled
   ? new RepairJobManager(config, new RepairJobStore(config.stateDir), tasks, taskResults, devices, runner)
   : undefined;
 if (repairs) await repairs.initialize();
 const lifecycle = new ProjectLifecycle(config);
 const lifecycleManaged = process.env.MTC_LIFECYCLE_MANAGED === "1";
-if (!lifecycleManaged) await lifecycle.startup();
+if (!lifecycleManaged && isConfiguredProject(startupProject)) await lifecycle.startup();
 
-const currentDir = path.dirname(fileURLToPath(import.meta.url));
-const productionBuild = path.basename(path.dirname(currentDir)) === "dist";
 const staticDir = productionBuild ? path.resolve(currentDir, "../web") : undefined;
-const app = await createApp({ config, devices, tasks, taskResults, repairs, staticDir });
+const app = await createApp({
+  config,
+  devices,
+  tasks,
+  taskResults,
+  repairs,
+  resultBundles,
+  projectProviders: runnerRuntime.providers.manifests(),
+  projectCatalog,
+  directoryPicker,
+  onProjectSwitch: async configPathToSwitch => {
+    restartConfigPath = configPathToSwitch;
+    const developmentSwitchFile = process.env.MTC_DEV_SWITCH_FILE;
+    if (developmentSwitchFile) {
+      await fs.writeFile(developmentSwitchFile, `${JSON.stringify({ configPath: configPathToSwitch })}\n`);
+      setTimeout(() => void close(), 0).unref?.();
+      return;
+    }
+    setTimeout(() => void close(), 0).unref?.();
+  },
+  staticDir,
+});
 const host = String(values.host);
 let address: string;
 try {
@@ -76,15 +117,19 @@ try {
 const webAddress = productionBuild ? address : `http://${host}:4311`;
 process.stdout.write(`Mobile Test Console 已启动: ${webAddress}\n`);
 if (!productionBuild) process.stdout.write(`API: ${address}\n`);
-process.stdout.write(`项目: ${config.project.name}\n`);
+if (startupProject.diagnostic) process.stderr.write(`[startup] ${startupProject.diagnostic}\n`);
+process.stdout.write(isConfiguredProject(startupProject)
+  ? `项目: ${config.project.name}\n`
+  : "项目: 尚未选择，请在项目概览添加并激活项目\n");
 
 if (values.open) await open(webAddress);
 
 let closing = false;
-const close = async () => {
+let restartConfigPath = "";
+const close = async (requestedExitCode = 0) => {
   if (closing) return;
   closing = true;
-  let exitCode = 0;
+  let exitCode = requestedExitCode;
   for (const [label, action] of [
     ...(repairs ? [["停止 Codex 修复", () => repairs.shutdown()]] as const : []),
     ["停止任务", () => tasks.shutdown()],
@@ -98,7 +143,40 @@ const close = async () => {
       process.stderr.write(`[shutdown] ${label}失败: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
+  if (restartConfigPath && !process.env.MTC_DEV_SWITCH_FILE) {
+    const child = spawn(process.execPath, replaceConfigArgument(restartConfigPath), {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, MTC_CONFIG: restartConfigPath },
+    });
+    child.once("error", error => process.stderr.write(`[switch] 项目重启失败: ${error.message}\n`));
+    child.unref();
+  }
+  if (restartConfigPath && process.env.MTC_DEV_SWITCH_FILE && process.ppid > 1) {
+    // tsx watch 会继续驻留等待文件变化，主动结束它才能让 dev.mjs 接管重启。
+    try {
+      process.kill(process.ppid, "SIGTERM");
+    } catch {
+      // 父进程已经退出时，当前进程仍按原有退出流程结束。
+    }
+  }
   process.exit(exitCode);
 };
 process.once("SIGINT", () => void close());
 process.once("SIGTERM", () => void close());
+
+function replaceConfigArgument(nextConfigPath: string): string[] {
+  const args = process.argv.slice(1);
+  const longIndex = args.indexOf("--config");
+  if (longIndex >= 0) {
+    args[longIndex + 1] = nextConfigPath;
+    return args;
+  }
+  const shortIndex = args.indexOf("-c");
+  if (shortIndex >= 0) {
+    args[shortIndex + 1] = nextConfigPath;
+    return args;
+  }
+  args.push("--config", nextConfigPath);
+  return args;
+}

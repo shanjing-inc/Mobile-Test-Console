@@ -1,8 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
-import { supportsAccountProfileProvider } from "../shared/account-profile-compatibility.js";
-import { ACCOUNT_PROFILE_PROVIDERS } from "../shared/contracts.js";
 import type {
   AccountProfile,
   AccountProfileCapture,
@@ -22,6 +20,7 @@ import type {
 import { resolveAccountProfileProviderCommand, type LoadedProjectConfig, type ResolvedCommand } from "./config.js";
 import { ConsoleError } from "./errors.js";
 import { AccountProfileStore } from "./account-profile-store.js";
+import { accountProfileCapabilities, resolveAccountProfileProviderAdapter, resolveProjectAdapter, supportsAccountProfileProviderAdapter, isCompleteAccountProfileRecording } from "./project-adapter.js";
 
 const PROVIDER_SCHEMA = "mobile-test-console.account-profile-provider.v1";
 const ACTIVE_RECORDING_STATUSES: readonly AccountProfileRecording["status"][] = ["starting", "recording"];
@@ -30,7 +29,7 @@ const timestampSchema = z.string().refine(value => Number.isFinite(Date.parse(va
 const accountProfileCaptureSchema = z.object({
   captureId: z.string().min(1),
   kind: z.enum(["native", "graphql"]),
-  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+  provider: z.string().regex(/^[a-z][a-z0-9-]*$/),
   module: z.string().min(1).optional(),
   method: z.string().min(1).optional(),
   operationName: z.string().min(1).optional(),
@@ -72,6 +71,7 @@ export class AccountProfileService {
     const profiles = state.profiles.map(normalizeAccountProfile);
     return {
       schemaVersion: "mobile-test-console.account-profiles.v1",
+      providers: resolveProjectAdapter(this.config).accountProfiles.providers,
       profiles: profiles.sort((left, right) => latestRecordedAt(right).localeCompare(latestRecordedAt(left))).map(toAccountProfileSummary),
       recordings: [...state.recordings].sort((left, right) => right.startedAt.localeCompare(left.startedAt)).map(toAccountProfileRecordingSummary),
       warnings: this.config.accountProfiles ? [] : ["当前项目未配置账号画像 provider"],
@@ -79,7 +79,7 @@ export class AccountProfileService {
   }
 
   async startRecording(device: Device, input: StartAccountProfileRecordingRequest): Promise<AccountProfileRecording> {
-    assertProviderDevice(input.provider, device);
+    assertProviderDevice(input.provider, device, resolveAccountProfileProviderAdapter(this.config, input.provider));
     const recording = await this.store.update(state => {
       const active = state.recordings.find(item => item.deviceKey === device.key && isActiveRecording(item));
       if (active) throw new ConsoleError("ACCOUNT_RECORDING_ACTIVE", `${device.name} 已有账号录制会话`, 409);
@@ -157,11 +157,12 @@ export class AccountProfileService {
       current.status = payload.status === "failed" ? "failed" : "stopped";
       current.stoppedAt = new Date().toISOString();
 
-      const validationError = validateSuccessfulRecording(current);
+      const definition = resolveAccountProfileProviderAdapter(this.config, current.provider);
+      const validationError = validateSuccessfulRecording(current, definition);
       let profile: AccountProfile | undefined;
       if (!validationError) {
         const existing = latest.profiles.find(item => item.profileId === current.profileId);
-        profile = mergeAccountProfile(existing ? normalizeAccountProfile(existing) : undefined, current);
+        profile = mergeAccountProfile(existing ? normalizeAccountProfile(existing) : undefined, current, definition);
         latest.profiles = latest.profiles.filter(item => item.profileId !== profile!.profileId);
         latest.profiles.push(profile);
       } else if (current.status !== "failed") {
@@ -193,7 +194,7 @@ export class AccountProfileService {
     if (!providerEntry) {
       throw new ConsoleError("ACCOUNT_PROFILE_PROVIDER_UNKNOWN", `账号画像 ${profileId} 未录制 ${provider} 分支`, 404);
     }
-    assertProviderReplayScope(profile, providerEntry, device);
+    assertProviderReplayScope(profile, providerEntry, device, resolveAccountProfileProviderAdapter(this.config, provider));
     assertProviderExpiry(profile, providerEntry);
     const startedAt = new Date().toISOString();
     const payload = await this.callReplayProvider(profile, provider, device);
@@ -252,7 +253,8 @@ export class AccountProfileService {
       );
     }
     assertProviderExpiry(profile, providerEntry);
-    devices.forEach(device => assertProviderReplayScope(profile, providerEntry, device));
+    const definition = resolveAccountProfileProviderAdapter(this.config, provider);
+    devices.forEach(device => assertProviderReplayScope(profile, providerEntry, device, definition));
   }
 
   async source(profileId: string, provider: AccountProfileProvider): Promise<AccountProfileSourceResponse> {
@@ -401,33 +403,30 @@ function applyRecordingPayload(recording: AccountProfileRecording, payload: Reco
   recording.captures = mergeCaptures(recording.captures, payload.captures ?? []);
 }
 
-function validateSuccessfulRecording(recording: AccountProfileRecording): string {
+function validateSuccessfulRecording(recording: AccountProfileRecording, definition: ReturnType<typeof resolveAccountProfileProviderAdapter>): string {
   if (recording.captures.length === 0) return "录制期间未捕获账号授权数据";
   if (recording.captures.some(item => item.provider !== recording.provider)) {
     return `录制数据包含其他 Provider 分支: ${recording.provider}`;
   }
   const nativeSuccess = recording.captures.some(item => item.kind === "native" && readResultState(item.result) === "success");
   if (!nativeSuccess) return "录制期间未捕获成功的原生授权结果";
-  if (recording.provider !== "taobao-commerce") {
-    const loginSuccess = recording.captures.some(item => item.kind === "graphql" && findScalar(item.result, "uid") && findScalar(item.result, "session_key"));
-    if (!loginSuccess) return "录制期间未捕获成功的 OAuth 登录结果";
+  if (!isCompleteAccountProfileRecording(definition, recording.captures)) {
+    return definition?.requiredCaptureKinds.includes("graphql")
+      ? "录制期间未捕获成功的 OAuth 登录结果"
+      : "录制期间未捕获完整的账号授权结果";
   }
   return "";
 }
 
-function buildProviderEntry(recording: AccountProfileRecording): AccountProfileProviderEntry {
+function buildProviderEntry(recording: AccountProfileRecording, definition: ReturnType<typeof resolveAccountProfileProviderAdapter>): AccountProfileProviderEntry {
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const capabilities = new Set<string>([recording.provider === "taobao-commerce" ? "taobao-commerce-auth" : "login"]);
-  recording.captures.forEach(item => {
-    if (item.module === "LynxAlibcLoginModule" && ["getSession", "login"].includes(String(item.method))) capabilities.add("taobao-session");
-    if (item.module === "LynxAlibcLoginModule" && item.method === "oauth2") capabilities.add("taobao-oauth2");
-  });
+  const capabilities = accountProfileCapabilities(definition, recording.captures);
   const uid = recording.captures.map(item => findScalar(item.result, "uid")).find(Boolean) ?? "";
   return {
     provider: recording.provider,
     accountUid: uid,
     sourceDeviceKey: recording.deviceKey,
-    capabilities: [...capabilities].sort(),
+    capabilities,
     captures: recording.captures,
     recordedAt: recording.startedAt,
     validatedAt: "",
@@ -435,8 +434,8 @@ function buildProviderEntry(recording: AccountProfileRecording): AccountProfileP
   };
 }
 
-function mergeAccountProfile(existing: AccountProfile | undefined, recording: AccountProfileRecording): AccountProfile {
-  const entry = buildProviderEntry(recording);
+function mergeAccountProfile(existing: AccountProfile | undefined, recording: AccountProfileRecording, definition: ReturnType<typeof resolveAccountProfileProviderAdapter>): AccountProfile {
+  const entry = buildProviderEntry(recording, definition);
   if (!existing) {
     return {
       schemaVersion: "mobile-test-console.account-profile.v2",
@@ -510,15 +509,16 @@ function assertProviderReplayScope(
   profile: AccountProfile,
   entry: AccountProfileProviderEntry,
   device: Pick<Device, "platform" | "manufacturer" | "name" | "detail">,
+  definition: ReturnType<typeof resolveAccountProfileProviderAdapter>,
 ): void {
-  if (!supportsAccountProfileProvider(entry.provider, device)) {
+  if (!supportsAccountProfileProviderAdapter(definition, device)) {
     throw new ConsoleError(
       "ACCOUNT_PROFILE_DEVICE_MISMATCH",
-      `账号画像 ${profile.profileId}/${entry.provider} 仅支持华为设备`,
+      `账号画像 ${profile.profileId}/${entry.provider} 不支持当前设备`,
       409,
     );
   }
-  const requiredCapability = entry.provider === "taobao-commerce" ? "taobao-commerce-auth" : "login";
+  const requiredCapability = definition?.requiredCapability ?? "login";
   if (!entry.capabilities.includes(requiredCapability)) {
     throw new ConsoleError(
       "ACCOUNT_PROFILE_CAPABILITY_MISMATCH",
@@ -526,7 +526,8 @@ function assertProviderReplayScope(
       409,
     );
   }
-  if (profile.platform !== device.platform && !entry.capabilities.includes("login")) {
+  const crossPlatformCapability = definition?.crossPlatformCapability ?? "login";
+  if (profile.platform !== device.platform && !entry.capabilities.includes(crossPlatformCapability)) {
     throw new ConsoleError(
       "ACCOUNT_PROFILE_PLATFORM_MISMATCH",
       `账号画像 ${profile.profileId}/${entry.provider} 缺少跨平台 login 能力`,
@@ -538,11 +539,12 @@ function assertProviderReplayScope(
 function assertProviderDevice(
   provider: AccountProfileProvider,
   device: Pick<Device, "platform" | "manufacturer" | "name" | "detail">,
+  definition: ReturnType<typeof resolveAccountProfileProviderAdapter>,
 ): void {
-  if (!supportsAccountProfileProvider(provider, device)) {
+  if (!supportsAccountProfileProviderAdapter(definition, device)) {
     throw new ConsoleError(
       "ACCOUNT_PROFILE_DEVICE_MISMATCH",
-      `账号画像 ${provider} 仅支持华为设备`,
+      `账号画像 ${provider} 不支持当前设备`,
       409,
     );
   }

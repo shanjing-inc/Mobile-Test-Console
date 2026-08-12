@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertPortsAvailable, isConsoleRunning } from "../scripts/dev-ports.mjs";
+import { assertPortsAvailable, isConsoleRunning, waitForPortsAvailable } from "../scripts/dev-ports.mjs";
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -24,6 +24,20 @@ describe("开发服务端口检查", () => {
     if (!address || typeof address === "string") throw new Error("测试端口解析失败");
 
     await expect(assertPortsAvailable([address.port])).rejects.toThrow(`端口被占用: ${address.port}`);
+  });
+
+  it("等待重启中的服务释放端口后继续", async () => {
+    const server = createServer();
+    servers.push(server);
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("测试端口解析失败");
+
+    setTimeout(() => server.close(), 30);
+    await expect(waitForPortsAvailable([address.port], { timeoutMs: 500, intervalMs: 10 })).resolves.toBeUndefined();
   });
 
   it("健康检查成功时识别现有控制台", async () => {

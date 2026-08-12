@@ -1,18 +1,174 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DeviceDiscoveryService,
-  classifyIosSimulators,
   compareDiscoveredDevices,
+} from "../src/server/devices.js";
+import {
+  classifyIosSimulators,
   parseAndroidDevices,
   parseHarmonyDevices,
+  parseIosPhysicalDeviceDetails,
   parseIosPhysicalDevices,
   parseIosSimulators,
   parseSupportedIosSimulatorIds,
-} from "../src/server/devices.js";
+} from "../src/runner/app-device-connectors.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
+import { createAppConnectorManifest } from "../src/runner/app-connector-manifest.js";
+import { InProcessConnectorRegistry } from "../src/runner/sdk.js";
 
 describe("设备输出解析", () => {
+  it("通过 Connector Registry 发现设备并暴露能力清单", async () => {
+    const registry = new InProcessConnectorRegistry();
+    const manifest = createAppConnectorManifest("android-test", "android", {
+      capabilities: [{ id: "device.discover", version: 1 }],
+    });
+    const device = {
+      key: "android:test-device",
+      id: "test-device",
+      name: "Test Device",
+      platform: "android" as const,
+      type: "physical" as const,
+      connectionState: "available" as const,
+      osVersion: "14",
+      detail: "",
+      controlState: "ready" as const,
+      controlReason: "",
+      connectorId: "android-test",
+      capabilities: ["device.discover"],
+    };
+    let discoverCount = 0;
+    registry.register({
+      id: "android-test",
+      manifest,
+      discover: async () => {
+        discoverCount += 1;
+        return [device];
+      },
+    });
+
+    const service = new DeviceDiscoveryService(
+      { capture: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      ["android"],
+      undefined,
+      undefined,
+      { connectorRegistry: registry },
+    );
+
+    await expect(service.discover()).resolves.toMatchObject({ devices: [device] });
+    expect(discoverCount).toBe(1);
+    expect(service.connectorManifests()).toEqual([manifest]);
+  });
+
+  it("通过 Connector lifecycle port 启动设备并保留服务层校验", async () => {
+    const registry = new InProcessConnectorRegistry();
+    const manifest = createAppConnectorManifest("ios-test", "ios", {
+      deviceType: ["simulator"],
+      capabilities: [
+        { id: "device.discover", version: 1 },
+        { id: "device.start", version: 1 },
+      ],
+    });
+    const device = {
+      key: "ios:test-simulator",
+      id: "test-simulator",
+      name: "Test Simulator",
+      platform: "ios" as const,
+      type: "simulator" as const,
+      connectionState: "offline" as const,
+      osVersion: "18",
+      detail: "可启动",
+      controlState: "startable" as const,
+      controlReason: "",
+      connectorId: "ios-test",
+      capabilities: ["device.discover", "device.start"],
+    };
+    let startCount = 0;
+    registry.register({
+      id: "ios-test",
+      manifest,
+      discover: async () => [device],
+      start: async current => {
+        startCount += 1;
+        return { ...current, connectionState: "available", controlState: "ready", detail: "已启动" };
+      },
+    });
+
+    const service = new DeviceDiscoveryService(
+      { capture: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      ["ios"],
+      undefined,
+      undefined,
+      { connectorRegistry: registry },
+    );
+
+    await expect(service.start(device.key)).resolves.toMatchObject({ connectionState: "available", controlState: "ready" });
+    expect(startCount).toBe(1);
+  });
+
+  it("通过 Connector lifecycle port 检查并安装设备准备项", async () => {
+    const registry = new InProcessConnectorRegistry();
+    const manifest = createAppConnectorManifest("android-test", "android", {
+      capabilities: [
+        { id: "device.discover", version: 1 },
+        { id: "device.prepare", version: 1 },
+      ],
+    });
+    const device = {
+      key: "android:test-device",
+      id: "test-device",
+      name: "Test Device",
+      platform: "android" as const,
+      type: "physical" as const,
+      connectionState: "available" as const,
+      osVersion: "14",
+      detail: "",
+      controlState: "ready" as const,
+      controlReason: "",
+      connectorId: "android-test",
+      capabilities: ["device.discover", "device.prepare"],
+    };
+    let installed = false;
+    const actions: string[] = [];
+    registry.register({
+      id: "android-test",
+      manifest,
+      discover: async () => [device],
+      prepare: async (current, request) => {
+        actions.push(request.action);
+        if (request.action === "install") installed = true;
+        return {
+          ...current,
+          preparations: [{
+            id: "driver",
+            label: "Driver",
+            status: installed ? "ready" : "required",
+            detail: installed ? "已就绪" : "需要安装",
+            installable: true,
+            blocksTests: true,
+          }],
+        };
+      },
+    });
+    const service = new DeviceDiscoveryService(
+      { capture: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      ["android"],
+      undefined,
+      undefined,
+      { connectorRegistry: registry },
+    );
+
+    await expect(service.discover()).resolves.toMatchObject({
+      devices: [{ preparations: [{ id: "driver", status: "required" }] }],
+    });
+    await expect(service.installPreparation(device.key, "driver")).resolves.toMatchObject({
+      preparation: { id: "driver", status: "ready" },
+    });
+    expect(actions).toEqual(["check", "check", "install"]);
+  });
+
   it("解析 Android 在线、离线、未授权和模拟器", () => {
     const devices = parseAndroidDevices(`List of devices attached
 378effca device product:foo model:Pixel_8 device:husky transport_id:1
@@ -49,6 +205,148 @@ pending-one unauthorized
 
     expect(simulators[0]).toMatchObject({ key: "ios:SIM-1", type: "simulator", osVersion: "18.2", controlState: "ready" });
     expect(physical[0]).toMatchObject({ key: "ios:PHONE-1", type: "physical", connectionState: "available" });
+  });
+
+  it("iOS 真机已连接但开发者磁盘映像不可用时展示 Xcode 引导", () => {
+    const listed = parseIosPhysicalDevices(JSON.stringify({
+      result: {
+        devices: [{
+          identifier: "PHONE-DDI",
+          connectionProperties: { tunnelState: "disconnected", transportType: "wired", pairingState: "paired" },
+          deviceProperties: { name: "QA iPhone", osVersionNumber: "26.5.2" },
+          hardwareProperties: { platform: "iOS" },
+        }],
+      },
+    }));
+    const detailed = parseIosPhysicalDeviceDetails(JSON.stringify({
+      result: {
+        identifier: "PHONE-DDI",
+        connectionProperties: { tunnelState: "connected", transportType: "wired", pairingState: "paired" },
+        deviceProperties: {
+          name: "QA iPhone",
+          osVersionNumber: "26.5.2",
+          developerModeStatus: "enabled",
+          ddiServicesAvailable: false,
+        },
+        hardwareProperties: { platform: "iOS" },
+      },
+    }));
+
+    expect(listed[0]).toMatchObject({ connectionState: "available", controlState: "unavailable" });
+    expect(detailed).toMatchObject({
+      connectionState: "available",
+      controlState: "unavailable",
+      detail: expect.stringContaining("Developer Disk Image 不可用"),
+      controlReason: expect.stringContaining("支持 iOS 26.5.2 的 Xcode"),
+    });
+  });
+
+  it("发现 iOS 真机时继续探测开发服务详情", async () => {
+    const calls: string[] = [];
+    const outputPaths: string[] = [];
+    const runner: CommandRunner = {
+      async capture(executable, args) {
+        calls.push([executable, ...args].join(" "));
+        if (executable === "xcrun" && args[0] === "simctl") {
+          return { code: 0, stdout: JSON.stringify({ devices: {} }), stderr: "" };
+        }
+        if (executable === "xcrun" && args[0] === "devicectl" && args[1] === "list") {
+          const outputPath = args[args.indexOf("--json-output") + 1];
+          outputPaths.push(outputPath);
+          await fs.writeFile(outputPath, JSON.stringify({
+            result: {
+              devices: [{
+                identifier: "PHONE-DETAIL",
+                connectionProperties: { tunnelState: "disconnected", transportType: "wired", pairingState: "paired" },
+                deviceProperties: { name: "QA iPhone", osVersionNumber: "26.5.2" },
+                hardwareProperties: { platform: "iOS" },
+              }],
+            },
+          }));
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        if (executable === "xcrun" && args[0] === "devicectl" && args[1] === "device") {
+          const outputPath = args[args.indexOf("--json-output") + 1];
+          outputPaths.push(outputPath);
+          setTimeout(() => void fs.writeFile(outputPath, JSON.stringify({
+            result: {
+              identifier: "PHONE-DETAIL",
+              connectionProperties: { tunnelState: "connected", transportType: "wired", pairingState: "paired" },
+              deviceProperties: {
+                name: "QA iPhone",
+                osVersionNumber: "26.5.2",
+                developerModeStatus: "enabled",
+                ddiServicesAvailable: false,
+              },
+              hardwareProperties: { platform: "iOS" },
+            },
+          })), 10);
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        return { code: 1, stdout: "", stderr: "unexpected command" };
+      },
+    };
+    const service = new DeviceDiscoveryService(runner, ["ios"]);
+
+    const result = await service.discover();
+
+    expect(result.devices[0]).toMatchObject({
+      id: "PHONE-DETAIL",
+      connectionState: "available",
+      controlState: "unavailable",
+      controlReason: expect.stringContaining("Developer Disk Image 服务不可用"),
+    });
+    expect(calls.some(call => call.includes("devicectl device info details --device PHONE-DETAIL"))).toBe(true);
+    expect(outputPaths).toHaveLength(2);
+    await expect(fs.access(path.dirname(outputPaths[0]))).rejects.toThrow();
+  });
+
+  it("单台 iOS 真机详情探测失败时保留其他设备", async () => {
+    const runner: CommandRunner = {
+      async capture(executable, args) {
+        if (executable === "xcrun" && args[0] === "simctl") {
+          return { code: 0, stdout: JSON.stringify({ devices: {} }), stderr: "" };
+        }
+        if (executable === "xcrun" && args[0] === "devicectl" && args[1] === "list") {
+          const outputPath = args[args.indexOf("--json-output") + 1];
+          await fs.writeFile(outputPath, JSON.stringify({
+            result: {
+              devices: ["PHONE-READY", "PHONE-FAILED"].map(identifier => ({
+                identifier,
+                connectionProperties: { tunnelState: "disconnected", transportType: "wired", pairingState: "paired" },
+                deviceProperties: { name: identifier, osVersionNumber: "26.5.2" },
+                hardwareProperties: { platform: "iOS" },
+              })),
+            },
+          }));
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        const deviceId = args[args.indexOf("--device") + 1];
+        if (deviceId === "PHONE-FAILED") throw new Error("详情命令异常退出");
+        const outputPath = args[args.indexOf("--json-output") + 1];
+        await fs.writeFile(outputPath, JSON.stringify({
+          result: {
+            identifier: deviceId,
+            connectionProperties: { tunnelState: "connected", transportType: "wired", pairingState: "paired" },
+            deviceProperties: { name: deviceId, osVersionNumber: "26.5.2", developerModeStatus: "enabled", ddiServicesAvailable: true },
+            hardwareProperties: { platform: "iOS" },
+          },
+        }));
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    };
+
+    const result = await new DeviceDiscoveryService(runner, ["ios"]).discover();
+
+    expect(result.devices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "PHONE-READY", connectionState: "available", controlState: "ready" }),
+      expect.objectContaining({
+        id: "PHONE-FAILED",
+        connectionState: "available",
+        controlState: "unavailable",
+        controlReason: "iOS 真机详情探测失败：详情命令异常退出",
+      }),
+    ]));
   });
 
   it("按 Xcode destinations 标记已启动、可启动和不可用模拟器", () => {
@@ -285,14 +583,19 @@ a-device offline model:Alpha
 
   it("Android 设备展示 Maestro 准备状态并支持安装复检", async () => {
     let installed = false;
+    const preparationCalls: string[] = [];
     const runner: CommandRunner = {
       async capture(executable, args) {
         if (executable === "adb" && args[0] === "devices") {
           return { code: 0, stdout: "redmi-1 device model:Redmi_K20\n", stderr: "" };
         }
         if (executable === "adb") return { code: 0, stdout: "Xiaomi\n", stderr: "" };
-        if (args[0] === "check") return { code: installed ? 0 : 1, stdout: "", stderr: "" };
+        if (args[0] === "check") {
+          preparationCalls.push("check");
+          return { code: installed ? 0 : 1, stdout: "", stderr: "" };
+        }
         if (args[0] === "install") {
+          preparationCalls.push("install");
           installed = true;
           return { code: 0, stdout: "installed", stderr: "" };
         }
@@ -309,6 +612,29 @@ a-device offline model:Alpha
       .toMatchObject({ preparation: { status: "ready" } });
     expect((await service.discover()).devices[0].preparations)
       .toEqual([expect.objectContaining({ status: "ready" })]);
+    expect(preparationCalls.slice(-3)).toEqual(["install", "check", "check"]);
+  });
+
+  it("v1 设备准备适配器保留未知项和缺少安装命令错误", async () => {
+    const runner: CommandRunner = {
+      async capture(executable, args) {
+        if (executable === "adb" && args[0] === "devices") {
+          return { code: 0, stdout: "redmi-1 device model:Redmi_K20\n", stderr: "" };
+        }
+        if (executable === "adb") return { code: 0, stdout: "Xiaomi\n", stderr: "" };
+        return { code: 1, stdout: "", stderr: "missing" };
+      },
+    };
+    const config = preparationConfig();
+    const service = new DeviceDiscoveryService(runner, ["android"], undefined, config);
+
+    await expect(service.installPreparation("android:redmi-1", "unknown"))
+      .rejects.toMatchObject({ code: "DEVICE_PREPARATION_UNKNOWN" });
+
+    config.devicePreparations![0] = { ...config.devicePreparations![0], install: undefined };
+    const unavailableService = new DeviceDiscoveryService(runner, ["android"], undefined, config);
+    await expect(unavailableService.installPreparation("android:redmi-1", "maestro-driver"))
+      .rejects.toMatchObject({ code: "DEVICE_PREPARATION_UNAVAILABLE" });
   });
 
   it("启动重新校验后的可启动模拟器并等待 bootstatus", async () => {

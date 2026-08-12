@@ -1,0 +1,25 @@
+{
+  "name": "com.shanjing.example",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=18.20.0"
+  },
+  "scripts": {
+    "dev": "rspeedy dev",
+    "build:lynx": "rspeedy build --environment lynx",
+    "build:android": "node qa/prepare.cjs --capabilities app.build --platform android --device local-build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lynx-js/react": "0.119.0"
+  },
+  "devDependencies": {
+    "@lynx-js/react-rsbuild-plugin": "^0.16.0",
+    "@lynx-js/rspeedy": "^0.14.2",
+    "@lynx-js/types": "4.0.0",
+    "@types/react": "^18.3.28",
+    "typescript": "^5.4.0"
+  }
+}

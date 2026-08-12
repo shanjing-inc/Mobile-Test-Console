@@ -1,0 +1,8 @@
+packages: []
+
+overrides:
+  "@lynx-js/tasm": 0.0.48
+  "@lynx-js/types": 4.0.0
+
+allowBuilds:
+  esbuild: true

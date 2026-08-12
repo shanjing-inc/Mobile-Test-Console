@@ -18,6 +18,22 @@ export async function assertPortsAvailable(ports) {
   }
 }
 
+export async function waitForPortsAvailable(ports, { timeoutMs = 10_000, intervalMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() <= deadline) {
+    try {
+      await assertPortsAvailable(ports);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  const detail = lastError instanceof Error ? lastError.message : String(lastError || "端口仍被占用");
+  throw new Error(`等待开发服务端口释放超时: ${detail}`);
+}
+
 export async function isConsoleRunning(fetchImpl = globalThis.fetch) {
   try {
     const response = await fetchImpl("http://127.0.0.1:4310/api/health", {

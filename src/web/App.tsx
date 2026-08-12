@@ -4,7 +4,6 @@ import {
   BarChart3,
   CheckCircle2,
   ChevronRight,
-  CircleDot,
   Clock3,
   Copy,
   Download,
@@ -27,14 +26,24 @@ import {
   Trash2,
   XCircle,
   Bot,
+  FolderKanban,
+  FolderPlus,
   RotateCcw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  AccountProfileProvider,
   AccountProfileSummary,
   AccountProfilesResponse,
   ConsoleSnapshot,
+  ProjectCatalogEntry,
+  ProjectCatalogResponse,
+  ProjectConfigSelection,
+  ProjectSetupApplyResponse,
+  ProjectSetupPlan,
+  PreviewProjectInitializationRequest,
+  ApplyProjectInitializationRequest,
+  ApplyProjectSetupRequest,
+  RegisterProjectRequest,
   Device,
   DeviceConnectionState,
   Platform,
@@ -46,12 +55,21 @@ import type {
   RepairJob,
   RepairJobPreview,
 } from "../shared/contracts";
-import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, TERMINAL_TASK_STATUSES } from "../shared/contracts";
+import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, PROJECT_EXECUTION_PREREQUISITE_STEP_IDS, TERMINAL_TASK_STATUSES } from "../shared/contracts";
 import { supportsAccountProfileProvider } from "../shared/account-profile-compatibility";
-import { ApiError, cancelRepairJob, createRepairJob, deleteTask, fetchAccountProfiles, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, retryRepairTest, selectRepairProjectDirectory, startDevice, startTasks, stopTask, taskArtifactUrl } from "./api";
+import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults";
+import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, registerProject, retryRepairTest, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
 import { PageParametersWorkspace } from "./PageParametersWorkspace";
+import { PageSelectionField } from "./PageSelectionField";
 import { AccountProfilesWorkspace } from "./AccountProfilesWorkspace";
 import { BusinessScriptsWorkspace } from "./BusinessScriptsWorkspace";
+import { ProjectCatalogWorkspace } from "./ProjectCatalogWorkspace";
+import {
+  reconcileWorkspaceView,
+  resolveWorkspaceViews,
+  workspaceDisabledReason,
+  type WorkspaceView,
+} from "./project-workspaces";
 import { diagnoseTaskResultRun, isFailedApiCall, taskResultRunKey } from "./result-analysis";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
@@ -89,12 +107,18 @@ const platformLabels: Record<Platform, string> = {
   harmony: "HarmonyOS",
 };
 
-const accountProviderLabels: Record<AccountProfileProvider, string> = {
-  wechat: "微信",
-  qq: "QQ",
-  taobao: "淘宝",
-  huawei: "华为",
-  "taobao-commerce": "淘宝授权",
+const workspaceLabels: Record<WorkspaceView, string> = {
+  projects: "项目",
+  tests: "执行测试",
+  "page-parameters": "页面列表",
+  "business-scripts": "业务脚本",
+  "account-profiles": "账号画像",
+};
+
+const projectIntegrationLabels: Record<NonNullable<ProjectCatalogResponse["projects"]>[number]["integrationType"], string> = {
+  "lynx-app": "Lynx App",
+  app: "通用 App",
+  "mini-program": "小程序",
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -104,6 +128,7 @@ export function resolveAccountProfileOptions(
   selectedKeys: string[],
   capability: string,
   environment: string,
+  providers = EMPTY_PROJECT_ADAPTER.accountProfiles.providers,
 ): Array<{ value: string; label: string; description: string }> {
   const selectedDevices = devices.filter(device => selectedKeys.includes(device.key));
   const selectedPlatforms = new Set(selectedDevices.map(device => device.platform));
@@ -114,13 +139,13 @@ export function resolveAccountProfileOptions(
     .filter(profile => targetPlatforms.length > 0 && (!environment || profile.environment === environment))
     .flatMap(profile => profile.providerEntries
       .filter(entry => entry.capabilities.includes(capability)
-        && selectedDevices.every(device => supportsAccountProfileProvider(entry.provider, device))
-        && targetPlatforms.every(platform => profile.platform === platform || entry.capabilities.includes("login"))
+        && selectedDevices.every(device => supportsAccountProfileProvider(providers[entry.provider], device))
+        && targetPlatforms.every(platform => profile.platform === platform || entry.capabilities.includes(providers[entry.provider]?.crossPlatformCapability ?? "login"))
         && Number.isFinite(Date.parse(entry.expiresAt))
         && Date.parse(entry.expiresAt) > now)
       .map(entry => ({
         value: `${profile.profileId}:${entry.provider}`,
-        label: `${profile.accountLabel} · ${accountProviderLabels[entry.provider]}`,
+        label: `${profile.accountLabel} · ${providers[entry.provider]?.label ?? entry.provider}`,
         description: `录制于 ${profile.platform.toUpperCase()} · 回放到 ${targetPlatformLabel} · ${profile.environment} · UID ${entry.accountUidMasked || "待验证"}`,
       })));
   return [
@@ -136,8 +161,11 @@ export function resolveAccountProfileOptions(
 }
 
 export default function App() {
-  const [workspaceView, setWorkspaceView] = useState<"tests" | "parameters" | "scripts" | "accounts">("tests");
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("projects");
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
+  const [projectCatalog, setProjectCatalog] = useState<ProjectCatalogResponse | null>(null);
+  const [selectedCatalogProjectId, setSelectedCatalogProjectId] = useState("");
+  const [addProjectRequest, setAddProjectRequest] = useState(0);
   const [accountProfiles, setAccountProfiles] = useState<AccountProfilesResponse | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [preparingDeviceKeys, setPreparingDeviceKeys] = useState<Set<string>>(new Set());
@@ -147,10 +175,13 @@ export default function App() {
   const [platformFilter, setPlatformFilter] = useState<"all" | Platform>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [switchingProjectId, setSwitchingProjectId] = useState("");
   const [actionPending, setActionPending] = useState(false);
   const [startingDeviceKeys, setStartingDeviceKeys] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<TestTask | null>(null);
+  const [projectDeleteCandidate, setProjectDeleteCandidate] = useState<ProjectCatalogEntry | null>(null);
+  const [projectDeletePending, setProjectDeletePending] = useState(false);
   const [repairPreview, setRepairPreview] = useState<{ task: TestTask; preview: RepairJobPreview } | null>(null);
   const [detailTab, setDetailTab] = useState<DetailTab>("logs");
   const [autoOpenRepairId, setAutoOpenRepairId] = useState("");
@@ -165,22 +196,26 @@ export default function App() {
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
     try {
-      const [snapshotResponse, accountProfileResponse] = await Promise.all([
+      const [snapshotResponse, accountProfileResponse, projectCatalogResponse] = await Promise.all([
         fetchSnapshot(showSpinner),
         fetchAccountProfiles().catch(() => null),
+        fetchProjectCatalog().catch(() => null),
       ]);
       const next = excludeDeletedTasks(snapshotResponse, deletedTaskIds.current);
       setSnapshot(next);
       if (accountProfileResponse) setAccountProfiles(accountProfileResponse);
+      if (projectCatalogResponse) setProjectCatalog(projectCatalogResponse);
       setSelectedKeys(previous => previous.filter(key => next.devices.some(device => device.key === key && device.connectionState === "available")));
       setFocusedTaskId(previous => reconcileFocusedTaskId(previous, next.tasks));
     } catch (error) {
-      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法读取控制服务" });
+      if (!switchingProjectId) {
+        setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法读取控制服务" });
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [switchingProjectId]);
 
   useEffect(() => {
     void load();
@@ -188,14 +223,67 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [load]);
 
+  useEffect(() => {
+    const projects = projectCatalog?.projects ?? [];
+    setSelectedCatalogProjectId(current => {
+      if (projects.some(project => project.id === current)) return current;
+      const activeProjectId = projects.some(project => project.id === projectCatalog?.activeProjectId)
+        ? projectCatalog?.activeProjectId ?? ""
+        : "";
+      return activeProjectId || projects[0]?.id || "";
+    });
+  }, [projectCatalog]);
+
+  const handleSelectCatalogProject = useCallback((projectId: string) => {
+    setSelectedCatalogProjectId(projectId);
+    setWorkspaceView("projects");
+  }, []);
+
+  const handleAddCatalogProject = useCallback(() => {
+    setAddProjectRequest(value => value + 1);
+    setWorkspaceView("projects");
+  }, []);
+
   const tests = snapshot?.tests || [];
+  const workspaceViews = resolveWorkspaceViews();
+  const selectedCatalogProject = projectCatalog?.projects.find(project => project.id === selectedCatalogProjectId) ?? null;
+  const hasSelectedCatalogProject = selectedCatalogProject !== null;
+  const selectedCatalogProjectActive = selectedCatalogProject?.id === snapshot?.project.id;
+  const selectedProjectExecutionReady = Boolean(selectedCatalogProject && PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.every(id => (
+    selectedCatalogProject.onboarding.find(step => step.id === id)?.status === "verified"
+  )));
+  const selectedProjectRuntimeReady = selectedCatalogProjectActive;
+  const declaredProjectWorkspaces = useMemo(() => (
+    selectedProjectRuntimeReady ? snapshot?.adapter?.workspaces ?? [] : []
+  ), [selectedProjectRuntimeReady, snapshot?.adapter?.workspaces]);
+  const workspaceAccess = useMemo(() => ({
+    hasProject: hasSelectedCatalogProject,
+    active: selectedCatalogProjectActive,
+    executionReady: selectedProjectExecutionReady,
+    runtimeReady: selectedProjectRuntimeReady,
+    declaredWorkspaces: declaredProjectWorkspaces,
+  }), [
+    hasSelectedCatalogProject,
+    selectedCatalogProjectActive,
+    selectedProjectExecutionReady,
+    selectedProjectRuntimeReady,
+    declaredProjectWorkspaces,
+  ]);
   const selectedTest = tests.find(test => test.id === selectedTestId) || tests[0];
+  const selectedTestMissingCapabilities = useMemo(() => {
+    const available = new Set((snapshot?.projectProviders ?? []).flatMap(provider => provider.capabilities.map(capability => capability.id)));
+    return (selectedTest?.requiredCapabilities ?? []).filter(capability => !available.has(capability));
+  }, [selectedTest, snapshot?.projectProviders]);
   const tasks = useMemo(() => snapshot?.tasks ?? [], [snapshot]);
   const focusedTask = focusedTaskId ? tasks.find(task => task.id === focusedTaskId) : undefined;
   const focusedResultTaskId = focusedTask?.id || "";
   const focusedResultTaskStatus = focusedTask?.status || "";
   const repairJobs = useMemo(() => snapshot?.repairJobs ?? [], [snapshot]);
   const focusedRepairJobs = focusedTask ? repairJobs.filter(job => job.taskId === focusedTask.id) : [];
+
+  useEffect(() => {
+    setWorkspaceView(previous => reconcileWorkspaceView(previous, workspaceAccess));
+  }, [workspaceAccess]);
 
   const loadTaskResult = useCallback(async (taskId: string, refresh = false) => {
     setResultState({ taskId, loading: true, result: null, error: "" });
@@ -253,6 +341,7 @@ export default function App() {
           selectedKeys,
           parameter.capability,
           environment,
+          accountProfiles?.providers,
         );
         const current = previous[parameter.id] || parameter.defaultValue;
         if (!options.some(option => option.value === current)) {
@@ -262,7 +351,7 @@ export default function App() {
       }
       return changed ? next : previous;
     });
-  }, [accountProfiles?.profiles, selectedKeys, selectedTest, snapshot?.devices]);
+  }, [accountProfiles?.profiles, accountProfiles?.providers, selectedKeys, selectedTest, snapshot?.devices]);
 
   const taskByDevice = useMemo(() => {
     const map = new Map<string, TestTask>();
@@ -274,6 +363,9 @@ export default function App() {
   }, [tasks]);
 
   const connectedDevices = (snapshot?.devices || []).filter(device => device.connectionState === "available");
+  const selectedDevicePlatforms = [...new Set((snapshot?.devices || [])
+    .filter(device => selectedKeys.includes(device.key))
+    .map(device => device.platform))];
   const visibleDevices = (snapshot?.devices || []).filter(device => platformFilter === "all" || device.platform === platformFilter);
   const activeCount = tasks.filter(task => ACTIVE_STATUSES.has(task.status)).length;
   const passedCount = tasks.filter(task => task.status === "passed").length;
@@ -303,6 +395,7 @@ export default function App() {
         selectedKeys,
         accountParameter.capability,
         environment,
+        accountProfiles?.providers,
       );
       if (!accountOptions.some(option => option.value === selectedValue)) {
         setMessage({ kind: "error", text: "所选账号画像已过期或与当前设备、环境不匹配" });
@@ -322,6 +415,133 @@ export default function App() {
       setActionPending(false);
     }
   };
+
+  const handlePageSelectionMessage = useCallback((next: { kind: "error" | "info"; text: string }) => {
+    setMessage(next);
+  }, []);
+
+  const handleRegisterProject = useCallback(async (request: RegisterProjectRequest): Promise<boolean> => {
+    try {
+      setProjectCatalog(await registerProject(request));
+      setMessage({ kind: "info", text: "已读取配置并登记项目" });
+      return true;
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "登记项目失败" });
+      return false;
+    }
+  }, []);
+
+  const handleSelectProjectDirectory = useCallback(async (): Promise<ProjectConfigSelection | null> => {
+    try {
+      return await selectProjectCatalogDirectory();
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法打开项目目录选择器" });
+      return null;
+    }
+  }, []);
+
+  const handleSelectProjectConfig = useCallback(async (): Promise<ProjectConfigSelection | null> => {
+    try {
+      return await selectProjectConfigFile();
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法打开项目配置选择器" });
+      return null;
+    }
+  }, []);
+
+  const handleVerifyProject = useCallback(async (projectId: string) => {
+    try {
+      setProjectCatalog(await verifyProjectOnboarding(projectId));
+      setMessage({ kind: "info", text: "项目接入状态已更新" });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "验证项目接入失败" });
+    }
+  }, []);
+
+  const handlePreviewProjectInitialization = useCallback(async (
+    request: PreviewProjectInitializationRequest,
+  ): Promise<ProjectSetupPlan | null> => {
+    try {
+      return await previewProjectInitialization(request);
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法生成初始化计划" });
+      return null;
+    }
+  }, []);
+
+  const handleApplyProjectInitialization = useCallback(async (
+    request: ApplyProjectInitializationRequest,
+  ): Promise<ProjectSetupApplyResponse | null> => {
+    try {
+      const response = await applyProjectInitialization(request);
+      setProjectCatalog(response.catalog);
+      setMessage({ kind: "info", text: "初始化计划已执行，项目接入状态已自动复检" });
+      return response;
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "初始化项目接入失败" });
+      return null;
+    }
+  }, []);
+
+  const handlePreviewProjectSetup = useCallback(async (
+    projectId: string,
+    step: ApplyProjectSetupRequest["step"],
+  ): Promise<ProjectSetupPlan | null> => {
+    try {
+      return await previewProjectSetup(projectId, step);
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法生成接入修复计划" });
+      return null;
+    }
+  }, []);
+
+  const handleApplyProjectSetup = useCallback(async (
+    projectId: string,
+    request: ApplyProjectSetupRequest,
+  ): Promise<ProjectSetupApplyResponse | null> => {
+    try {
+      const response = await applyProjectSetup(projectId, request);
+      setProjectCatalog(response.catalog);
+      setMessage({ kind: "info", text: "接入修复计划已执行，项目状态已自动复检" });
+      return response;
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "执行接入修复计划失败" });
+      return null;
+    }
+  }, []);
+
+  const handleDeleteProject = useCallback(async () => {
+    const project = projectDeleteCandidate;
+    if (!project) return;
+    setProjectDeletePending(true);
+    try {
+      setProjectCatalog(await deleteProject(project.id));
+      setProjectDeleteCandidate(null);
+      setMessage({ kind: "info", text: `已删除项目“${project.name}”的登记，项目文件和测试数据已保留` });
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "删除项目失败" });
+    } finally {
+      setProjectDeletePending(false);
+    }
+  }, [projectDeleteCandidate]);
+
+  const handleActivateProject = useCallback(async (projectId: string) => {
+    setSwitchingProjectId(projectId);
+    try {
+      const response = await activateProject(projectId);
+      setMessage({ kind: "info", text: `正在切换到 ${response.projectId}，控制台将自动重启` });
+      const restarted = await waitForProjectActivation(response.projectId);
+      if (restarted) {
+        window.location.reload();
+        return;
+      }
+      setSwitchingProjectId("");
+      setMessage({ kind: "error", text: "项目切换请求已提交，但 API 重启超时，请刷新页面或检查服务端日志" });
+    } catch (error) {
+      setSwitchingProjectId("");
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "切换项目失败" });
+    }
+  }, []);
 
   const handleStartDevice = async (device: Device) => {
     setStartingDeviceKeys(previous => new Set(previous).add(device.key));
@@ -489,26 +709,55 @@ export default function App() {
             <h1>Mobile Test Console</h1>
           </div>
         </div>
-        <div className="project-context">
-          <span className="context-label">项目</span>
-          <strong>{snapshot?.project.name || "加载中"}</strong>
-          <span className="local-badge"><CircleDot size={11} /> 本机</span>
-        </div>
-        <div className="workspace-switch" role="tablist" aria-label="工作区">
-          <button type="button" role="tab" aria-selected={workspaceView === "tests"} className={workspaceView === "tests" ? "active" : ""} onClick={() => setWorkspaceView("tests")}><Activity size={14} />测试执行</button>
-          <button type="button" role="tab" aria-selected={workspaceView === "parameters"} className={workspaceView === "parameters" ? "active" : ""} onClick={() => setWorkspaceView("parameters")}><SlidersHorizontal size={14} />页面列表</button>
-          <button type="button" role="tab" aria-selected={workspaceView === "scripts"} className={workspaceView === "scripts" ? "active" : ""} onClick={() => setWorkspaceView("scripts")}><Clapperboard size={14} />业务脚本</button>
-          <button type="button" role="tab" aria-selected={workspaceView === "accounts"} className={workspaceView === "accounts" ? "active" : ""} onClick={() => setWorkspaceView("accounts")}><UserRoundCheck size={14} />账号画像</button>
-        </div>
         <button className="icon-button" type="button" onClick={() => void load(true)} disabled={refreshing} title="刷新设备和运行状态" aria-label="刷新设备和运行状态">
           <RefreshCw size={17} className={refreshing ? "spin" : ""} />
         </button>
       </header>
 
-      <main className="content">
+      <div className="app-body">
+        <ProjectSidebar
+          catalog={projectCatalog}
+          selectedProjectId={selectedCatalogProjectId}
+          runtimeProjectId={snapshot?.project.id ?? ""}
+          onSelect={handleSelectCatalogProject}
+          onAdd={handleAddCatalogProject}
+          onDelete={setProjectDeleteCandidate}
+        />
+        <main className="content">
+        <nav className="project-workspace-navigation" aria-label="当前项目工作区">
+          {workspaceViews.map(view => {
+            const disabledReason = workspaceDisabledReason(view, workspaceAccess);
+            return <button
+              key={view}
+              type="button"
+              className={workspaceView === view ? "active" : ""}
+              onClick={() => setWorkspaceView(view)}
+              disabled={disabledReason !== null}
+              title={disabledReason ?? (view === "projects" ? "打开项目概览" : `打开${workspaceLabels[view]}`)}
+            ><WorkspaceViewIcon view={view} />{view === "projects" ? "项目概览" : workspaceLabels[view]}</button>;
+          })}
+        </nav>
         {message && <div className={`notice ${message.kind}`} role="status"><AlertCircle size={16} /> <span>{message.text}</span><button type="button" onClick={() => setMessage(null)} aria-label="关闭提示">×</button></div>}
 
-        {workspaceView === "tests" ? <>
+        {workspaceView === "projects"
+          ? <ProjectCatalogWorkspace
+              catalog={projectCatalog}
+              loading={loading}
+              onRegister={handleRegisterProject}
+              onSelectDirectory={handleSelectProjectDirectory}
+              onSelectConfig={handleSelectProjectConfig}
+              onVerify={handleVerifyProject}
+              onActivate={handleActivateProject}
+              onPreviewInitialization={handlePreviewProjectInitialization}
+              onApplyInitialization={handleApplyProjectInitialization}
+              onPreviewSetup={handlePreviewProjectSetup}
+              onApplySetup={handleApplyProjectSetup}
+              selectedProjectId={selectedCatalogProjectId}
+              runtimeProjectId={snapshot?.project.id ?? ""}
+              openAddRequest={addProjectRequest}
+              onMessage={setMessage}
+            />
+          : workspaceView === "tests" ? <>
         <section className="metrics-strip" aria-label="运行概览">
           <Metric label="可用设备" value={connectedDevices.length} tone="teal" icon={<MonitorSmartphone size={17} />} />
           <Metric label="测试中" value={activeCount} tone="blue" icon={<LoaderCircle size={17} />} />
@@ -562,8 +811,21 @@ export default function App() {
               <div className="section-heading"><div><p className="eyebrow">TEST PLAN</p><h2>启动测试</h2></div><span className="selection-label">已选 {selectedKeys.length} 台</span></div>
               <div className="form-grid">
                 <label className="field"><span>测试入口</span><select value={selectedTest?.id || ""} onChange={event => { setSelectedTestId(event.target.value); setParameters({}); }} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{test.label}</option>)}</select></label>
-                <div className="test-description">{selectedTest?.description || "选择已声明的测试入口和设备后启动。"}</div>
+                <div className="test-description">{selectedTestMissingCapabilities.length > 0
+                  ? `测试能力未就绪：${selectedTestMissingCapabilities.join("、")}，请在项目概览完成接入验证。`
+                  : selectedTest?.description || "选择已声明的测试入口和设备后启动。"}</div>
                 {selectedTest?.parameters.map(parameter => {
+                  if (parameter.type === "page-selection") {
+                    return <div className="field page-selection-wrapper" key={parameter.id}>
+                      <PageSelectionField
+                        parameter={parameter}
+                        value={parameters[parameter.id] || parameter.defaultValue}
+                        platforms={selectedDevicePlatforms}
+                        onChange={value => setParameters(previous => ({ ...previous, [parameter.id]: value }))}
+                        onMessage={handlePageSelectionMessage}
+                      />
+                    </div>;
+                  }
                   if (parameter.type === "account-profile") {
                     const environment = parameters.environment || selectedTest.parameters.find(item => item.id === "environment")?.defaultValue || "";
                     const options = resolveAccountProfileOptions(
@@ -572,6 +834,7 @@ export default function App() {
                       selectedKeys,
                       parameter.capability,
                       environment,
+                      accountProfiles?.providers,
                     );
                     const value = parameters[parameter.id] || parameter.defaultValue;
                     const description = options.find(option => option.value === value)?.description;
@@ -590,7 +853,7 @@ export default function App() {
                   </label>;
                 })}
               </div>
-              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每台设备独立记录运行结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest}><Play size={16} fill="currentColor" />启动测试</button></div>
+              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每台设备独立记录运行结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0}><Play size={16} fill="currentColor" />启动测试</button></div>
             </section>
 
             <section className="section-panel runs-panel">
@@ -605,6 +868,7 @@ export default function App() {
               repairJobs={focusedRepairJobs}
               codexRepairEnabled={snapshot?.codexRepairEnabled === true}
               repairPending={actionPending}
+              adapter={snapshot?.adapter}
               onTab={setDetailTab}
               onReload={() => void loadTaskResult(focusedTask.id, true)}
               onCopy={(label, value) => void copyJson(label, value)}
@@ -615,16 +879,61 @@ export default function App() {
             />}
           </div>
         </div>
-        </> : workspaceView === "parameters"
-          ? <PageParametersWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />
-          : workspaceView === "scripts"
+        </> : workspaceView === "page-parameters"
+          ? <PageParametersWorkspace devices={snapshot?.devices ?? []} adapter={snapshot?.adapter?.pageParameters} onMessage={setMessage} />
+          : workspaceView === "business-scripts"
             ? <BusinessScriptsWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />
             : <AccountProfilesWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />}
-      </main>
+        </main>
+      </div>
       {deleteCandidate && <DeleteConfirmation task={deleteCandidate} pending={actionPending} onCancel={() => setDeleteCandidate(null)} onConfirm={() => void handleDelete()} />}
+      {projectDeleteCandidate && <ProjectDeleteConfirmation project={projectDeleteCandidate} runtimeProjectId={snapshot?.project.id ?? ""} pending={projectDeletePending} onCancel={() => setProjectDeleteCandidate(null)} onConfirm={() => void handleDeleteProject()} />}
       {repairPreview && <RepairPromptConfirmation preview={repairPreview.preview} pending={actionPending} onCancel={() => setRepairPreview(null)} onConfirm={() => void handleConfirmRepair()} />}
     </div>
   );
+}
+
+function WorkspaceViewIcon({ view }: { view: WorkspaceView }) {
+  if (view === "projects") return <FolderKanban size={14} />;
+  if (view === "page-parameters") return <SlidersHorizontal size={14} />;
+  if (view === "business-scripts") return <Clapperboard size={14} />;
+  if (view === "account-profiles") return <UserRoundCheck size={14} />;
+  return <Activity size={14} />;
+}
+
+export function ProjectSidebar({
+  catalog,
+  selectedProjectId,
+  runtimeProjectId = "",
+  onSelect,
+  onAdd,
+  onDelete,
+}: {
+  catalog: ProjectCatalogResponse | null;
+  selectedProjectId: string;
+  runtimeProjectId?: string;
+  onSelect: (projectId: string) => void;
+  onAdd: () => void;
+  onDelete: (project: ProjectCatalogEntry) => void;
+}) {
+  return <aside className="app-project-sidebar" aria-label="项目列表">
+    <div className="app-project-sidebar-heading">
+      <div><p className="eyebrow">PROJECTS</p><h2>项目列表</h2></div>
+      <button className="icon-button" type="button" onClick={onAdd} title="添加项目" aria-label="添加项目"><FolderPlus size={16} /></button>
+    </div>
+    <div className="app-project-sidebar-list">
+      {catalog?.projects.map(project => <div className="app-project-row" key={project.id}>
+        <button className={`app-project-item ${project.id === selectedProjectId ? "selected" : ""}`} type="button" onClick={() => onSelect(project.id)}>
+          <span className="app-project-item-icon"><Smartphone size={15} /></span>
+          <span><strong>{project.name}</strong><small>{projectIntegrationLabels[project.integrationType]}</small></span>
+          {project.id === runtimeProjectId && <span className="project-sidebar-active" title="当前运行项目" />}
+        </button>
+        <button className="app-project-delete" type="button" title={`删除项目：${project.name}`} aria-label={`删除项目：${project.name}`} onClick={() => onDelete(project)}><Trash2 size={13} /></button>
+      </div>)}
+      {!catalog && <div className="app-project-sidebar-empty">正在读取项目</div>}
+      {catalog?.projects.length === 0 && <div className="app-project-sidebar-empty">还没有登记项目</div>}
+    </div>
+  </aside>;
 }
 
 function TaskDetail({
@@ -641,6 +950,7 @@ function TaskDetail({
   onCancelRepair,
   onRetryRepair,
   onOpenRepair,
+  adapter,
 }: {
   task: TestTask;
   tab: DetailTab;
@@ -655,6 +965,7 @@ function TaskDetail({
   onCancelRepair: (job: RepairJob) => void;
   onRetryRepair: (job: RepairJob) => void;
   onOpenRepair: (job: RepairJob) => void;
+  adapter?: ConsoleSnapshot["adapter"];
 }) {
   const terminal = TERMINAL_STATUSES.has(task.status);
   const tabs: Array<{ id: DetailTab; label: string; icon: React.ReactNode }> = terminal ? [
@@ -690,6 +1001,7 @@ function TaskDetail({
           repairJobs={repairJobs}
           codexRepairEnabled={codexRepairEnabled}
           repairPending={repairPending}
+          adapter={adapter}
           onCreateRepair={onCreateRepair}
           onCancelRepair={onCancelRepair}
           onRetryRepair={onRetryRepair}
@@ -774,6 +1086,7 @@ export function ResultPanel({
   onCancelRepair,
   onRetryRepair,
   onOpenRepair,
+  adapter,
   initialSelectedRunKey = "",
 }: {
   taskId: string;
@@ -789,6 +1102,7 @@ export function ResultPanel({
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
   initialSelectedRunKey?: string;
+  adapter?: ConsoleSnapshot["adapter"];
 }) {
   const [selectedRunKey, setSelectedRunKey] = useState(initialSelectedRunKey);
   useEffect(() => setSelectedRunKey(""), [taskId]);
@@ -826,6 +1140,7 @@ export function ResultPanel({
     onCancelRepair={onCancelRepair}
     onRetryRepair={onRetryRepair}
     onOpenRepair={onOpenRepair}
+    adapter={adapter}
   />;
 }
 
@@ -842,6 +1157,7 @@ function OverviewResult({
   onCancelRepair,
   onRetryRepair,
   onOpenRepair,
+  adapter,
 }: {
   result: TaskResult;
   selectedRunKey: string;
@@ -855,6 +1171,7 @@ function OverviewResult({
   onCancelRepair?: (job: RepairJob) => void;
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
+  adapter?: ConsoleSnapshot["adapter"];
 }) {
   const screenshots = result.runs.reduce((total, run) => total + run.screenshots.length, 0);
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
@@ -902,6 +1219,7 @@ function OverviewResult({
             onCancelRepair={onCancelRepair}
             onRetryRepair={onRetryRepair}
             onOpenRepair={onOpenRepair}
+            adapter={adapter}
             onTab={onTab}
             onCopy={onCopy}
           />}
@@ -915,6 +1233,7 @@ function RunDiagnosticDetail({
   run,
   onTab,
   onCopy,
+  adapter,
 }: {
   run: TaskResultRun;
   repairJob?: RepairJob;
@@ -924,10 +1243,11 @@ function RunDiagnosticDetail({
   onCancelRepair?: (job: RepairJob) => void;
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
+  adapter?: ConsoleSnapshot["adapter"];
   onTab?: (tab: DetailTab) => void;
   onCopy: (label: string, value: unknown) => void;
 }) {
-  const diagnostics = diagnoseTaskResultRun(run);
+  const diagnostics = diagnoseTaskResultRun(run, adapter?.resultAnalysis);
   const failedApis = run.apiCalls.filter(isFailedApiCall);
   const failedInteractions = [
     ...(run.passBasis || [])
@@ -1098,7 +1418,7 @@ export function DeviceRow({ device, task, selected, onToggle, starting, onStart,
   const blockingPreparation = device.preparations?.find(item => item.blocksTests && item.status !== "ready");
   const selectable = device.controlState === "ready" && device.connectionState === "available" && !busy && !blockingPreparation;
   const startable = device.controlState === "startable";
-  const availabilityLabel = device.type === "physical"
+  const availabilityLabel = device.controlState === "ready"
     ? connectionLabels[device.connectionState]
     : device.controlReason || device.detail || connectionLabels[device.connectionState];
   return <div className={`device-row ${selected ? "selected" : ""} ${selectable ? "" : "disabled"}`}>
@@ -1128,7 +1448,7 @@ export function RunRow({ task, focused, onFocus, onStop, onDelete, pending }: { 
   return <div className={`run-row ${focused ? "focused" : ""}`}>
     <button className="run-row-select" type="button" onClick={onFocus} aria-label={`查看 ${task.device.name} ${task.testLabel} 详情`}>
       <span className="run-row-status"><StatusIcon status={task.status} /><StatusBadge status={task.status} /></span>
-      <span className="run-row-main"><strong>{task.device.name}</strong><span>{task.testLabel} · {task.phase}</span></span>
+      <span className="run-row-main"><strong>{task.device.name}</strong><span>{platformLabels[task.device.platform]} · {task.device.type === "physical" ? "真机" : "模拟器"} · {task.testLabel} · {task.phase}</span></span>
       <span className="run-row-time">{formatDuration(task.startedAt, task.finishedAt)}</span>
     </button>
     {active && <span className="run-row-action"><button type="button" className="stop-button" onClick={onStop} disabled={pending} title="停止此设备测试" aria-label={`停止 ${task.device.name} 测试`}><Square size={14} fill="currentColor" />停止</button></span>}
@@ -1165,6 +1485,22 @@ export function DeleteConfirmation({ task, pending, onCancel, onConfirm }: { tas
       <div className="confirm-copy">
         <h2 id="delete-confirm-title">删除运行记录</h2>
         <p>将删除 {task.device.name} 的 {task.testLabel} 记录及本地测试文件。此操作无法撤销。</p>
+      </div>
+      <div className="confirm-actions">
+        <button type="button" className="secondary-button" onClick={onCancel} disabled={pending}>取消</button>
+        <button type="button" className="danger-button" onClick={onConfirm} disabled={pending}><Trash2 size={15} />删除</button>
+      </div>
+    </section>
+  </div>;
+}
+
+export function ProjectDeleteConfirmation({ project, runtimeProjectId = "", pending, onCancel, onConfirm }: { project: Pick<ProjectCatalogEntry, "id" | "name">; runtimeProjectId?: string; pending: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="confirm-overlay">
+    <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="project-delete-confirm-title">
+      <div className="confirm-icon"><Trash2 size={20} /></div>
+      <div className="confirm-copy">
+        <h2 id="project-delete-confirm-title">删除项目</h2>
+        <p>将从 MTC 项目列表删除“{project.name}”的登记。项目目录、配置文件和测试数据会保留。{project.id === runtimeProjectId ? "当前控制台继续使用已加载的项目配置。" : ""}</p>
       </div>
       <div className="confirm-actions">
         <button type="button" className="secondary-button" onClick={onCancel} disabled={pending}>取消</button>

@@ -1,0 +1,28 @@
+{
+  "id": "mobile-test-console-codex-loop",
+  "name": "mobile-test-console-codex-loop",
+  "title": "规划 Mobile Test Console Codex 修复集成",
+  "description": "整理现状与后续双通道方案，暂停继续投入 ChatGPT 可见任务集成。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "loumzy",
+  "assignee": "loumzy",
+  "createdAt": "2026-08-04",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "base",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "延期规划；自动修复重新成为高频需求或出现稳定 Desktop 创建契约后恢复。",
+  "meta": {
+    "deferred": true
+  }
+}

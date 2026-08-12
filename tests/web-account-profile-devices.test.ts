@@ -5,21 +5,24 @@ import type { AccountProfileProviderEntrySummary, AccountProfileRecordingSummary
 import { accountProfileIdentityForProvider, activeAccountProfileRecordings, resolveAccountProfileIdentityChange, resolveAccountProfileRecordingDevices, resolveAccountProfileReplayDevices, resolveDeviceKey, resolveReplayProvider } from "../src/web/account-profile-devices.js";
 import { fetchAccountProfileSource, replayAccountProfile } from "../src/web/api.js";
 import { AccountProfileDeleteConfirmation, AccountProfileSourcePanel } from "../src/web/AccountProfilesWorkspace.js";
+import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
+
+const providers = TEST_PROJECT_ADAPTER.accountProfiles.providers;
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("账号画像设备选择", () => {
   it("为每个授权场景提供独立的默认画像标识和账号标签", () => {
-    expect(accountProfileIdentityForProvider("wechat")).toEqual({ profileId: "qa-account-wechat", accountLabel: "QA 微信账号" });
-    expect(accountProfileIdentityForProvider("taobao-commerce")).toEqual({ profileId: "qa-account-taobao-commerce", accountLabel: "QA 淘宝授权账号" });
+    expect(accountProfileIdentityForProvider("wechat", providers)).toEqual({ profileId: "qa-account-wechat", accountLabel: "QA 微信账号" });
+    expect(accountProfileIdentityForProvider("taobao-commerce", providers)).toEqual({ profileId: "qa-account-taobao-commerce", accountLabel: "QA 电商授权账号" });
   });
 
   it("仅在使用默认值时跟随场景切换，手动值保持不变", () => {
-    expect(resolveAccountProfileIdentityChange("wechat", "taobao", "qa-account-wechat", "QA 微信账号")).toEqual({
+    expect(resolveAccountProfileIdentityChange("wechat", "taobao", "qa-account-wechat", "QA 微信账号", providers)).toEqual({
       profileId: "qa-account-taobao",
       accountLabel: "QA 淘宝账号",
     });
-    expect(resolveAccountProfileIdentityChange("wechat", "taobao", "fixed-member", "会员账号")).toEqual({
+    expect(resolveAccountProfileIdentityChange("wechat", "taobao", "fixed-member", "会员账号", providers)).toEqual({
       profileId: "fixed-member",
       accountLabel: "会员账号",
     });
@@ -55,12 +58,12 @@ describe("账号画像设备选择", () => {
     const ios = createDevice("ios:1", "ios");
     const harmony = createDevice("harmony:1", "harmony");
 
-    expect(resolveAccountProfileReplayDevices([android, ios, harmony], "ios", providerEntry("wechat")))
+    expect(resolveAccountProfileReplayDevices([android, ios, harmony], "ios", providerEntry("wechat"), providers))
       .toEqual([android, ios, harmony]);
     expect(resolveAccountProfileReplayDevices([android, ios, harmony], "ios", {
       ...providerEntry("taobao-commerce"),
       capabilities: ["taobao-commerce-auth"],
-    })).toEqual([ios]);
+    }, providers)).toEqual([ios]);
   });
 
   it("华为录制设备只包含 Huawei Android 与 Harmony", () => {
@@ -68,9 +71,9 @@ describe("账号画像设备选择", () => {
     const huawei = { ...createDevice("android:huawei", "android"), name: "HUAWEI Mate 60", manufacturer: "Huawei" };
     const harmony = createDevice("harmony:1", "harmony");
 
-    expect(resolveAccountProfileRecordingDevices([redmi, huawei, harmony], "huawei"))
+    expect(resolveAccountProfileRecordingDevices([redmi, huawei, harmony], "huawei", providers))
       .toEqual([huawei, harmony]);
-    expect(resolveAccountProfileRecordingDevices([redmi, huawei, harmony], "wechat"))
+    expect(resolveAccountProfileRecordingDevices([redmi, huawei, harmony], "wechat", providers))
       .toEqual([redmi, huawei, harmony]);
   });
 
@@ -79,7 +82,7 @@ describe("账号画像设备选择", () => {
     const huawei = { ...createDevice("android:huawei", "android"), manufacturer: "HUAWEI" };
     const harmony = createDevice("harmony:1", "harmony");
 
-    expect(resolveAccountProfileReplayDevices([redmi, huawei, harmony], "android", providerEntry("huawei")))
+    expect(resolveAccountProfileReplayDevices([redmi, huawei, harmony], "android", providerEntry("huawei"), providers))
       .toEqual([huawei, harmony]);
   });
 

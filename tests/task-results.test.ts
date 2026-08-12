@@ -6,6 +6,7 @@ import { createApp } from "../src/server/app.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { DeviceDiscoveryService } from "../src/server/devices.js";
+import { ResultBundleStore } from "../src/server/result-bundle-store.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
 import { TaskResultService } from "../src/server/task-results.js";
@@ -108,6 +109,127 @@ describe("测试结果服务", () => {
       await fixture.manager.shutdown();
       await app.close();
     }
+  });
+
+  it("从任务 Result Bundle 映射旧 API 并沿用截图边界和缓存刷新", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-bundle-results-"));
+    tempDirs.push(root);
+    const artifactsRoot = path.join(root, "artifacts");
+    const stateDir = path.join(root, "state");
+    await fs.mkdir(artifactsRoot, { recursive: true });
+    const screenshotPath = path.join(artifactsRoot, "screen.png");
+    const outsidePath = path.join(root, "outside.png");
+    const symlinkPath = path.join(artifactsRoot, "linked.png");
+    await fs.writeFile(screenshotPath, "bundle-image");
+    await fs.writeFile(outsidePath, "outside");
+    await fs.symlink(outsidePath, symlinkPath);
+
+    const bundleStore = new ResultBundleStore(stateDir);
+    const ingestion = await bundleStore.ingest({
+      schemaVersion: "test-analysis.run.v1",
+      project: { id: "demo", name: "Demo" },
+      target: { kind: "app", runtime: "lynx", platform: "android" },
+      run: {
+        runId: "run-one",
+        status: "passed",
+        environment: "qa",
+        startedAt: "2026-07-21T00:00:00.000Z",
+        finishedAt: "2026-07-21T00:00:02.000Z",
+      },
+      cases: [{
+        caseRunId: "run-one-case-one",
+        caseId: "case-one",
+        title: "Case one",
+        status: "passed",
+        targetPage: "page/search",
+        scenario: "搜索页面",
+        steps: [{
+          stepId: "open-page",
+          name: "page/search",
+          status: "passed",
+          metadata: { bundleName: "search.bundle", events: ["page_ready"] },
+        }],
+        assertions: [{
+          assertionId: "ready",
+          kind: "runtimeEvent",
+          passed: true,
+          description: "页面已就绪",
+        }],
+        evidenceRefs: ["screen", "outside", "linked", "traversal"],
+        apiCalls: [{ method: "POST", operationName: "DemoQuery", status: 200, result: "success" }],
+        errorSummary: "",
+        metadata: {
+          runId: "run-one-case-one",
+          routeParams: { q: "牙膏" },
+          parameterProfileId: "recorded-search",
+          platform: "android",
+          device: "device-1",
+          requiredEvents: ["page_ready"],
+          missingEvents: [],
+          runtimeEventCount: 2,
+          uiActionCount: 1,
+          evidenceFiles: ["runtime-events.jsonl"],
+        },
+      }],
+      artifacts: [
+        { id: "screen", uri: "project://demo/artifacts/screen.png", role: "screenshot", mimeType: "image/png" },
+        { id: "outside", uri: "project://demo/outside.png", role: "screenshot", mimeType: "image/png" },
+        { id: "linked", uri: "project://demo/artifacts/linked.png", role: "screenshot", mimeType: "image/png" },
+        { id: "traversal", uri: "project://demo/%2E%2E/outside.png", role: "screenshot", mimeType: "image/png" },
+      ],
+      warnings: [],
+      provenance: { adapter: "demo", adapterVersion: "1", generatedAt: "2026-07-21T00:00:02.000Z" },
+      metadata: {
+        legacyPreconditions: [{
+          id: "authentication",
+          label: "登录前置",
+          status: "passed",
+          action: "reused-session",
+          detail: "会员会话有效",
+          checkedAt: "2026-07-21T00:00:00.000Z",
+        }],
+      },
+    }, "test");
+
+    const providerPath = path.join(root, "legacy-provider.cjs");
+    const providerCallsPath = path.join(root, "legacy-provider-calls.txt");
+    await fs.writeFile(providerPath, `require("node:fs").writeFileSync(${JSON.stringify(providerCallsPath)}, "called");`);
+    const config = createConfig(root, stateDir, artifactsRoot, providerPath);
+    const task = { ...createTask(), resultUri: ingestion.resultUri };
+    const store = new StateStore(stateDir);
+    await store.save([task]);
+    const manager = new TaskManager(config, store);
+    await manager.initialize();
+    const results = new TaskResultService(config, manager, bundleStore);
+
+    const first = await results.load(task.id);
+    const refreshed = await results.load(task.id, { refresh: true });
+
+    expect(first).toMatchObject({
+      taskId: task.id,
+      runId: task.runId,
+      total: 1,
+      passed: 1,
+      preconditions: [{ action: "reused-session", detail: "会员会话有效" }],
+      runs: [{
+        caseRunId: "run-one-case-one",
+        routeParams: { q: "牙膏" },
+        parameterProfileId: "recorded-search",
+        runtimeEventCount: 2,
+        uiActionCount: 1,
+        evidenceFiles: ["runtime-events.jsonl"],
+      }],
+    });
+    expect(first.runs[0].screenshots).toHaveLength(1);
+    expect(first.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("产物目录外"),
+      expect.stringContaining("路径无效"),
+    ]));
+    expect(refreshed).toEqual(first);
+    await expect(fs.readFile(providerCallsPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const artifact = await results.artifact(task.id, first.runs[0].screenshots[0].id);
+    expect(artifact.absolutePath).toBe(await fs.realpath(screenshotPath));
+    await manager.shutdown();
   });
 });
 

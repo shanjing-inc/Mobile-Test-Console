@@ -93,7 +93,7 @@ describe("Codex 修复交互", () => {
     await createRepairJob("task/one", "case/one");
     await retryRepairTest("repair/one");
     await openRepairTask("repair/one");
-    await createRepairJob("task/two", "case/two", "/workspace/fanli");
+    await createRepairJob("task/two", "case/two", "/workspace/sample-app");
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/tasks/task%2Fpreview/repairs/preview", expect.objectContaining({
       method: "POST",
       body: JSON.stringify({ caseRunId: "case/preview" }),
@@ -106,7 +106,7 @@ describe("Codex 修复交互", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/repairs/repair%2Fone/open-task", expect.objectContaining({ method: "POST" }));
     expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/tasks/task%2Ftwo/repairs", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ caseRunId: "case/two", projectDirectory: "/workspace/fanli" }),
+      body: JSON.stringify({ caseRunId: "case/two", projectDirectory: "/workspace/sample-app" }),
     }));
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("Content-Type")).toBe("application/json");
     expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).has("Content-Type")).toBe(false);

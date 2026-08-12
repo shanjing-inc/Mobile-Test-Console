@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.mtc-state/
+qa/artifacts/
+android/.gradle/
+android/app/build/
+android/app/src/main/assets/main.bundle
+android/local.properties
+

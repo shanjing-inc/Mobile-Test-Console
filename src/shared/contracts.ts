@@ -14,6 +14,64 @@ export type DeviceType = "physical" | "emulator" | "simulator";
 export type DeviceControlState = "ready" | "startable" | "unavailable";
 export type DevicePreparationStatus = "ready" | "required" | "unavailable";
 
+/** 平台测试目标。设备是执行资源，目标是被测 App 或小程序实例。 */
+export type TargetKind = "app" | "mini-program";
+
+export interface TestTarget {
+  key: string;
+  kind: TargetKind;
+  platform: string;
+  runtime: string;
+  appId?: string;
+  version?: string;
+  environment?: string;
+  connectorId?: string;
+  /** 项目适配器可以放置领域字段，平台只透传并持久化。 */
+  extensions?: Record<string, unknown>;
+}
+
+export type ConnectorCapabilityId =
+  | "device.discover"
+  | "device.health"
+  | "device.start"
+  | "device.prepare"
+  | "device.unlock"
+  | "target.app.install"
+  | "target.app.launch"
+  | "target.mini-program.attach"
+  | "target.mini-program.launch"
+  | "target.mini-program.reload"
+  | "evidence.screenshot"
+  | "evidence.recording"
+  | "evidence.network"
+  | "evidence.logs"
+  | "result.export"
+  | (string & {});
+
+export interface ConnectorCapability {
+  id: ConnectorCapabilityId;
+  version: number;
+  limits?: Record<string, number | string | boolean>;
+}
+
+export interface ConnectorCapabilityManifest {
+  schemaVersion: "mobile-test-console.capabilities.v1";
+  connectorId: string;
+  scope: {
+    platform: string;
+    deviceType?: DeviceType[];
+    targetKinds?: TargetKind[];
+    runtime?: string[];
+  };
+  capabilities: ConnectorCapability[];
+  constraints?: {
+    requires?: string[];
+    excludes?: string[];
+  };
+  version?: string;
+  extensions?: Record<string, unknown>;
+}
+
 export interface DevicePreparation {
   id: string;
   label: string;
@@ -27,6 +85,9 @@ export interface Device {
   key: string;
   id: string;
   name: string;
+  /** 当前设备由哪个 Connector 提供，以及它支持的底层能力。 */
+  connectorId?: string;
+  capabilities?: ConnectorCapabilityId[];
   manufacturer?: string;
   platform: Platform;
   type: DeviceType;
@@ -62,12 +123,70 @@ export interface AccountProfileParameterDefinition {
   capability: string;
 }
 
-export type TestParameterDefinition = SelectParameterDefinition | AccountProfileParameterDefinition;
+export interface PageSelectionPresetFilter {
+  priorities?: string[];
+  tags?: string[];
+  testScopes?: string[];
+}
+
+export interface PageSelectionPreset {
+  value: string;
+  label: string;
+  description?: string;
+  filter: PageSelectionPresetFilter;
+}
+
+export interface PageSelectionParameterDefinition {
+  id: string;
+  label: string;
+  type: "page-selection";
+  defaultValue: string;
+  source: "page-parameters";
+  presets: PageSelectionPreset[];
+}
+
+export type TestParameterDefinition =
+  | SelectParameterDefinition
+  | AccountProfileParameterDefinition
+  | PageSelectionParameterDefinition;
+
+export type TestKind = "general" | "page" | "flow";
+
+export interface ProjectTestEnvironment {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface ProjectTestCapabilityDeclaration {
+  id: string;
+  label: string;
+  description: string;
+  guidance: string[];
+  providerId: string;
+  required: boolean;
+}
+
+export interface ProjectTestResultContract {
+  schemaVersion: string;
+  artifactsRoot: string;
+}
+
+/** 项目配置声明的测试边界。平台只校验、调度和展示这些声明。 */
+export interface ProjectTestingManifest {
+  environments: ProjectTestEnvironment[];
+  capabilities: ProjectTestCapabilityDeclaration[];
+  result?: ProjectTestResultContract;
+}
 
 export interface PublicTestDefinition {
   id: string;
   label: string;
   description: string;
+  kind: TestKind;
+  runnerId: string;
+  providerId?: string;
+  requiredCapabilities: string[];
   platforms: Platform[];
   parameters: TestParameterDefinition[];
 }
@@ -90,6 +209,8 @@ export interface TestTask {
   projectId: string;
   testId: string;
   testLabel: string;
+  /** 创建任务时冻结的 Runner 选择；旧状态文件允许省略。 */
+  runnerId?: string;
   device: Device;
   parameters: Record<string, string>;
   status: TaskStatus;
@@ -100,6 +221,8 @@ export interface TestTask {
   exitCode: number | null;
   error: string;
   logs: string[];
+  /** Runner 完成结果分析后返回的平台存储位置。 */
+  resultUri?: string;
   /** 修复验证任务运行在独立 worktree 时记录其代码根目录。 */
   workspaceRoot?: string;
   repairJobId?: string;
@@ -199,8 +322,229 @@ export interface ProjectSummary {
   root: string;
 }
 
+export const PROJECT_INTEGRATION_TYPES = ["lynx-app", "app", "mini-program"] as const;
+export type ProjectIntegrationType = (typeof PROJECT_INTEGRATION_TYPES)[number];
+
+export const PROJECT_EXECUTION_PREREQUISITE_STEP_IDS = [
+  "project",
+  "template",
+  "devices",
+  "capabilities",
+] as const;
+
+export const PROJECT_ONBOARDING_STEP_IDS = PROJECT_EXECUTION_PREREQUISITE_STEP_IDS;
+export type ProjectOnboardingStepId = (typeof PROJECT_ONBOARDING_STEP_IDS)[number];
+export type ProjectOnboardingStepStatus = "pending" | "waiting" | "blocked" | "verified";
+export type ProjectToolCheckStatus = "ready" | "blocked";
+export type ProjectCapabilityCheckStatus = "ready" | "missing";
+
+export interface ProjectToolCheck {
+  id: string;
+  label: string;
+  executable: string;
+  status: ProjectToolCheckStatus;
+  path: string;
+  version: string;
+  detail: string;
+  guidance: string[];
+}
+
+export interface ProjectCapabilityCheck {
+  id: string;
+  label: string;
+  status: ProjectCapabilityCheckStatus;
+  detail: string;
+  guidance: string[];
+}
+
+export interface ProjectTestEntryCheck {
+  id: string;
+  label: string;
+  description: string;
+  runnerId: string;
+  platforms: Platform[];
+  parameterLabels: string[];
+}
+
+export interface ProjectOnboardingStep {
+  id: ProjectOnboardingStepId;
+  status: ProjectOnboardingStepStatus;
+  summary: string;
+  issues: string[];
+  checkedAt: string;
+  tools?: ProjectToolCheck[];
+  capabilities?: ProjectCapabilityCheck[];
+  testEntries?: ProjectTestEntryCheck[];
+}
+
+/** 已登记的本机项目。运行时始终由 CLI 当前加载的项目配置决定。 */
+export interface ProjectCatalogEntry {
+  id: string;
+  name: string;
+  root: string;
+  configPath: string;
+  integrationType: ProjectIntegrationType;
+  platforms: Platform[];
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  onboarding: ProjectOnboardingStep[];
+}
+
+export interface ProjectCatalogResponse {
+  schemaVersion: "mobile-test-console.project-catalog.v1";
+  activeProjectId: string;
+  projects: ProjectCatalogEntry[];
+}
+
+/** 选中项目的配置详情，供项目工作台展示可用测试入口。 */
+export interface ProjectCatalogDetailResponse {
+  project: ProjectCatalogEntry;
+  tests: PublicTestDefinition[];
+  /** 项目已通过执行测试所需的运行前检查。 */
+  executionReady: boolean;
+}
+
+export type ProjectSetupStep = "config" | "devices" | "capabilities";
+export type ProjectSetupActionKind = "write-file" | "command" | "manual";
+
+export interface ProjectSetupAction {
+  id: string;
+  kind: ProjectSetupActionKind;
+  label: string;
+  detail: string;
+  target?: string;
+  command?: string;
+  cwd?: string;
+  contentPreview?: string;
+}
+
+export interface ProjectSetupPlan {
+  schemaVersion: "mobile-test-console.project-setup.v1";
+  planId: string;
+  step: ProjectSetupStep;
+  projectId?: string;
+  projectDirectory: string;
+  summary: string;
+  actions: ProjectSetupAction[];
+  canApply: boolean;
+  blockingReason: string;
+}
+
+export interface PreviewProjectInitializationRequest {
+  projectDirectory: string;
+  platforms: Platform[];
+}
+
+export interface ApplyProjectInitializationRequest extends PreviewProjectInitializationRequest {
+  planId: string;
+}
+
+export interface ApplyProjectSetupRequest {
+  step: Exclude<ProjectSetupStep, "config">;
+  planId: string;
+}
+
+export interface ProjectSetupActionResult {
+  actionId: string;
+  status: "completed" | "manual";
+  detail: string;
+}
+
+export interface ProjectSetupApplyResponse {
+  plan: ProjectSetupPlan;
+  catalog: ProjectCatalogResponse;
+  results: ProjectSetupActionResult[];
+}
+
+export interface ProjectActivationResponse {
+  catalog: ProjectCatalogResponse;
+  projectId: string;
+  configPath: string;
+  restartRequired: true;
+}
+
+export interface RegisterProjectRequest {
+  projectDirectory: string;
+  configFile: string;
+}
+
+export interface ProjectConfigSelection {
+  projectDirectory: string;
+  configFile: string;
+  configPath: string;
+  configFound: boolean;
+}
+
+export interface ProjectProviderManifestSummary {
+  schemaVersion: "mobile-test-console.project-provider.v1";
+  providerId: string;
+  scope: {
+    targetKinds: TargetKind[];
+    runtimes?: string[];
+    platforms?: Platform[];
+  };
+  capabilities: Array<{ id: string; version: number }>;
+}
+
+export interface PageParameterAdapterManifest {
+  defaultRoute: string;
+  templateParameter: string;
+  pageReadyEvent: string;
+  actionSucceededEvent: string;
+}
+
+export interface ResultAnalysisAdapterManifest {
+  pageOpenedEvents: string[];
+}
+
+export interface AccountProfileCapabilityRule {
+  module?: string;
+  methods?: string[];
+  capability: string;
+}
+
+export interface AccountProfileProviderAdapterManifest {
+  label: string;
+  recordingLabel: string;
+  defaultProfileId: string;
+  defaultAccountLabel: string;
+  requiredCapability: string;
+  crossPlatformCapability?: string;
+  devicePlatforms: Platform[];
+  deviceTextIncludes: string[];
+  requiredCaptureKinds: AccountProfileCaptureKind[];
+  requiredResultFields: string[];
+  capabilityRules: AccountProfileCapabilityRule[];
+}
+
+export interface AccountProfileAdapterManifest {
+  providers: Record<AccountProfileProvider, AccountProfileProviderAdapterManifest>;
+}
+
+export interface RepairAdapterManifest {
+  displayName: string;
+  threadNamePrefix: string;
+  fixingMessage: string;
+}
+
+export const PROJECT_WORKSPACE_IDS = ["page-parameters", "business-scripts", "account-profiles"] as const;
+export type ProjectWorkspaceId = (typeof PROJECT_WORKSPACE_IDS)[number];
+
+export interface ProjectAdapterManifest {
+  workspaces: ProjectWorkspaceId[];
+  pageParameters: PageParameterAdapterManifest;
+  resultAnalysis: ResultAnalysisAdapterManifest;
+  accountProfiles: AccountProfileAdapterManifest;
+  repair: RepairAdapterManifest;
+}
+
 export interface ConsoleSnapshot {
   project: ProjectSummary;
+  testing: ProjectTestingManifest;
+  adapter?: ProjectAdapterManifest;
+  connectors?: ConnectorCapabilityManifest[];
+  projectProviders?: ProjectProviderManifestSummary[];
   devices: Device[];
   deviceErrors: Partial<Record<Platform, string>>;
   deviceDiscoveryPending?: boolean;
@@ -398,6 +742,11 @@ export interface PageParameterCatalogEntry {
   label: string;
   bundle: string;
   source: string;
+  caseId?: string;
+  priority?: string;
+  tags?: string[];
+  testScope?: string;
+  platforms?: Platform[];
   fields: PageParameterField[];
   dynamicParameters?: boolean;
   navigation?: PageScenarioNavigation;
@@ -504,6 +853,7 @@ export interface PageParameterPage extends PageParameterCatalogEntry {
 
 export interface PageParametersResponse {
   schemaVersion: "mobile-test-console.page-parameters.v1";
+  adapter?: PageParameterAdapterManifest;
   pages: PageParameterPage[];
   recordings: PageParameterRecording[];
   warnings: string[];
@@ -531,8 +881,7 @@ export interface SavePageParameterProfileRequest {
   expiresAt?: string;
 }
 
-export const ACCOUNT_PROFILE_PROVIDERS = ["wechat", "qq", "taobao", "huawei", "taobao-commerce"] as const;
-export type AccountProfileProvider = typeof ACCOUNT_PROFILE_PROVIDERS[number];
+export type AccountProfileProvider = string;
 export type AccountProfileCaptureKind = "native" | "graphql";
 export type AccountProfileRecordingStatus = "starting" | "recording" | "stopped" | "failed";
 export type AccountProfileReplayStatus = "passed" | "failed";
@@ -640,6 +989,7 @@ export interface AccountProfileReplay {
 
 export interface AccountProfilesResponse {
   schemaVersion: "mobile-test-console.account-profiles.v1";
+  providers?: Record<AccountProfileProvider, AccountProfileProviderAdapterManifest>;
   profiles: AccountProfileSummary[];
   recordings: AccountProfileRecordingSummary[];
   warnings: string[];

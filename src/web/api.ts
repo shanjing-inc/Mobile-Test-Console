@@ -1,5 +1,15 @@
 import type {
   ConsoleSnapshot,
+  ProjectConfigSelection,
+  ProjectActivationResponse,
+  ProjectCatalogResponse,
+  ProjectCatalogDetailResponse,
+  ProjectSetupApplyResponse,
+  ProjectSetupPlan,
+  PreviewProjectInitializationRequest,
+  ApplyProjectInitializationRequest,
+  ApplyProjectSetupRequest,
+  RegisterProjectRequest,
   AccountProfileRecordingSummary,
   AccountProfileProvider,
   AccountProfileReplay,
@@ -138,6 +148,100 @@ async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise
 
 export function fetchSnapshot(refresh = false): Promise<ConsoleSnapshot> {
   return request<ConsoleSnapshot>(refresh ? "/api/snapshot?refresh=1" : "/api/snapshot");
+}
+
+export function fetchProjectCatalog(): Promise<ProjectCatalogResponse> {
+  return request<ProjectCatalogResponse>("/api/projects");
+}
+
+export function fetchProjectCatalogDetail(projectId: string): Promise<ProjectCatalogDetailResponse> {
+  return request<ProjectCatalogDetailResponse>(`/api/projects/${encodeURIComponent(projectId)}/detail`);
+}
+
+export function selectProjectCatalogDirectory(): Promise<ProjectConfigSelection> {
+  return request<ProjectConfigSelection>("/api/projects/select-directory", { method: "POST" });
+}
+
+export function selectProjectConfigFile(): Promise<ProjectConfigSelection> {
+  return request<ProjectConfigSelection>("/api/projects/select-config", { method: "POST" });
+}
+
+export function registerProject(body: RegisterProjectRequest): Promise<ProjectCatalogResponse> {
+  return request<ProjectCatalogResponse>("/api/projects", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function previewProjectInitialization(body: PreviewProjectInitializationRequest): Promise<ProjectSetupPlan> {
+  return request<ProjectSetupPlan>("/api/projects/setup/preview", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function applyProjectInitialization(body: ApplyProjectInitializationRequest): Promise<ProjectSetupApplyResponse> {
+  return request<ProjectSetupApplyResponse>("/api/projects/setup/apply", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function previewProjectSetup(
+  projectId: string,
+  step: ApplyProjectSetupRequest["step"],
+): Promise<ProjectSetupPlan> {
+  return request<ProjectSetupPlan>(`/api/projects/${encodeURIComponent(projectId)}/setup/preview`, {
+    method: "POST",
+    body: JSON.stringify({ step }),
+  });
+}
+
+export function applyProjectSetup(
+  projectId: string,
+  body: ApplyProjectSetupRequest,
+): Promise<ProjectSetupApplyResponse> {
+  return request<ProjectSetupApplyResponse>(`/api/projects/${encodeURIComponent(projectId)}/setup/apply`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteProject(projectId: string): Promise<ProjectCatalogResponse> {
+  return request<ProjectCatalogResponse>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
+}
+
+export function verifyProjectOnboarding(projectId: string): Promise<ProjectCatalogResponse> {
+  return request<ProjectCatalogResponse>(`/api/projects/${encodeURIComponent(projectId)}/onboarding/verify`, {
+    method: "POST",
+  });
+}
+
+export function activateProject(projectId: string): Promise<ProjectActivationResponse> {
+  return request<ProjectActivationResponse>(`/api/projects/${encodeURIComponent(projectId)}/activate`, {
+    method: "POST",
+  });
+}
+
+export async function waitForProjectActivation(
+  projectId: string,
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<boolean> {
+  const attempts = Math.max(1, options.attempts ?? 180);
+  const delayMs = Math.max(50, options.delayMs ?? 500);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch("/api/snapshot", { cache: "no-store" });
+      if (response.ok) {
+        const payload = await response.json().catch(() => null) as { project?: { id?: string } } | null;
+        if (payload?.project?.id === projectId) return true;
+      }
+    } catch {
+      // API 重启期间连接失败属于预期状态，继续轮询。
+    }
+    await new Promise(resolve => globalThis.setTimeout(resolve, delayMs));
+  }
+  return false;
 }
 
 export function startTasks(body: StartTasksRequest): Promise<StartTasksResponse> {

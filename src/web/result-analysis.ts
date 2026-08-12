@@ -1,4 +1,4 @@
-import type { TaskResultApiCall, TaskResultRun } from "../shared/contracts";
+import type { ResultAnalysisAdapterManifest, TaskResultApiCall, TaskResultRun } from "../shared/contracts";
 
 export function taskResultRunKey(run: Pick<TaskResultRun, "runId" | "caseId">): string {
   return `${run.runId}:${run.caseId}`;
@@ -11,7 +11,10 @@ export function isFailedApiCall(call: Pick<TaskResultApiCall, "result" | "status
   return Number.isFinite(status) && status >= 400;
 }
 
-export function diagnoseTaskResultRun(run: TaskResultRun): Array<{ label: string; tone: "passed" | "failed" | "warning" }> {
+export function diagnoseTaskResultRun(
+  run: TaskResultRun,
+  adapter?: Pick<ResultAnalysisAdapterManifest, "pageOpenedEvents">,
+): Array<{ label: string; tone: "passed" | "failed" | "warning" }> {
   if (run.status === "passed") return [{ label: "测试通过", tone: "passed" }];
   const diagnostics: Array<{ label: string; tone: "passed" | "failed" | "warning" }> = [];
   const evidenceText = [
@@ -24,7 +27,7 @@ export function diagnoseTaskResultRun(run: TaskResultRun): Array<{ label: string
     diagnostics.push({ label: "参数问题", tone: "failed" });
   }
   const expectedPage = run.expectedFinalPage || run.targetPage;
-  if (run.missingEvents.some(event => ["lynx_page_opened", "lynx_page_ready"].includes(event))
+  if (run.missingEvents.some(event => (adapter?.pageOpenedEvents ?? []).includes(event))
     || !run.actualFinalPage
     || Boolean(expectedPage && run.actualFinalPage !== expectedPage)) {
     diagnostics.push({ label: "页面打开失败", tone: "failed" });

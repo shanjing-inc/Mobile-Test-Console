@@ -5,7 +5,15 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "coverage/**"] },
+  {
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "coverage/**",
+      "examples/**/android/.gradle/**",
+      "examples/**/android/**/build/**",
+    ],
+  },
   {
     files: ["**/*.{js,cjs,mjs}"],
     ...eslint.configs.recommended,

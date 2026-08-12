@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -5,13 +6,22 @@ import { z } from "zod";
 import {
   CURRENT_ACCOUNT_SESSION,
   PLATFORMS,
+  PROJECT_INTEGRATION_TYPES,
+  PROJECT_WORKSPACE_IDS,
   type Device,
   type Platform,
   type PublicTestDefinition,
+  type ProjectAdapterManifest,
+  type ProjectIntegrationType,
+  type ProjectTestingManifest,
   type RepairJob,
   type TestTask,
 } from "../shared/contracts.js";
+import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
+import { LEGACY_COMMAND_RUNNER_ID, RUNNER_ID_PATTERN } from "../runner/sdk.js";
 import { ConsoleError } from "./errors.js";
+
+let configImportNonce = 0;
 
 const commandSchema = z.object({
   executable: z.string().min(1),
@@ -30,9 +40,26 @@ const taskDeletionSchema = z.object({
 }).default({});
 
 const taskResultsSchema = z.object({
+  schemaVersion: z.string().min(1).default("mobile-test-console.task-result.v1"),
   artifactsRoot: z.string().min(1),
   provider: commandSchema,
 }).optional();
+
+const testingSchema = z.object({
+  environments: z.array(z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    label: z.string().min(1),
+    description: z.string().default(""),
+  })).default([]),
+  capabilities: z.array(z.object({
+    id: z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/),
+    label: z.string().min(1),
+    description: z.string().default(""),
+    guidance: z.array(z.string().min(1)).default([]),
+    providerId: z.string().regex(RUNNER_ID_PATTERN),
+    required: z.boolean().default(true),
+  })).default([]),
+}).default({});
 
 const pageParametersSchema = z.object({
   provider: commandSchema,
@@ -63,6 +90,63 @@ const iosSimulatorSchema = z.object({
   workspace: z.string().min(1),
   scheme: z.string().min(1),
 }).optional();
+
+const adapterCapabilityRuleSchema = z.object({
+  module: z.string().min(1).optional(),
+  methods: z.array(z.string().min(1)).default([]),
+  capability: z.string().min(1),
+});
+
+const adapterProviderSchema = z.object({
+  label: z.string().min(1),
+  recordingLabel: z.string().min(1),
+  defaultProfileId: z.string().min(1),
+  defaultAccountLabel: z.string().min(1),
+  requiredCapability: z.string().min(1),
+  crossPlatformCapability: z.string().min(1).optional(),
+  devicePlatforms: z.array(z.enum(PLATFORMS)).default([]),
+  deviceTextIncludes: z.array(z.string().min(1)).default([]),
+  requiredCaptureKinds: z.array(z.enum(["native", "graphql"])).default(["native"]),
+  requiredResultFields: z.array(z.string().min(1)).default([]),
+  capabilityRules: z.array(adapterCapabilityRuleSchema).default([]),
+});
+
+const adapterSchema = z.object({
+  workspaces: z.array(z.enum(PROJECT_WORKSPACE_IDS))
+    .refine(items => new Set(items).size === items.length, { message: "项目工作台 ID 不能重复" })
+    .default([]),
+  pageParameters: z.object({
+    defaultRoute: z.string().default(""),
+    templateParameter: z.string().default(""),
+    pageReadyEvent: z.string().default(""),
+    actionSucceededEvent: z.string().default(""),
+  }).default({}),
+  resultAnalysis: z.object({
+    pageOpenedEvents: z.array(z.string()).default([]),
+  }).default({}),
+  accountProfiles: z.object({
+  providers: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), adapterProviderSchema).default({}),
+  }).default({}),
+  repair: z.object({
+    displayName: z.string().default("修复任务"),
+    threadNamePrefix: z.string().default("修复"),
+    fixingMessage: z.string().default("修复任务执行中"),
+  }).default({}),
+}).optional();
+
+const compatibilitySchema = z.object({
+  v1ProjectAdapterDefaults: z.boolean().default(false),
+}).default({});
+
+const runnerPluginSchema = z.object({
+  module: z.string().trim().min(1),
+  options: z.record(z.unknown()).default({}),
+});
+
+const projectProviderPluginSchema = z.object({
+  module: z.string().trim().min(1),
+  options: z.record(z.unknown()).default({}),
+});
 
 const devicePreparationSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
@@ -95,15 +179,38 @@ const accountProfileParameterSchema = z.object({
   capability: z.string().min(1).default("login"),
 });
 
+const pageSelectionParameterSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+  label: z.string().min(1),
+  type: z.literal("page-selection"),
+  defaultValue: z.string().min(1),
+  source: z.literal("page-parameters"),
+  presets: z.array(z.object({
+    value: z.string().min(1),
+    label: z.string().min(1),
+    description: z.string().default(""),
+    filter: z.object({
+      priorities: z.array(z.string().min(1)).optional(),
+      tags: z.array(z.string().min(1)).optional(),
+      testScopes: z.array(z.string().min(1)).optional(),
+    }).default({}),
+  })).min(1),
+});
+
 const testParameterSchema = z.discriminatedUnion("type", [
   selectParameterSchema,
   accountProfileParameterSchema,
+  pageSelectionParameterSchema,
 ]);
 
 const testSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
   label: z.string().min(1),
   description: z.string().default(""),
+  kind: z.enum(["general", "page", "flow"]).default("general"),
+  runnerId: z.string().regex(RUNNER_ID_PATTERN).default(LEGACY_COMMAND_RUNNER_ID),
+  providerId: z.string().regex(RUNNER_ID_PATTERN).optional(),
+  requiredCapabilities: z.array(z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)).default([]),
   platforms: z.array(z.enum(PLATFORMS)).min(1),
   parameters: z.array(testParameterSchema).default([]),
   commands: z.object({
@@ -111,9 +218,7 @@ const testSchema = z.object({
     android: commandSchema.optional(),
     ios: commandSchema.optional(),
     harmony: commandSchema.optional(),
-  }).refine(commands => Object.values(commands).some(Boolean), {
-    message: "每个测试至少需要声明一条命令",
-  }),
+  }).default({}),
 });
 
 const configSchema = z.object({
@@ -122,9 +227,11 @@ const configSchema = z.object({
     id: z.string().regex(/^[a-z][a-z0-9-]*$/),
     name: z.string().min(1),
     root: z.string().min(1),
+    integrationType: z.enum(PROJECT_INTEGRATION_TYPES).default("app"),
   }),
   stateDir: z.string().optional(),
   deviceProviders: z.array(z.enum(PLATFORMS)).default([...PLATFORMS]),
+  testing: testingSchema,
   lifecycle: lifecycleSchema,
   taskDeletion: taskDeletionSchema,
   taskResults: taskResultsSchema,
@@ -132,10 +239,58 @@ const configSchema = z.object({
   businessScripts: businessScriptsSchema,
   accountProfiles: accountProfilesSchema,
   codexRepair: codexRepairSchema,
+  adapter: adapterSchema,
+  compatibility: compatibilitySchema,
+  runnerPlugins: z.array(runnerPluginSchema).default([]),
+  projectProviderPlugins: z.array(projectProviderPluginSchema).default([]),
   iosSimulator: iosSimulatorSchema,
   devicePreparations: z.array(devicePreparationSchema).default([]),
   tests: z.array(testSchema).min(1),
 }).superRefine((config, context) => {
+  const environmentIds = new Set<string>();
+  for (const [environmentIndex, environment] of config.testing.environments.entries()) {
+    if (environmentIds.has(environment.id)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `测试环境 ID 重复: ${environment.id}`,
+        path: ["testing", "environments", environmentIndex, "id"],
+      });
+    }
+    environmentIds.add(environment.id);
+  }
+  const capabilityIds = new Set<string>();
+  for (const [capabilityIndex, capability] of config.testing.capabilities.entries()) {
+    if (capabilityIds.has(capability.id)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `项目能力 ID 重复: ${capability.id}`,
+        path: ["testing", "capabilities", capabilityIndex, "id"],
+      });
+    }
+    capabilityIds.add(capability.id);
+  }
+  const runnerPluginModules = new Set<string>();
+  for (const [pluginIndex, plugin] of config.runnerPlugins.entries()) {
+    if (runnerPluginModules.has(plugin.module)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Runner 插件模块重复: ${plugin.module}`,
+        path: ["runnerPlugins", pluginIndex, "module"],
+      });
+    }
+    runnerPluginModules.add(plugin.module);
+  }
+  const projectProviderPluginModules = new Set<string>();
+  for (const [pluginIndex, plugin] of config.projectProviderPlugins.entries()) {
+    if (projectProviderPluginModules.has(plugin.module)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `项目 Provider 插件模块重复: ${plugin.module}`,
+        path: ["projectProviderPlugins", pluginIndex, "module"],
+      });
+    }
+    projectProviderPluginModules.add(plugin.module);
+  }
   const preparationIds = new Set<string>();
   for (const [preparationIndex, preparation] of config.devicePreparations.entries()) {
     if (preparationIds.has(preparation.id)) {
@@ -157,6 +312,36 @@ const configSchema = z.object({
       });
     }
     testIds.add(test.id);
+    if (test.runnerId === LEGACY_COMMAND_RUNNER_ID && !Object.values(test.commands).some(Boolean)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "legacy-command-runner 测试至少需要声明一条命令",
+        path: ["tests", testIndex, "commands"],
+      });
+    }
+    if (test.requiredCapabilities.length > 0 && !test.providerId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "声明能力依赖的测试需要配置 providerId",
+        path: ["tests", testIndex, "providerId"],
+      });
+    }
+    for (const [capabilityIndex, capability] of test.requiredCapabilities.entries()) {
+      const declared = config.testing.capabilities.find(item => item.id === capability);
+      if (!declared) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `测试引用了未声明的项目能力: ${capability}`,
+          path: ["tests", testIndex, "requiredCapabilities", capabilityIndex],
+        });
+      } else if (declared.providerId !== test.providerId) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `测试能力 ${capability} 属于 Provider ${declared.providerId}`,
+          path: ["tests", testIndex, "providerId"],
+        });
+      }
+    }
 
     const parameterIds = new Set<string>();
     for (const [parameterIndex, parameter] of test.parameters.entries()) {
@@ -175,13 +360,33 @@ const configSchema = z.object({
           path: ["tests", testIndex, "parameters", parameterIndex, "defaultValue"],
         });
       }
+      if (parameter.type === "page-selection" && !parameter.presets.some(preset => preset.value === parameter.defaultValue)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `默认页面预设未声明: ${parameter.defaultValue}`,
+          path: ["tests", testIndex, "parameters", parameterIndex, "defaultValue"],
+        });
+      }
     }
   }
 });
 
 export type CommandDefinition = z.infer<typeof commandSchema>;
-export type TestDefinition = z.infer<typeof testSchema>;
+type ParsedTestDefinition = z.infer<typeof testSchema>;
+export type TestDefinition = Omit<ParsedTestDefinition, "runnerId" | "kind" | "requiredCapabilities"> & {
+  runnerId?: string;
+  kind?: ParsedTestDefinition["kind"];
+  requiredCapabilities?: string[];
+};
 export type DevicePreparationDefinition = z.infer<typeof devicePreparationSchema>;
+type ParsedRunnerPluginDefinition = z.infer<typeof runnerPluginSchema>;
+export type RunnerPluginDefinition = Omit<ParsedRunnerPluginDefinition, "options"> & {
+  options?: Record<string, unknown>;
+};
+type ParsedProjectProviderPluginDefinition = z.infer<typeof projectProviderPluginSchema>;
+export type ProjectProviderPluginDefinition = Omit<ParsedProjectProviderPluginDefinition, "options"> & {
+  options?: Record<string, unknown>;
+};
 
 export interface LoadedProjectConfig {
   schemaVersion: "mobile-test-console.config.v1";
@@ -190,9 +395,11 @@ export interface LoadedProjectConfig {
     id: string;
     name: string;
     root: string;
+    integrationType?: ProjectIntegrationType;
   };
   stateDir: string;
   deviceProviders: Platform[];
+  testing?: ProjectTestingManifest;
   lifecycle: {
     startup?: CommandDefinition;
     shutdown?: CommandDefinition;
@@ -201,6 +408,7 @@ export interface LoadedProjectConfig {
     cleanup?: CommandDefinition;
   };
   taskResults?: {
+    schemaVersion?: string;
     artifactsRoot: string;
     provider: CommandDefinition;
   };
@@ -225,6 +433,12 @@ export interface LoadedProjectConfig {
     worktreeLinks: string[];
     replay?: CommandDefinition;
   };
+  adapter?: ProjectAdapterManifest;
+  compatibility?: {
+    v1ProjectAdapterDefaults: boolean;
+  };
+  runnerPlugins?: RunnerPluginDefinition[];
+  projectProviderPlugins?: ProjectProviderPluginDefinition[];
   iosSimulator?: {
     workspace: string;
     scheme: string;
@@ -244,7 +458,15 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
   const configPath = path.resolve(inputPath);
   let imported: unknown;
   try {
-    imported = await import(`${pathToFileURL(configPath).href}?t=${Date.now()}`);
+    if (path.extname(configPath) === ".cjs") {
+      const configRequire = createRequire(configPath);
+      const resolved = configRequire.resolve(configPath);
+      delete configRequire.cache[resolved];
+      imported = configRequire(resolved);
+    } else {
+      configImportNonce += 1;
+      imported = await import(`${pathToFileURL(configPath).href}?mtc=${Date.now()}-${configImportNonce}`);
+    }
   } catch (error) {
     throw new ConsoleError(
       "CONFIG_LOAD_FAILED",
@@ -266,6 +488,10 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
   const stateDir = parsed.data.stateDir
     ? path.resolve(configDir, parsed.data.stateDir)
     : path.join(os.homedir(), ".mobile-test-console", parsed.data.project.id);
+  const adapter = await resolveLoadedProjectAdapter(
+    parsed.data.adapter as ProjectAdapterManifest | undefined,
+    parsed.data.compatibility.v1ProjectAdapterDefaults,
+  );
 
   return {
     ...parsed.data,
@@ -278,6 +504,15 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
       ...parsed.data.taskResults,
       artifactsRoot: path.resolve(projectRoot, parsed.data.taskResults.artifactsRoot),
     } : undefined,
+    testing: {
+      ...parsed.data.testing,
+      ...(parsed.data.taskResults ? {
+        result: {
+          schemaVersion: parsed.data.taskResults.schemaVersion,
+          artifactsRoot: path.resolve(projectRoot, parsed.data.taskResults.artifactsRoot),
+        },
+      } : {}),
+    },
     iosSimulator: parsed.data.iosSimulator ? {
       ...parsed.data.iosSimulator,
       workspace: path.resolve(projectRoot, parsed.data.iosSimulator.workspace),
@@ -288,8 +523,21 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
           worktreeRoot: path.resolve(projectRoot, parsed.data.codexRepair.worktreeRoot),
         }
       : parsed.data.codexRepair,
+    adapter,
     stateDir,
   };
+}
+
+async function resolveLoadedProjectAdapter(
+  adapter: ProjectAdapterManifest | undefined,
+  useV1Defaults: boolean,
+): Promise<ProjectAdapterManifest> {
+  if (adapter) return structuredClone(adapter);
+  if (!useV1Defaults) return structuredClone(EMPTY_PROJECT_ADAPTER);
+
+  // 旧版项目可通过显式兼容开关临时恢复历史默认清单。
+  const { resolveV1ProjectAdapter } = await import("../compat/v1-project-adapter.js");
+  return resolveV1ProjectAdapter(undefined);
 }
 
 export function toPublicTests(tests: TestDefinition[]): PublicTestDefinition[] {
@@ -297,6 +545,10 @@ export function toPublicTests(tests: TestDefinition[]): PublicTestDefinition[] {
     id: test.id,
     label: test.label,
     description: test.description,
+    kind: test.kind ?? "general",
+    runnerId: test.runnerId ?? LEGACY_COMMAND_RUNNER_ID,
+    ...(test.providerId ? { providerId: test.providerId } : {}),
+    requiredCapabilities: [...(test.requiredCapabilities ?? [])],
     platforms: test.platforms,
     parameters: test.parameters,
   }));
@@ -323,6 +575,13 @@ export function validateParameters(
       && !/^[A-Za-z0-9._-]+:[a-z][a-z0-9-]*$/.test(value)) {
       throw new ConsoleError("PARAMETER_INVALID", `${parameter.label} 的账号画像格式无效: ${value}`);
     }
+    if (parameter.type === "page-selection") {
+      const preset = parameter.presets.some(item => item.value === value);
+      const pageIds = value.split(",").map(item => item.trim()).filter(Boolean);
+      if (!preset && (pageIds.length === 0 || pageIds.some(pageId => !/^[A-Za-z0-9._-]+$/.test(pageId)))) {
+        throw new ConsoleError("PARAMETER_INVALID", `${parameter.label} 的页面选择无效: ${value}`);
+      }
+    }
     result[parameter.id] = value;
   }
   return result;
@@ -336,13 +595,26 @@ export function resolveCommand(
   parameters: Record<string, string>,
   workspaceRoot = config.project.root,
 ): ResolvedCommand {
-  const definition = test.commands[device.platform] ?? test.commands.default;
-  if (!definition) {
+  const command = resolveOptionalCommand(config, test, device, task, parameters, workspaceRoot);
+  if (!command) {
     throw new ConsoleError(
       "COMMAND_UNAVAILABLE",
       `${test.label} 未配置 ${device.platform} 命令`,
     );
   }
+  return command;
+}
+
+export function resolveOptionalCommand(
+  config: LoadedProjectConfig,
+  test: TestDefinition,
+  device: Device,
+  task: { id: string; runId: string },
+  parameters: Record<string, string>,
+  workspaceRoot = config.project.root,
+): ResolvedCommand | null {
+  const definition = test.commands[device.platform] ?? test.commands.default;
+  if (!definition) return null;
 
   const values: Record<string, string> = {
     projectRoot: workspaceRoot,

@@ -52,6 +52,22 @@ describe("运行记录删除交互", () => {
     expect(active).not.toContain('class="delete-button"');
   });
 
+  it("运行记录展示 iOS 模拟器和真机类型", () => {
+    const simulator = renderRow({
+      ...task,
+      device: { ...task.device, name: "iPhone 14 Pro Max", platform: "ios", type: "simulator" },
+    });
+    const physical = renderRow({
+      ...task,
+      device: { ...task.device, name: "熊宝贝的iPhone", platform: "ios", type: "physical" },
+    });
+
+    expect(simulator).toContain("iPhone 14 Pro Max");
+    expect(simulator).toContain("iOS · 模拟器");
+    expect(physical).toContain("熊宝贝的iPhone");
+    expect(physical).toContain("iOS · 真机");
+  });
+
   it("API 使用编码后的任务 ID 发送 DELETE 请求", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({ task }), {
       status: 200,
@@ -133,6 +149,7 @@ function renderRow(value: TestTask): string {
 function createSnapshot(tasks: TestTask[]): ConsoleSnapshot {
   return {
     project: { id: "demo", name: "Demo", root: "/tmp/demo" },
+    testing: { environments: [], capabilities: [] },
     devices: [],
     deviceErrors: {},
     tests: [],

@@ -2,6 +2,7 @@ import { AlertCircle, Braces, CircleDot, Database, History, LoaderCircle, Play, 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PLATFORMS,
+  type PageParameterAdapterManifest,
   type Device,
   type PageParameterField,
   type PageParameterPage,
@@ -61,8 +62,9 @@ const originLabels: Record<PageParameterValueOrigin, string> = {
   manual: "手动编辑",
 };
 
-export function PageParametersWorkspace({ devices, onMessage }: {
+export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessage }: {
   devices: Device[];
+  adapter?: PageParameterAdapterManifest;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
 }) {
   const [data, setData] = useState<PageParametersResponse | null>(null);
@@ -84,9 +86,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
   const [parameterView, setParameterView] = useState<"current" | "history">("current");
   const [manualParameterKey, setManualParameterKey] = useState("");
   const [actions, setActions] = useState<PageScenarioAction[]>([]);
-  const [assertions, setAssertions] = useState<PageScenarioAssertion[]>([
-    { type: "runtimeEvent", event: "lynx_page_ready" },
-  ]);
+  const [assertions, setAssertions] = useState<PageScenarioAssertion[]>([]);
   const [confirmedObservationIds, setConfirmedObservationIds] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState(false);
   const [replayingProfileId, setReplayingProfileId] = useState("");
@@ -97,6 +97,9 @@ export function PageParametersWorkspace({ devices, onMessage }: {
   const parameterDrafts = useRef<Record<string, PageParameterDraft>>({});
   const parameterProfileRefs = useRef<Record<string, { profileId: string; isDefault: boolean }>>({});
   const actionDrafts = useRef<Record<string, PageScenarioAction[]>>({});
+  const adapter = data?.adapter ?? adapterProp;
+  const pageReadyEvent = adapter?.pageReadyEvent ?? "";
+  const actionSucceededEvent = adapter?.actionSucceededEvent ?? "";
 
   const load = useCallback(async () => {
     try {
@@ -191,7 +194,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
     const draft = parameterDrafts.current[key];
     setValues(draft?.values ?? {});
     setValueOrigins(draft?.origins ?? {});
-    setAssertions([{ type: "runtimeEvent", event: "lynx_page_ready" }]);
+    setAssertions(defaultAssertions(pageReadyEvent));
     setProfileId("default");
     setProfileIsDefault(false);
     setScenario("default");
@@ -205,7 +208,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
     setReplayingProfileId("");
     replayRequestIdRef.current += 1;
     replayContextRef.current = pageId;
-  }, [latestObservedPage, replayingProfileId]);
+  }, [latestObservedPage, pageReadyEvent, replayingProfileId]);
 
   useEffect(() => {
     if (!page) return;
@@ -248,7 +251,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
         setActions(nextActions);
         setAssertions(fallbackProfile.assertions?.length
           ? fallbackProfile.assertions
-          : [{ type: "runtimeEvent", event: "lynx_page_ready" }]);
+          : defaultAssertions(pageReadyEvent));
       }
     } else if (!pageObservation) {
       const restoredProfile = page.profiles.find(profile => profile.profileId === parameterProfileRefs.current[key]?.profileId);
@@ -262,7 +265,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
     }
     setValues(draft.values);
     setValueOrigins(draft.origins);
-  }, [environment, page, selectedObservation, selectedTestDevice?.platform]);
+  }, [environment, page, pageReadyEvent, selectedObservation, selectedTestDevice?.platform]);
 
   const updateValue = (key: string, patch: Partial<PageParameterValue>) => {
     setValues(previous => {
@@ -341,7 +344,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
     replaceActions(() => pageInteractionActions(profile.actions));
     setAssertions(profile.assertions?.length
       ? profile.assertions
-      : [{ type: "runtimeEvent", event: "lynx_page_ready" }]);
+      : defaultAssertions(pageReadyEvent));
     setProfileId(profile.profileId);
     setProfileIsDefault(profile.isDefault === true);
     parameterProfileRefs.current[editorDraftKey(selectedPageId, selectedObservationId)] = {
@@ -384,7 +387,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
     const draft = parameterDrafts.current[key];
     setValues(draft?.values ?? {});
     setValueOrigins(draft?.origins ?? {});
-    setAssertions([{ type: "runtimeEvent", event: "lynx_page_ready" }]);
+    setAssertions(defaultAssertions(pageReadyEvent));
     setProfileId("default");
     setProfileIsDefault(false);
     setScenario("default");
@@ -447,7 +450,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
 
   const addActionAssertion = (actionIndex: number) => {
     replaceActions(previous => previous.map((action, index) => index === actionIndex
-      ? { ...action, assertions: [...(action.assertions ?? []), defaultAssertion(page?.assertionTargets, "lynx_action_succeeded")] }
+      ? { ...action, assertions: [...(action.assertions ?? []), defaultAssertion(page?.assertionTargets, actionSucceededEvent)] }
       : action));
   };
 
@@ -470,7 +473,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
   };
 
   const addAssertion = () => {
-    replaceAssertions(previous => [...previous, defaultAssertion(page?.assertionTargets, "lynx_page_ready")]);
+    replaceAssertions(previous => [...previous, defaultAssertion(page?.assertionTargets, pageReadyEvent)]);
   };
 
   const handleStart = async () => {
@@ -517,10 +520,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
     accountLabel,
     values,
     capturedKeys: selectedObservation ? Object.keys(selectedObservation.values) : undefined,
-    navigation: selectedObservation?.navigation ?? page?.navigation ?? {
-      route: "huigou://lynx",
-      params: { _tpl: page?.bundle || page?.pageId || "" },
-    },
+    navigation: selectedObservation?.navigation ?? page?.navigation ?? defaultNavigation(page?.bundle || page?.pageId || "", adapter),
     actions,
     assertions,
     source: selectedObservation ? "recording" : "manual",
@@ -772,7 +772,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
         </details>
 
         <div className="page-test-block page-open-block">
-          <div className="scenario-editor-heading"><div><strong>1. 页面参数列表</strong><small>{page.navigation?.route ?? "huigou://lynx"} · {page.bundle}</small></div><span className="count-label">{requiredFieldCount} 必填 · {editorFields.length} 已用</span></div>
+          <div className="scenario-editor-heading"><div><strong>1. 页面参数列表</strong><small>{page.navigation?.route ?? adapter?.defaultRoute ?? ""} · {page.bundle}</small></div><span className="count-label">{requiredFieldCount} 必填 · {editorFields.length} 已用</span></div>
         <div className="parameter-source-tabs compact" role="tablist" aria-label="路由参数视图">
           <button type="button" role="tab" aria-selected={parameterView === "current"} className={parameterView === "current" ? "active" : ""} onClick={() => setParameterView("current")}><Braces size={14} />当前路由参数 <span>{editorFields.length}</span></button>
           <button type="button" role="tab" aria-selected={parameterView === "history"} className={parameterView === "history" ? "active" : ""} onClick={() => setParameterView("history")}><History size={14} />历史数据 <span>{page.profiles.length}</span></button>
@@ -890,7 +890,7 @@ export function PageParametersWorkspace({ devices, onMessage }: {
                 <div className="interaction-assertions">
                   <div className="interaction-assertion-title"><span>响应断言 <small>{action.assertions?.length ?? 0} 项</small></span><button type="button" className="icon-command" title="添加响应断言" aria-label={`为动作 ${index + 1} 添加响应断言`} onClick={() => addActionAssertion(index)}><Plus size={14} /></button></div>
                   {(action.assertions?.length ?? 0) === 0 && <span className="scenario-empty">每个动作至少配置一项响应断言</span>}
-                  {(action.assertions ?? []).map((assertion, assertionIndex) => <AssertionEditor key={`${assertionIndex}-${assertion.type}`} assertion={assertion} index={assertionIndex} targets={page.assertionTargets ?? []} label={`动作 ${index + 1} 响应断言`} defaultEvent="lynx_action_succeeded" onChange={next => updateActionAssertion(index, assertionIndex, next)} onRemove={() => removeActionAssertion(index, assertionIndex)} />)}
+                  {(action.assertions ?? []).map((assertion, assertionIndex) => <AssertionEditor key={`${assertionIndex}-${assertion.type}`} assertion={assertion} index={assertionIndex} targets={page.assertionTargets ?? []} label={`动作 ${index + 1} 响应断言`} defaultEvent={actionSucceededEvent} onChange={next => updateActionAssertion(index, assertionIndex, next)} onRemove={() => removeActionAssertion(index, assertionIndex)} />)}
                 </div>
               </div>;
             })}
@@ -914,7 +914,7 @@ function AssertionEditor({ assertion, index, targets, label, defaultEvent, onCha
 }) {
   const changeType = (type: PageScenarioAssertion["type"]) => {
     if (type === "runtimeEvent") {
-      onChange({ type, event: defaultEvent ?? "lynx_page_ready" });
+      onChange({ type, event: defaultEvent ?? "" });
       return;
     }
     onChange({ type, target: targets[0] });
@@ -933,6 +933,15 @@ function AssertionEditor({ assertion, index, targets, label, defaultEvent, onCha
 function defaultAssertion(targets: string[] | undefined, event: string, preferredTarget = ""): PageScenarioAssertion {
   const target = preferredTarget && targets?.includes(preferredTarget) ? preferredTarget : targets?.[0];
   return target ? { type: "visible", target } : { type: "runtimeEvent", event };
+}
+
+function defaultAssertions(event: string): PageScenarioAssertion[] {
+  return event ? [{ type: "runtimeEvent", event }] : [];
+}
+
+function defaultNavigation(bundle: string, adapter: PageParameterAdapterManifest | undefined): SavePageParameterProfileRequest["navigation"] {
+  if (!adapter?.defaultRoute) return undefined;
+  return { route: adapter.defaultRoute, params: { [adapter.templateParameter]: bundle } };
 }
 
 function fieldRequirementLabel(field: PageParameterField): string {

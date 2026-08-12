@@ -25,7 +25,7 @@ describe("QA 结果分析界面", () => {
     expect(markup).toContain("页面打开失败");
     expect(markup).toContain("画像 recorded-search");
     expect(markup).toContain('&quot;q&quot;: &quot;牙膏&quot;');
-    expect(markup).toContain("缺失事件：lynx_page_ready");
+    expect(markup).toContain("缺失事件：page_ready");
     expect(markup).toContain("查看接口");
   });
 
@@ -166,8 +166,8 @@ const result: TaskResult = {
     device: "Pixel 8",
     status: "failed",
     errorSummary: "路由参数校验后页面未就绪",
-    requiredEvents: ["lynx_page_ready"],
-    missingEvents: ["lynx_page_ready"],
+    requiredEvents: ["page_ready"],
+    missingEvents: ["page_ready"],
     runtimeEventCount: 3,
     uiActionCount: 2,
     screenshots: [{

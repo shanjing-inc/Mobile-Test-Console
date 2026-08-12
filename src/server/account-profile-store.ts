@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AccountProfile, AccountProfileProvider, AccountProfileProviderEntry, AccountProfileRecording } from "../shared/contracts.js";
+import type { AccountProfile, AccountProfileProvider, AccountProfileProviderEntry, AccountProfileRecording, ProjectAdapterManifest } from "../shared/contracts.js";
+import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
+import { accountProfileCapabilities, isCompleteAccountProfileRecording } from "./project-adapter.js";
 
 const PROFILE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -15,7 +17,7 @@ export class AccountProfileStore {
   private writeQueue = Promise.resolve();
   private mutationQueue = Promise.resolve();
 
-  constructor(stateDir: string) {
+  constructor(stateDir: string, private readonly adapter: ProjectAdapterManifest = EMPTY_PROJECT_ADAPTER) {
     this.statePath = path.join(stateDir, "account-profiles.json");
   }
 
@@ -26,7 +28,7 @@ export class AccountProfileStore {
       await fs.chmod(this.statePath, 0o600);
       const storedProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
       const recordings = Array.isArray(payload.recordings) ? payload.recordings : [];
-      const migration = recoverMissingProviderEntries(storedProfiles, recordings);
+      const migration = recoverMissingProviderEntries(storedProfiles, recordings, this.adapter);
       const state: StoredAccountProfiles = {
         schemaVersion: payload.schemaVersion,
         profiles: migration.profiles,
@@ -98,6 +100,7 @@ function normalizeStoredProfile(profile: AccountProfile | Record<string, unknown
 function recoverMissingProviderEntries(
   storedProfiles: Array<AccountProfile | Record<string, unknown>>,
   recordings: AccountProfileRecording[],
+  adapter: ProjectAdapterManifest,
 ): { profiles: AccountProfile[]; changed: boolean } {
   let changed = false;
   const profiles = storedProfiles.map(storedProfile => {
@@ -106,10 +109,10 @@ function recoverMissingProviderEntries(
     if (wasLegacy) changed = true;
 
     const existingProviders = new Set(profile.providerEntries.map(item => item.provider));
-    const latestByProvider = latestValidRecordings(profile, recordings);
+    const latestByProvider = latestValidRecordings(profile, recordings, adapter);
     const recoveredEntries = [...latestByProvider.values()]
       .filter(recording => !existingProviders.has(recording.provider))
-      .map(buildProviderEntryFromHistory);
+      .map(recording => buildProviderEntryFromHistory(recording, adapter));
     if (recoveredEntries.length === 0) return profile;
     changed = true;
     return {
@@ -121,14 +124,14 @@ function recoverMissingProviderEntries(
   return { profiles, changed };
 }
 
-function latestValidRecordings(profile: AccountProfile, recordings: AccountProfileRecording[]): Map<AccountProfileProvider, AccountProfileRecording> {
+function latestValidRecordings(profile: AccountProfile, recordings: AccountProfileRecording[], adapter: ProjectAdapterManifest): Map<AccountProfileProvider, AccountProfileRecording> {
   const result = new Map<AccountProfileProvider, AccountProfileRecording>();
   recordings
     .filter(recording => recording.profileId === profile.profileId
       && recording.platform === profile.platform
       && recording.environment === profile.environment
       && recording.status === "stopped"
-      && isCompleteRecording(recording))
+      && isCompleteRecording(recording, adapter))
     .sort((left, right) => compareRecordingRecency(right, left))
     .forEach(recording => {
       if (!result.has(recording.provider)) result.set(recording.provider, recording);
@@ -147,32 +150,27 @@ function recordingTimestamp(recording: AccountProfileRecording): string {
   return recording.stoppedAt || recording.startedAt;
 }
 
-function isCompleteRecording(recording: AccountProfileRecording): boolean {
+function isCompleteRecording(recording: AccountProfileRecording, adapter: ProjectAdapterManifest): boolean {
   if (String(recording.error ?? "").trim() || !isValidTimestamp(recording.startedAt) || !isValidTimestamp(recording.stoppedAt)) return false;
   if (!Array.isArray(recording.captures) || recording.captures.length === 0 || recording.captures.some(item => !item || item.provider !== recording.provider)) return false;
   const nativeSuccess = recording.captures.some(item => item.kind === "native" && String(item.result?.result ?? "").trim().toLowerCase() === "success");
   if (!nativeSuccess) return false;
-  return recording.provider === "taobao-commerce"
-    || recording.captures.some(item => item.kind === "graphql" && findScalar(item.result, "uid") && findScalar(item.result, "session_key"));
+  return isCompleteAccountProfileRecording(adapter.accountProfiles.providers[recording.provider], recording.captures);
 }
 
 function isValidTimestamp(value: string): boolean {
   return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
 }
 
-function buildProviderEntryFromHistory(recording: AccountProfileRecording): AccountProfileProviderEntry {
+function buildProviderEntryFromHistory(recording: AccountProfileRecording, adapter: ProjectAdapterManifest): AccountProfileProviderEntry {
   const timestamp = recordingTimestamp(recording);
   const baseTime = Date.parse(timestamp);
-  const capabilities = new Set<string>([recording.provider === "taobao-commerce" ? "taobao-commerce-auth" : "login"]);
-  recording.captures.forEach(item => {
-    if (item.module === "LynxAlibcLoginModule" && ["getSession", "login"].includes(String(item.method))) capabilities.add("taobao-session");
-    if (item.module === "LynxAlibcLoginModule" && item.method === "oauth2") capabilities.add("taobao-oauth2");
-  });
+  const capabilities = accountProfileCapabilities(adapter.accountProfiles.providers[recording.provider], recording.captures);
   return {
     provider: recording.provider,
     accountUid: recording.captures.map(item => findScalar(item.result, "uid")).find(Boolean) ?? "",
     sourceDeviceKey: recording.deviceKey,
-    capabilities: [...capabilities].sort(),
+    capabilities,
     captures: recording.captures,
     recordedAt: recording.startedAt,
     validatedAt: "",

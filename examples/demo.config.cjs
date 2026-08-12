@@ -4,6 +4,25 @@ module.exports = {
     id: "mobile-test-console-demo",
     name: "控制台示例项目",
     root: "..",
+    integrationType: "app",
+  },
+  adapter: {
+    workspaces: [],
+    pageParameters: {
+      defaultRoute: "demo://page",
+      templateParameter: "bundle",
+      pageReadyEvent: "page_ready",
+      actionSucceededEvent: "action_succeeded",
+    },
+    resultAnalysis: {
+      pageOpenedEvents: ["page_opened", "page_ready"],
+    },
+    accountProfiles: { providers: {} },
+    repair: {
+      displayName: "示例项目修复任务",
+      threadNamePrefix: "示例修复",
+      fixingMessage: "Codex 正在修复示例项目",
+    },
   },
   deviceProviders: ["android"],
   lifecycle: {
@@ -17,6 +36,7 @@ module.exports = {
       id: "demo-smoke",
       label: "示例 Smoke",
       description: "运行短暂的本机示例任务，用于检查调度、状态和日志展示。",
+      runnerId: "legacy-command-runner",
       platforms: ["android"],
       parameters: [
         {

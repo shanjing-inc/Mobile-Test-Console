@@ -4,8 +4,21 @@
   "private": true,
   "type": "module",
   "bin": {
-    "mobile-test-console": "dist/server/cli.js"
+    "mobile-test-console": "dist/server/cli.js",
+    "mobile-test-console-result": "dist/server/result-bundle-cli.js"
   },
+  "exports": {
+    "./runner": {
+      "types": "./dist/runner/index.d.ts",
+      "import": "./dist/runner/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "examples"
+  ],
   "engines": {
     "node": ">=18.20.0"
   },
@@ -13,13 +26,14 @@
     "dev": "node scripts/dev.mjs",
     "dev:server": "tsx watch src/server/cli.ts",
     "dev:web": "vite",
+    "result:import": "tsx src/server/result-bundle-cli.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "pnpm typecheck && vite build && tsup src/server/cli.ts --format esm --platform node --target node18 --out-dir dist/server --sourcemap --clean",
+    "build": "pnpm typecheck && vite build && tsup src/server/cli.ts src/server/result-bundle-cli.ts --format esm --platform node --target node18 --out-dir dist/server --sourcemap --clean && tsup src/runner/index.ts --format esm --platform node --target node18 --out-dir dist/runner --sourcemap --dts",
     "start": "node dist/server/cli.js",
     "check": "pnpm lint && pnpm test && pnpm build",
-    "test:fanli": "pnpm dev -- --config ../fanli/qa/mobile-test.config.cjs"
+    "test:shanjing-example": "pnpm dev -- --config examples/com.shanjing.example/mobile-test.config.cjs"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",

@@ -8,6 +8,7 @@ import type { LoadedProjectConfig } from "../src/server/config.js";
 import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
+import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 
 const tempDirs: string[] = [];
 
@@ -26,7 +27,7 @@ describe("页面参数 API", () => {
       const pages = [{
         pageId: "pageGoodsDetail", label: "商品详情", bundle: "pageGoodsDetail.bundle",
         source: "qa-manifest:goods-detail", warnings: [],
-        navigation: { route: "huigou://lynx", params: { _tpl: "pageGoodsDetail.bundle" } },
+        navigation: { route: "demo://lynx", params: { bundle: "pageGoodsDetail.bundle" } },
         targets: [
           { id: "goods.buy", label: "购买按钮", kind: "button", actions: ["tap"] },
           { id: "goods.harmony-only", label: "Harmony 操作", kind: "region", actions: ["tap"], platforms: ["harmony"] }
@@ -52,7 +53,7 @@ describe("页面参数 API", () => {
           missingEvents: [],
           steps: [
             { index: 1, kind: "action", type: "tap", target: "goods.buy", status: "passed", evidence: "uiActions" },
-            { index: 2, kind: "assertion", type: "runtimeEvent", status: "passed", message: "lynx_page_ready", evidence: "runtime-events" }
+            { index: 2, kind: "assertion", type: "runtimeEvent", status: "passed", message: "page_ready", evidence: "runtime-events" }
           ]
         }
       }));
@@ -176,17 +177,17 @@ describe("页面参数 API", () => {
             type: "tap", target: "goods.buy",
             assertions: [{ type: "visible", target: "goods.content" }, { type: "runtimeEvent", event: "goods_checkout_opened" }],
           }],
-          assertions: [{ type: "visible", target: "goods.content" }, { type: "runtimeEvent", event: "lynx_page_ready" }],
+          assertions: [{ type: "visible", target: "goods.content" }, { type: "runtimeEvent", event: "page_ready" }],
         },
       });
       expect(saved.statusCode).toBe(200);
       expect(saved.json().profile).toMatchObject({
-        navigation: { route: "huigou://lynx", params: { _tpl: "pageGoodsDetail.bundle" } },
+        navigation: { route: "demo://lynx", params: { bundle: "pageGoodsDetail.bundle" } },
         actions: [{
           type: "tap", target: "goods.buy",
           assertions: [{ type: "visible", target: "goods.content" }, { type: "runtimeEvent", event: "goods_checkout_opened" }],
         }],
-        assertions: [{ type: "visible", target: "goods.content" }, { type: "runtimeEvent", event: "lynx_page_ready" }],
+        assertions: [{ type: "visible", target: "goods.content" }, { type: "runtimeEvent", event: "page_ready" }],
       });
 
       const defaulted = await app.inject({
@@ -333,6 +334,7 @@ function createConfig(stateDir: string, providerPath: string): LoadedProjectConf
     deviceProviders: ["android"],
     lifecycle: {},
     taskDeletion: {},
+    adapter: TEST_PROJECT_ADAPTER,
     pageParameters: { provider: { executable: process.execPath, args: [providerPath] } },
     tests: [{
       id: "pass", label: "Pass", description: "", platforms: ["android"], parameters: [],

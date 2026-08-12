@@ -9,6 +9,9 @@ import type { LoadedProjectConfig } from "../src/server/config.js";
 import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
+import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
+import { ProjectCatalogService, ProjectCatalogStore } from "../src/server/project-catalog.js";
+import { DirectoryPicker } from "../src/server/directory-picker.js";
 
 const tempDirs: string[] = [];
 
@@ -17,6 +20,212 @@ afterEach(async () => {
 });
 
 describe("HTTP API", () => {
+  it("登记项目并返回持久化接入步骤", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-projects-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    const candidateRoot = path.join(dir, "candidate");
+    const initializationRoot = path.join(dir, "new-api-lynx");
+    await fs.mkdir(candidateRoot);
+    await fs.mkdir(initializationRoot);
+    await fs.writeFile(path.join(candidateRoot, "mobile-test.config.cjs"), `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "candidate-lynx", name: "Candidate Lynx", root: ".", integrationType: "lynx-app" },
+      deviceProviders: ["android"],
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }],
+    };\n`);
+    const catalog = new ProjectCatalogService(new ProjectCatalogStore(path.join(dir, "projects.json")));
+    await catalog.initialize(config);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, ["android"]),
+      tasks,
+      projectCatalog: catalog,
+      directoryPicker: new DirectoryPicker({
+        async capture(_executable, args) {
+          const selectingFile = args.some(argument => argument.includes("choose file"));
+          return { code: 0, stdout: `${selectingFile ? path.join(candidateRoot, "mobile-test.config.cjs") : candidateRoot}\n`, stderr: "" };
+        },
+      }, "darwin"),
+    });
+
+    try {
+      const selected = await app.inject({ method: "POST", url: "/api/projects/select-directory" });
+      expect(selected.statusCode).toBe(200);
+      expect(selected.json()).toMatchObject({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs", configFound: true });
+
+      const selectedConfig = await app.inject({ method: "POST", url: "/api/projects/select-config" });
+      expect(selectedConfig.statusCode).toBe(200);
+      expect(selectedConfig.json()).toMatchObject({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs", configFound: true });
+
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/projects",
+        payload: {
+          projectDirectory: candidateRoot,
+          configFile: "mobile-test.config.cjs",
+        },
+      });
+      expect(created.statusCode).toBe(200);
+      expect(created.json()).toMatchObject({
+        activeProjectId: "demo",
+        projects: expect.arrayContaining([
+          expect.objectContaining({
+            id: "candidate-lynx",
+            name: "Candidate Lynx",
+            integrationType: "lynx-app",
+            platforms: ["android"],
+            active: false,
+            onboarding: expect.arrayContaining([expect.objectContaining({ id: "project", status: "verified" })]),
+          }),
+        ]),
+      });
+
+      const verified = await app.inject({
+        method: "POST",
+        url: "/api/projects/candidate-lynx/onboarding/verify",
+      });
+      expect(verified.statusCode).toBe(200);
+      expect(verified.json().projects.find((project: { id: string }) => project.id === "candidate-lynx").onboarding)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "template", status: "verified" })]));
+
+      const detail = await app.inject({
+        method: "GET",
+        url: "/api/projects/candidate-lynx/detail",
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({
+        project: { id: "candidate-lynx", name: "Candidate Lynx" },
+        tests: [{ id: "smoke", label: "Smoke", platforms: ["android"] }],
+        executionReady: false,
+      });
+
+      const initializationPreview = await app.inject({
+        method: "POST",
+        url: "/api/projects/setup/preview",
+        payload: { projectDirectory: initializationRoot, platforms: ["android"] },
+      });
+      expect(initializationPreview.statusCode).toBe(200);
+      expect(initializationPreview.json()).toMatchObject({ step: "config", canApply: true });
+      await expect(fs.stat(path.join(initializationRoot, "mobile-test.config.cjs"))).rejects.toMatchObject({ code: "ENOENT" });
+
+      const initializationApply = await app.inject({
+        method: "POST",
+        url: "/api/projects/setup/apply",
+        payload: {
+          projectDirectory: initializationRoot,
+          platforms: ["android"],
+          planId: initializationPreview.json().planId,
+        },
+      });
+      expect(initializationApply.statusCode).toBe(200);
+      expect(initializationApply.json().catalog.projects).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "new-api-lynx" }),
+      ]));
+
+      const capabilityPreview = await app.inject({
+        method: "POST",
+        url: "/api/projects/new-api-lynx/setup/preview",
+        payload: { step: "capabilities" },
+      });
+      expect(capabilityPreview.statusCode).toBe(200);
+      expect(capabilityPreview.json().actions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "write-file" }),
+        expect.objectContaining({ kind: "manual" }),
+      ]));
+
+      const initializedDeleted = await app.inject({ method: "DELETE", url: "/api/projects/new-api-lynx" });
+      expect(initializedDeleted.statusCode).toBe(200);
+
+      const deleted = await app.inject({ method: "DELETE", url: "/api/projects/candidate-lynx" });
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json().projects).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "candidate-lynx" })]));
+
+      const activeDelete = await app.inject({ method: "DELETE", url: "/api/projects/demo" });
+      expect(activeDelete.statusCode).toBe(200);
+      expect(activeDelete.json()).toMatchObject({ activeProjectId: "demo", projects: [] });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("活动任务存在时阻止项目切换", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-project-switch-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    const candidateRoot = path.join(dir, "candidate");
+    await fs.mkdir(candidateRoot);
+    const catalog = new ProjectCatalogService(new ProjectCatalogStore(path.join(dir, "projects.json")));
+    await catalog.initialize(config);
+    await fs.writeFile(path.join(candidateRoot, "mobile-test.config.cjs"), `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "candidate", name: "Candidate", root: ".", integrationType: "app" },
+      deviceProviders: ["android"],
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }],
+    };\n`);
+    await catalog.register({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs" });
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, ["android"]),
+      tasks,
+      projectCatalog: catalog,
+    });
+    const task = await tasks.start({ testId: "long", deviceKeys: ["android:device-1"], parameters: {} }, [{
+      key: "android:device-1", id: "device-1", name: "Pixel", platform: "android", type: "physical", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "",
+    }]);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/projects/candidate/activate" });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.code).toBe("PROJECT_SWITCH_TASK_ACTIVE");
+    } finally {
+      await tasks.stop(task[0].id);
+      await tasks.waitForTerminal(task[0].id);
+      await tasks.shutdown();
+      await app.close();
+    }
+  });
+
+  it("项目切换响应完成后触发重启回调", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-project-switch-response-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    const candidateRoot = path.join(dir, "candidate");
+    await fs.mkdir(candidateRoot);
+    await fs.writeFile(path.join(candidateRoot, "mobile-test.config.cjs"), `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "candidate", name: "Candidate", root: ".", integrationType: "app" },
+      deviceProviders: ["android"],
+      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }],
+    };\n`);
+    const catalog = new ProjectCatalogService(new ProjectCatalogStore(path.join(dir, "projects.json")));
+    await catalog.initialize(config);
+    await catalog.register({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs" });
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    let switchedTo = "";
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, ["android"]),
+      tasks,
+      projectCatalog: catalog,
+      onProjectSwitch: async configPath => { switchedTo = configPath; },
+    });
+
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/projects/candidate/activate" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ projectId: "candidate", restartRequired: true });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(switchedTo).toBe(path.join(candidateRoot, "mobile-test.config.cjs"));
+    } finally {
+      await app.close();
+    }
+  });
+
   it("返回统一快照并拒绝未知测试", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-"));
     tempDirs.push(dir);
@@ -32,13 +241,26 @@ describe("HTTP API", () => {
       config,
       devices: new DeviceDiscoveryService(runner, ["android"]),
       tasks,
+      projectProviders: [{
+        schemaVersion: "mobile-test-console.project-provider.v1",
+        providerId: "demo-app",
+        scope: { targetKinds: ["app"], runtimes: ["lynx"], platforms: ["android"] },
+        capabilities: [{ id: "app.build", version: 1 }],
+      }],
     });
 
     const snapshot = await app.inject({ method: "GET", url: "/api/snapshot?refresh=1" });
     expect(snapshot.statusCode).toBe(200);
     expect(snapshot.json()).toMatchObject({
       project: { id: "demo" },
-      devices: expect.arrayContaining([expect.objectContaining({ key: "android:device-1" })]),
+      adapter: { workspaces: [] },
+      connectors: [expect.objectContaining({ connectorId: "android-app" })],
+      projectProviders: [expect.objectContaining({ providerId: "demo-app" })],
+      devices: expect.arrayContaining([expect.objectContaining({
+        key: "android:device-1",
+        connectorId: "android-app",
+        capabilities: expect.arrayContaining(["device.discover"]),
+      })]),
       tests: expect.arrayContaining([expect.objectContaining({ id: "pass" })]),
     });
 
@@ -306,6 +528,7 @@ describe("HTTP API", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-huawei-recording-"));
     tempDirs.push(dir);
     const config = createConfig(dir);
+    config.adapter = TEST_PROJECT_ADAPTER;
     const runner: CommandRunner = {
       async capture(executable, args) {
         if (executable === "adb" && args[0] === "devices") {
