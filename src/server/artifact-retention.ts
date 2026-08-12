@@ -218,7 +218,7 @@ export class ArtifactRetentionService {
   async inspectStorage(includeUsage = true): Promise<ArtifactStorageSnapshot> {
     const artifactRoot = this.artifactsRoot();
     const checkedAt = new Date().toISOString();
-    if (!artifactRoot) return unavailableStorage("项目尚未声明 taskResults.artifactsRoot", checkedAt);
+    if (!artifactRoot) return unavailableStorage("项目尚未声明 artifactRetention.artifactsRoot", checkedAt);
     try {
       const probePath = await nearestExistingPath(artifactRoot);
       await fs.access(probePath, fsConstants.W_OK);

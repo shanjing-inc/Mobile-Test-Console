@@ -166,6 +166,19 @@ module.exports = {
       },
     }],
   },
+  artifactRetention: {
+    enabled: true,
+    autoCleanup: false,
+    artifactsRoot: ".test",
+    cleanup: {
+      executable: "node",
+      args: [
+        "tests/mtc/cleanup-run.mjs",
+        "--request", "{{cleanup.requestPath}}",
+        "--artifacts-root", "{{results.artifactsRoot}}",
+      ],
+    },
+  },
   tests: [{
     id: "wechat-smoke",
     label: "Smoke",

@@ -26,11 +26,18 @@ type ArtifactCleanupMode = "plan" | "apply";
 
 The request schema is `mobile-test-console.artifact-cleanup-request.v1`; the result schema is `mobile-test-console.artifact-cleanup-result.v1`. A request may set `discoverCandidates: true` with an empty candidate list to ask the project adapter for its selectable run inventory.
 
+```text
+node tests/mtc/cleanup-run.mjs \
+  --request {{cleanup.requestPath}} \
+  --artifacts-root {{results.artifactsRoot}}
+```
+
 ### 3. Contracts
 
 - `artifactRetention.artifactsRoot` resolves relative to `project.root` and works independently from legacy `taskResults`.
 - MTC protects active tasks, retained tasks, active repair jobs, recent runs, recent successful runs per platform, and recent failed runs per platform.
 - `plan` and `apply` receive candidate and protected run IDs. Project adapters reject unsafe run IDs and operate only under the configured artifact root.
+- A project may group one run across several namespaced directories below the root, such as `.test/results/<runId>` and `.test/runtime/<runId>`. The adapter returns their aggregate file count, byte count, and relative paths as one item.
 - Manual inventory uses adapter-owned run-to-directory semantics. MTC may select returned run IDs and re-plan the exact selection before apply.
 - Manual selection protects active tasks, retained tasks, and active repair jobs. Policy recency and count protections guide automatic cleanup and remain user-overridable through explicit selection.
 - Adapter result items must reference unique run IDs from the current candidate set. Unknown or duplicate run IDs invalidate the response.
@@ -40,12 +47,59 @@ The request schema is `mobile-test-console.artifact-cleanup-request.v1`; the res
 - Repair worktree cleanup applies only to expired terminal jobs, archives the repair patch before removing the worktree, and still runs when no project artifact candidate exists.
 - Existing artifacts are never deleted during first-time migration. A read-only plan is generated before user-confirmed apply.
 
-### 4. Tests Required
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| `artifactRetention.artifactsRoot` is absent | Test Storage reports the current config field as missing and cleanup stays unavailable |
+| Request schema or mode is invalid | Project adapter exits before file measurement or deletion |
+| Candidate or protected run ID is unsafe | Project adapter exits before resolving a target path |
+| A run directory is a symlink or resolves outside the root | Project adapter rejects the run and preserves the external target |
+| `plan` succeeds | Response reports files and bytes while all run directories remain present |
+| `apply` partially fails | Response sets top-level `ok: false`, reports `partial` or `failed`, and MTC preserves task indexes |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a mini-program project declares `.test` as its root and maps one run to both `results/<runId>` and `runtime/<runId>`.
+- Base: a run exists only in `results`; the adapter reports the existing directory and treats a later repeated apply as `missing`.
+- Bad: MTC core scans project-specific directory names or the adapter accepts arbitrary paths from the request.
+
+### 6. Tests Required
 
 - Cover active, retained, recent-success, recent-failure, and active-repair protection.
 - Cover dry-run immutability, apply/index ordering, adapter failures, path traversal, symlink boundaries, idempotent missing runs, and overlapping run-ID prefixes.
 - Cover storage low-water blocking and repair patch archival.
 - Load the Starter cleanup adapter through the public config schema and execute both plan and apply.
+- Load a mini-program config with `artifactRetention.artifactsRoot`, scan real run directories through the MTC inventory API, and assert the Test Storage UI renders the root, total size, selectable run count, and per-run file sizes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+artifactRetention: {
+  artifactsRoot: ".test/results",
+  cleanup: { args: ["cleanup.mjs", "--path", "{{user.path}}"] },
+}
+```
+
+#### Correct
+
+```js
+artifactRetention: {
+  enabled: true,
+  autoCleanup: false,
+  artifactsRoot: ".test",
+  cleanup: {
+    executable: "node",
+    args: [
+      "tests/mtc/cleanup-run.mjs",
+      "--request", "{{cleanup.requestPath}}",
+      "--artifacts-root", "{{results.artifactsRoot}}",
+    ],
+  },
+}
+```
 
 ## Scenario: Project families and run targets
 

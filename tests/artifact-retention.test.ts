@@ -138,6 +138,27 @@ describe("测试产物保留服务", () => {
     await manager.shutdown();
   });
 
+  it("缺少产物根目录时提示当前治理配置字段", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-artifact-storage-missing-"));
+    tempDirs.push(root);
+    const config = createConfig(root, path.join(root, "artifacts"));
+    config.taskResults = undefined;
+    config.artifactRetention!.artifactsRoot = undefined;
+    const manager = new TaskManager(config, new StateStore(path.join(root, "state")));
+    await manager.initialize();
+    const service = new ArtifactRetentionService(
+      config,
+      manager,
+      new ArtifactRetentionStore(config.stateDir),
+    );
+
+    await expect(service.inspectStorage()).resolves.toMatchObject({
+      available: false,
+      issue: "项目尚未声明 artifactRetention.artifactsRoot",
+    });
+    await manager.shutdown();
+  });
+
   it("扫描无任务索引的历史产物并只清理用户选择的运行", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-artifact-inventory-"));
     tempDirs.push(root);
