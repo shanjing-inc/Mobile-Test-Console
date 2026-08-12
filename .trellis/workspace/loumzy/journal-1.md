@@ -243,3 +243,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 接入小程序测试产物清理
+
+**Date**: 2026-08-11
+**Task**: 接入小程序测试产物清理
+**Branch**: `main`
+
+### Summary
+
+为 SaaS 微信小程序声明 .test 产物根目录并接入结构化 plan/apply 清理适配器；MTC 展示目录与占用并验证清理选择器。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e45bf00` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

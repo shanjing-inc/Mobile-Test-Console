@@ -99,11 +99,27 @@ At `max-width: 640px`, `.app-body` becomes a column flex container. The sidebar 
 
 The disclosure state survives detail-tab changes for the same task and resets to visible when the selected task changes. The overview reuses the screenshot-tab gallery instead of maintaining a separate artifact renderer.
 
+Keep the preview link beside the detail button so the markup does not nest interactive elements. The preview image defines the row height, preserves its intrinsic aspect ratio, and leaves the chevron in a dedicated trailing column.
+
+```css
+.analysis-run-summary.with-preview {
+  grid-template-columns: minmax(0, 1fr) auto 24px;
+}
+
+.analysis-run-preview { height: 420px; }
+.analysis-run-preview img { width: auto; height: 100%; object-fit: contain; }
+.analysis-run-chevron { position: absolute; right: 4px; top: 50%; }
+
+@media (max-width: 640px) {
+  .analysis-run-preview { height: 330px; }
+}
+```
+
 **Required regression checks**:
 
 - Each test entry contains its own task-scoped image URL and the overview shows the hide action by default.
 - Hiding the gallery changes `aria-expanded` to `false` and removes all `<img>` nodes.
-- Desktop uses the existing multi-column gallery; a `390px` viewport uses one column without horizontal overflow.
+- Entry previews sit beside the entry copy and make the preview image define the cell height. The image is rendered directly without a background block at `420px` high on desktop and `330px` high at a `390px` viewport. The disclosure chevron stays at the far-right edge and the page has no horizontal overflow.
 
 ---
 

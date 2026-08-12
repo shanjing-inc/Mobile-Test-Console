@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-08-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~245 | Active |
+| `journal-1.md` | ~278 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-08-11 | 接入小程序测试产物清理 | `e45bf00` | `main` |
 | 7 | 2026-08-11 | 完成 MTC 小程序接入与提交审核 | `1e26b8e`, `8a63e87`, `a6e895a` | `main` |
 | 6 | 2026-08-01 | 修复页面列表滚动并显示总数（迁移） | `bd46f16` | `main` |
 | 5 | 2026-08-01 | 完成 Lynx 页面列表与单页测试入口（迁移） | `3d15f99bf`, `3e138ef` | `main` |

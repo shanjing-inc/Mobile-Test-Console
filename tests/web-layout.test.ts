@@ -40,4 +40,16 @@ describe("控制台视口布局", () => {
     expect(mobileStyles).toContain(".app-body { display: flex; flex-direction: column; min-height: 0; }");
     expect(mobileStyles).toContain(".content { flex: 1 1 auto; min-height: 0;");
   });
+
+  it("测试条目截图与单元格等高并将箭头固定在最右侧", () => {
+    expect(rule(".analysis-run-summary.with-preview")).toContain("grid-template-columns: minmax(0, 1fr) auto 24px");
+    expect(rule(".analysis-run-preview")).toContain("height: 420px");
+    expect(rule(".analysis-run-preview img")).toContain("height: 100%");
+    expect(rule(".analysis-run-preview img")).not.toContain("background");
+    expect(rule(".analysis-run-chevron")).toContain("right: 4px");
+
+    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+    expect(mobileStyles).toContain(".analysis-run-summary.with-preview { grid-template-columns: minmax(0, 1fr) auto 18px;");
+    expect(mobileStyles).toContain(".analysis-run-preview { height: 330px;");
+  });
 });
