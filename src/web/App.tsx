@@ -165,7 +165,7 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
   const [projectCatalog, setProjectCatalog] = useState<ProjectCatalogResponse | null>(null);
   const [selectedCatalogProjectId, setSelectedCatalogProjectId] = useState("");
-  const [addingCatalogProject, setAddingCatalogProject] = useState(false);
+  const [addProjectRequest, setAddProjectRequest] = useState(0);
   const [accountProfiles, setAccountProfiles] = useState<AccountProfilesResponse | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [preparingDeviceKeys, setPreparingDeviceKeys] = useState<Set<string>>(new Set());
@@ -236,18 +236,11 @@ export default function App() {
 
   const handleSelectCatalogProject = useCallback((projectId: string) => {
     setSelectedCatalogProjectId(projectId);
-    setAddingCatalogProject(false);
     setWorkspaceView("projects");
   }, []);
 
   const handleAddCatalogProject = useCallback(() => {
-    setAddingCatalogProject(true);
-    setWorkspaceView("projects");
-  }, []);
-
-  const handleCloseAddCatalogProject = useCallback((projectId?: string) => {
-    if (projectId) setSelectedCatalogProjectId(projectId);
-    setAddingCatalogProject(false);
+    setAddProjectRequest(value => value + 1);
     setWorkspaceView("projects");
   }, []);
 
@@ -429,19 +422,14 @@ export default function App() {
 
   const handleRegisterProject = useCallback(async (request: RegisterProjectRequest): Promise<boolean> => {
     try {
-      const previousIds = new Set(projectCatalog?.projects.map(project => project.id) ?? []);
-      const nextCatalog = await registerProject(request);
-      const registeredProject = nextCatalog.projects.find(project => !previousIds.has(project.id));
-      setProjectCatalog(nextCatalog);
-      if (registeredProject) setSelectedCatalogProjectId(registeredProject.id);
-      setAddingCatalogProject(false);
+      setProjectCatalog(await registerProject(request));
       setMessage({ kind: "info", text: "已读取配置并登记项目" });
       return true;
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "登记项目失败" });
       return false;
     }
-  }, [projectCatalog]);
+  }, []);
 
   const handleSelectProjectDirectory = useCallback(async (): Promise<ProjectConfigSelection | null> => {
     try {
@@ -487,8 +475,6 @@ export default function App() {
     try {
       const response = await applyProjectInitialization(request);
       setProjectCatalog(response.catalog);
-      if (response.plan.projectId) setSelectedCatalogProjectId(response.plan.projectId);
-      setAddingCatalogProject(false);
       setMessage({ kind: "info", text: "初始化计划已执行，项目接入状态已自动复检" });
       return response;
     } catch (error) {
@@ -731,15 +717,14 @@ export default function App() {
       <div className="app-body">
         <ProjectSidebar
           catalog={projectCatalog}
-          selectedProjectId={addingCatalogProject ? "" : selectedCatalogProjectId}
+          selectedProjectId={selectedCatalogProjectId}
           runtimeProjectId={snapshot?.project.id ?? ""}
-          addingProject={addingCatalogProject}
           onSelect={handleSelectCatalogProject}
           onAdd={handleAddCatalogProject}
           onDelete={setProjectDeleteCandidate}
         />
         <main className="content">
-        {!addingCatalogProject && <nav className="project-workspace-navigation" aria-label="当前项目工作区">
+        <nav className="project-workspace-navigation" aria-label="当前项目工作区">
           {workspaceViews.map(view => {
             const disabledReason = workspaceDisabledReason(view, workspaceAccess);
             return <button
@@ -751,7 +736,7 @@ export default function App() {
               title={disabledReason ?? (view === "projects" ? "打开项目概览" : `打开${workspaceLabels[view]}`)}
             ><WorkspaceViewIcon view={view} />{view === "projects" ? "项目概览" : workspaceLabels[view]}</button>;
           })}
-        </nav>}
+        </nav>
         {message && <div className={`notice ${message.kind}`} role="status"><AlertCircle size={16} /> <span>{message.text}</span><button type="button" onClick={() => setMessage(null)} aria-label="关闭提示">×</button></div>}
 
         {workspaceView === "projects"
@@ -769,8 +754,7 @@ export default function App() {
               onApplySetup={handleApplyProjectSetup}
               selectedProjectId={selectedCatalogProjectId}
               runtimeProjectId={snapshot?.project.id ?? ""}
-              addingProject={addingCatalogProject}
-              onCloseAdd={handleCloseAddCatalogProject}
+              openAddRequest={addProjectRequest}
               onMessage={setMessage}
             />
           : workspaceView === "tests" ? <>
@@ -921,7 +905,6 @@ export function ProjectSidebar({
   catalog,
   selectedProjectId,
   runtimeProjectId = "",
-  addingProject = false,
   onSelect,
   onAdd,
   onDelete,
@@ -929,7 +912,6 @@ export function ProjectSidebar({
   catalog: ProjectCatalogResponse | null;
   selectedProjectId: string;
   runtimeProjectId?: string;
-  addingProject?: boolean;
   onSelect: (projectId: string) => void;
   onAdd: () => void;
   onDelete: (project: ProjectCatalogEntry) => void;
@@ -937,7 +919,7 @@ export function ProjectSidebar({
   return <aside className="app-project-sidebar" aria-label="项目列表">
     <div className="app-project-sidebar-heading">
       <div><p className="eyebrow">PROJECTS</p><h2>项目列表</h2></div>
-      <button className={`icon-button app-project-add ${addingProject ? "active" : ""}`} type="button" onClick={onAdd} title="添加项目" aria-label="添加项目" aria-pressed={addingProject}><FolderPlus size={16} /></button>
+      <button className="icon-button" type="button" onClick={onAdd} title="添加项目" aria-label="添加项目"><FolderPlus size={16} /></button>
     </div>
     <div className="app-project-sidebar-list">
       {catalog?.projects.map(project => <div className="app-project-row" key={project.id}>
