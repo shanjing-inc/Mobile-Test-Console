@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"控制台 API、状态持久化和测试要求。"}
+{"file":".trellis/spec/frontend/lynx-page-automation.md","reason":"控制台与 Lynx QA 运行链路的现有约束。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"删除行为跨 API、任务管理器、持久化和前端状态边界。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有任务状态校验、错误格式和刷新模式。"}

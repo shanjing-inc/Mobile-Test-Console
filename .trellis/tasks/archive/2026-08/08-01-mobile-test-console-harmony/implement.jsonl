@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"遵循 Mobile Test Console 命令模板与平台 One-click 集成契约"}
+{"file":".trellis/spec/frontend/lynx-page-automation.md","reason":"遵循 Harmony QA 启动参数、平台运行器与证据采集契约"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"遵循 Harmony 与 Lynx 跨端质量和设备验证要求"}

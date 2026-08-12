@@ -1,7 +1,7 @@
 {
-  "id": "mobile-test-console-platform-project-split",
-  "name": "mobile-test-console-platform-project-split",
-  "title": "Mobile Test Console 平台与项目功能拆分",
+  "id": "page-route-action-testing",
+  "name": "page-route-action-testing",
+  "title": "简化页面自动化测试并完善路由参数与动作断言",
   "description": "",
   "status": "in_progress",
   "dev_type": null,
@@ -10,10 +10,10 @@
   "priority": "P2",
   "creator": "loumzy",
   "assignee": "loumzy",
-  "createdAt": "2026-08-05",
+  "createdAt": "2026-08-01",
   "completedAt": null,
   "branch": null,
-  "base_branch": "main",
+  "base_branch": "base",
   "worktree_path": null,
   "commit": null,
   "pr_url": null,
@@ -21,6 +21,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "从 ../fanli 迁入；后续平台实现和任务记录以本仓库副本为准。",
+  "notes": "",
   "meta": {}
 }

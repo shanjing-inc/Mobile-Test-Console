@@ -25,6 +25,7 @@ describe("项目目录工作区", () => {
       onPreviewSetup: vi.fn(),
       onApplySetup: vi.fn(),
       runtimeProjectId: "demo-lynx",
+      onCloseAdd: vi.fn(),
       onMessage: vi.fn(),
     }));
 
@@ -48,6 +49,48 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("页面参数解析");
     expect(markup).toContain("结果分析");
     expect(markup).toContain("预览初始化配置");
+  });
+
+  it("添加项目使用独立页面并隐藏当前项目工作区", () => {
+    const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
+      catalog,
+      loading: false,
+      onRegister: vi.fn(),
+      onSelectDirectory: vi.fn(),
+      onSelectConfig: vi.fn(),
+      onVerify: vi.fn(),
+      onActivate: vi.fn(),
+      onPreviewInitialization: vi.fn(),
+      onApplyInitialization: vi.fn(),
+      onPreviewSetup: vi.fn(),
+      onApplySetup: vi.fn(),
+      runtimeProjectId: "demo-lynx",
+      addingProject: true,
+      onCloseAdd: vi.fn(),
+      onMessage: vi.fn(),
+    }));
+
+    expect(markup).toContain("添加项目");
+    expect(markup).toContain("登记新的项目目录");
+    expect(markup).toContain("取消添加");
+    expect(markup).not.toContain("当前运行项目");
+    expect(markup).not.toContain("项目接入状态");
+    expect(markup).not.toContain("Demo Lynx");
+  });
+
+  it("添加模式下侧栏突出添加入口并取消项目选中态", () => {
+    const sidebar = renderToStaticMarkup(createElement(ProjectSidebar, {
+      catalog,
+      selectedProjectId: "",
+      runtimeProjectId: "demo-lynx",
+      addingProject: true,
+      onSelect: vi.fn(),
+      onAdd: vi.fn(),
+      onDelete: vi.fn(),
+    }));
+
+    expect(sidebar).toContain('aria-pressed="true"');
+    expect(sidebar).not.toContain("app-project-item selected");
   });
 
   it("接入配置展示每个已声明测试入口的具体信息", () => {
@@ -89,6 +132,7 @@ describe("项目目录工作区", () => {
       onPreviewSetup: vi.fn(),
       onApplySetup: vi.fn(),
       runtimeProjectId: "demo-lynx",
+      onCloseAdd: vi.fn(),
       onMessage: vi.fn(),
     }));
 
@@ -156,6 +200,7 @@ describe("项目目录工作区", () => {
       onPreviewSetup: vi.fn(),
       onApplySetup: vi.fn(),
       runtimeProjectId: "mobile-test-console",
+      onCloseAdd: vi.fn(),
       onMessage: vi.fn(),
     }));
 

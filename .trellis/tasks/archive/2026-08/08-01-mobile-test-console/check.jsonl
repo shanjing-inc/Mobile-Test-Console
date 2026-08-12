@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"检查后端规范覆盖"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"验证配置协议、界面说明与测试要求同步"}
+{"file":".trellis/spec/frontend/index.md","reason":"检查 Lynx 前端规范覆盖"}
+{"file":".trellis/spec/frontend/lynx-page-automation.md","reason":"核对套件覆盖说明与实际自动化清单一致"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"验证 description 字段完整穿过配置、服务端和浏览器"}

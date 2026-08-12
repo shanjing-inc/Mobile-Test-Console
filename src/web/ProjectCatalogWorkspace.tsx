@@ -99,7 +99,8 @@ export function ProjectCatalogWorkspace({
   onApplySetup,
   selectedProjectId: controlledSelectedProjectId,
   runtimeProjectId = "",
-  openAddRequest = 0,
+  addingProject = false,
+  onCloseAdd,
   onMessage,
 }: {
   catalog: ProjectCatalogResponse | null;
@@ -115,10 +116,10 @@ export function ProjectCatalogWorkspace({
   onApplySetup: (projectId: string, request: ApplyProjectSetupRequest) => Promise<ProjectSetupApplyResponse | null>;
   selectedProjectId?: string;
   runtimeProjectId?: string;
-  openAddRequest?: number;
+  addingProject?: boolean;
+  onCloseAdd: (projectId?: string) => void;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
 }) {
-  const [showForm, setShowForm] = useState(false);
   const [pendingProjectId, setPendingProjectId] = useState("");
   const [selectingSource, setSelectingSource] = useState<"directory" | "config" | "">("");
   const [form, setForm] = useState<RegisterProjectRequest>(emptyForm());
@@ -131,7 +132,7 @@ export function ProjectCatalogWorkspace({
   const [detail, setDetail] = useState<ProjectCatalogDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
-  const selectedProject = catalog?.projects.find(project => project.id === selectedProjectId) ?? null;
+  const selectedProject = addingProject ? null : catalog?.projects.find(project => project.id === selectedProjectId) ?? null;
   const selectedProjectVersion = selectedProject?.updatedAt ?? "";
 
   useEffect(() => {
@@ -149,13 +150,19 @@ export function ProjectCatalogWorkspace({
   }, [catalog, controlledSelectedProjectId]);
 
   useEffect(() => {
-    if (openAddRequest > 0) setShowForm(true);
-  }, [openAddRequest]);
+    if (!addingProject) return;
+    setForm(emptyForm());
+    setInitializationRequired(false);
+    setInitializationPlatforms(["android"]);
+    setSetupPlan(null);
+    setSetupContext(null);
+  }, [addingProject]);
 
   useEffect(() => {
-    if (!selectedProjectId) {
+    if (addingProject || !selectedProjectId) {
       setDetail(null);
       setDetailError("");
+      setDetailLoading(false);
       return;
     }
     let cancelled = false;
@@ -175,7 +182,7 @@ export function ProjectCatalogWorkspace({
         if (!cancelled) setDetailLoading(false);
       });
     return () => { cancelled = true; };
-  }, [selectedProjectId, selectedProjectVersion]);
+  }, [addingProject, selectedProjectId, selectedProjectVersion]);
 
   const submit = async () => {
     const registered = await onRegister({
@@ -185,7 +192,6 @@ export function ProjectCatalogWorkspace({
     if (!registered) return;
     setForm(emptyForm());
     setInitializationRequired(false);
-    setShowForm(false);
   };
 
   const applySelection = async (source: "directory" | "config") => {
@@ -195,7 +201,7 @@ export function ProjectCatalogWorkspace({
       if (!selection) return;
       const existingProject = catalog?.projects.find(project => project.configPath === selection.configPath);
       if (existingProject) {
-        setShowForm(false);
+        onCloseAdd(existingProject.id);
         onMessage({ kind: "info", text: `该配置已登记为项目：${existingProject.name}` });
         return;
       }
@@ -269,7 +275,6 @@ export function ProjectCatalogWorkspace({
       if (setupContext.kind === "initialization") {
         setForm(emptyForm());
         setInitializationRequired(false);
-        setShowForm(false);
       }
     } finally {
       setSetupPending(false);
@@ -279,13 +284,14 @@ export function ProjectCatalogWorkspace({
   return <div className="project-catalog-workspace">
     <section className="project-catalog-intro">
       <div>
-        <p className="eyebrow">PROJECT CATALOG</p>
-        <h2>项目接入中心</h2>
-        <p>登记项目目录与配置文件，MTC 会读取项目元数据并生成配置、设备和结果分析接入步骤。</p>
+        <p className="eyebrow">{addingProject ? "ADD PROJECT" : "PROJECT CATALOG"}</p>
+        <h2>{addingProject ? "添加项目" : "项目接入中心"}</h2>
+        <p>{addingProject ? "选择一个项目配置或目录完成登记。" : "查看当前项目的接入状态和可用能力。"}</p>
       </div>
+      {addingProject && <button className="secondary-button" type="button" onClick={() => onCloseAdd()}><X size={14} />取消添加</button>}
     </section>
 
-    {showForm && <section className="section-panel project-register-panel">
+    {addingProject && <section className="section-panel project-register-panel">
         <div className="section-heading">
           <div><p className="eyebrow">REGISTER PROJECT</p><h2>登记新的项目目录</h2></div>
           <span className="count-label">选择配置</span>
@@ -326,9 +332,9 @@ export function ProjectCatalogWorkspace({
       </div>
     </section>}
 
-    {loading && !catalog && <section className="section-panel project-catalog-loading"><LoaderCircle className="spin" size={20} />正在读取项目目录</section>}
-    {!loading && catalog?.projects.length === 0 && <section className="section-panel project-catalog-empty"><FolderPlus size={22} /><strong>还没有登记项目</strong><span>添加一个 Lynx App 或其他移动项目开始接入。</span></section>}
-    {catalog && catalog.projects.length > 0 && <div className="project-catalog-detail">
+    {!addingProject && loading && !catalog && <section className="section-panel project-catalog-loading"><LoaderCircle className="spin" size={20} />正在读取项目目录</section>}
+    {!addingProject && !loading && catalog?.projects.length === 0 && <section className="section-panel project-catalog-empty"><FolderPlus size={22} /><strong>还没有登记项目</strong><span>添加一个 Lynx App 或其他移动项目开始接入。</span></section>}
+    {!addingProject && catalog && catalog.projects.length > 0 && <div className="project-catalog-detail">
         {selectedProject && <ProjectCatalogCard
           project={selectedProject}
           runtimeActive={selectedProject.id === runtimeProjectId}

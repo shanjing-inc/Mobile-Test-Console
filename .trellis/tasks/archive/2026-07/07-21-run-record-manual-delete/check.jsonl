@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"验证 API 路由、错误矩阵和测试门槛。"}
+{"file":".trellis/spec/frontend/lynx-page-automation.md","reason":"验证 Lynx QA 控制台相关集成约束。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查删除请求到持久化和详情状态的数据流。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查状态集合、按钮行为和测试辅助逻辑的复用。"}

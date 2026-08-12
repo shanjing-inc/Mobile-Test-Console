@@ -2824,6 +2824,7 @@ interface ProjectSetupPlan {
 - Generic App projects expose their declared Provider capabilities without inheriting the Lynx App six-capability requirement. Historical catalog records may omit `capabilities`; loading normalizes them to an empty list until the next verification.
 - Successful config verification snapshots every declared test in config order as `ProjectTestEntryCheck`. Each entry keeps its public ID, label, description, Runner ID, supported platforms, and parameter labels without exposing executable commands.
 - The project overview renders the `template.testEntries` snapshot as a two-column `测试入口清单`, with one card per test and a one-column narrow-screen fallback. Historical catalog records may omit `testEntries`; loading normalizes that state to an empty list until the next verification.
+- Selecting the sidebar add action enters a dedicated add-project mode. The sidebar clears the selected-project highlight, project-level navigation is hidden, and the right workspace renders only the add-project heading, registration controls, and cancel action. Selecting an existing project, cancelling, or completing registration exits add mode and restores that project's overview.
 - The browser displays every action, target path, command, working directory, content preview, and impact statement before confirmation. Cancel closes the dialog without calling apply.
 - The top project navigation always shows five peer entries. `项目概览` remains enabled; other entries use `workspaceDisabledReason`. `页面列表`, `业务脚本`, and `账号画像` additionally require their IDs in `adapter.workspaces`.
 
@@ -2874,6 +2875,7 @@ interface ProjectSetupPlan {
 - Assert legacy catalog entries without `capabilities` remain readable.
 - Assert config verification snapshots every declared test entry with its ID, label, description, Runner ID, platforms, and parameter labels.
 - Assert the browser renders every test entry inside the expandable configuration step and distinguishes parameterized entries from entries with no parameters.
+- Assert add-project mode hides the selected project overview and project navigation, highlights the sidebar add control, and exits through cancel, existing-project selection, and successful registration.
 - Assert legacy catalog entries without `testEntries` remain readable.
 
 ### 7. Wrong vs Correct

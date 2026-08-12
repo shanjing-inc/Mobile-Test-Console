@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"加载后端规范索引与 Mobile Test Console 集成入口"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"遵循测试配置协议、浏览器展示和质量门禁契约"}
+{"file":".trellis/spec/frontend/index.md","reason":"加载 Lynx 前端规范索引"}
+{"file":".trellis/spec/frontend/lynx-page-automation.md","reason":"遵循 Lynx 页面套件与跨端自动化覆盖契约"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查配置到解析、API 与界面的字段传递链路"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"将选项说明建模为可复用协议字段"}
