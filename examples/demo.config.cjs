@@ -6,6 +6,12 @@ module.exports = {
     root: "..",
   },
   deviceProviders: ["android"],
+  lifecycle: {
+    startup: {
+      executable: "node",
+      args: ["-e", "console.log('示例项目准备完成，服务进程 '+process.argv[1])", "{{process.pid}}"],
+    },
+  },
   tests: [
     {
       id: "demo-smoke",

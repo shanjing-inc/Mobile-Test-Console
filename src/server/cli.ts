@@ -8,8 +8,12 @@ import { createApp } from "./app.js";
 import { SystemCommandRunner } from "./command-runner.js";
 import { loadProjectConfig } from "./config.js";
 import { DeviceDiscoveryService } from "./devices.js";
+import { ProjectLifecycle } from "./lifecycle.js";
 import { StateStore } from "./state-store.js";
 import { TaskManager } from "./task-manager.js";
+import { RepairJobStore } from "./repair-job-store.js";
+import { RepairJobManager } from "./repair-job-manager.js";
+import { TaskResultService } from "./task-results.js";
 
 const { values } = parseArgs({
   args: process.argv.slice(2).filter(argument => argument !== "--"),
@@ -41,16 +45,34 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
 
 const config = await loadProjectConfig(configPath);
 const runner = new SystemCommandRunner();
-const devices = new DeviceDiscoveryService(runner, config.deviceProviders);
+const devices = new DeviceDiscoveryService(runner, config.deviceProviders, config.iosSimulator, config);
 const tasks = new TaskManager(config, new StateStore(config.stateDir));
 await tasks.initialize();
+const taskResults = new TaskResultService(config, tasks);
+const repairs = config.codexRepair?.enabled
+  ? new RepairJobManager(config, new RepairJobStore(config.stateDir), tasks, taskResults, devices, runner)
+  : undefined;
+if (repairs) await repairs.initialize();
+const lifecycle = new ProjectLifecycle(config);
+const lifecycleManaged = process.env.MTC_LIFECYCLE_MANAGED === "1";
+if (!lifecycleManaged) await lifecycle.startup();
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const productionBuild = path.basename(path.dirname(currentDir)) === "dist";
 const staticDir = productionBuild ? path.resolve(currentDir, "../web") : undefined;
-const app = await createApp({ config, devices, tasks, staticDir });
+const app = await createApp({ config, devices, tasks, taskResults, repairs, staticDir });
 const host = String(values.host);
-const address = await app.listen({ host, port });
+let address: string;
+try {
+  address = await app.listen({ host, port });
+} catch (error) {
+  try {
+    await lifecycle.shutdown();
+  } catch (cleanupError) {
+    process.stderr.write(`[lifecycle] ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
+  }
+  throw error;
+}
 const webAddress = productionBuild ? address : `http://${host}:4311`;
 process.stdout.write(`Mobile Test Console 已启动: ${webAddress}\n`);
 if (!productionBuild) process.stdout.write(`API: ${address}\n`);
@@ -62,9 +84,21 @@ let closing = false;
 const close = async () => {
   if (closing) return;
   closing = true;
-  await tasks.shutdown();
-  await app.close();
-  process.exit(0);
+  let exitCode = 0;
+  for (const [label, action] of [
+    ...(repairs ? [["停止 Codex 修复", () => repairs.shutdown()]] as const : []),
+    ["停止任务", () => tasks.shutdown()],
+    ["关闭 HTTP 服务", () => app.close()],
+    ["清理项目", () => lifecycleManaged ? Promise.resolve() : lifecycle.shutdown()],
+  ] as const) {
+    try {
+      await action();
+    } catch (error) {
+      exitCode = 1;
+      process.stderr.write(`[shutdown] ${label}失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+  process.exit(exitCode);
 };
 process.once("SIGINT", () => void close());
 process.once("SIGTERM", () => void close());

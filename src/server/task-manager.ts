@@ -1,16 +1,25 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { ACTIVE_TASK_STATUSES, type Device, type StartTasksRequest, type TestTask } from "../shared/contracts.js";
+import {
+  ACTIVE_TASK_STATUSES,
+  TERMINAL_TASK_STATUSES,
+  type Device,
+  type StartTasksRequest,
+  type TestTask,
+} from "../shared/contracts.js";
 import {
   resolveCommand,
+  resolveTaskDeletionCommand,
   validateParameters,
   type LoadedProjectConfig,
+  type ResolvedCommand,
   type TestDefinition,
 } from "./config.js";
 import { ConsoleError } from "./errors.js";
 import { StateStore } from "./state-store.js";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
+const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
 const MAX_TASKS = 100;
 const MAX_LOG_LINES = 500;
 const MAX_LOG_LINE_LENGTH = 4_000;
@@ -18,6 +27,7 @@ const MAX_LOG_LINE_LENGTH = 4_000;
 export class TaskManager {
   private readonly tasks = new Map<string, TestTask>();
   private readonly processes = new Map<string, ChildProcess>();
+  private readonly commandOverrides = new Map<string, ResolvedCommand>();
   private readonly cancelRequests = new Set<string>();
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -40,7 +50,18 @@ export class TaskManager {
       .map(task => structuredClone(task));
   }
 
-  async start(request: StartTasksRequest, devices: Device[]): Promise<TestTask[]> {
+  get(taskId: string): TestTask | null {
+    const task = this.tasks.get(taskId);
+    return task ? structuredClone(task) : null;
+  }
+
+  async start(
+    request: StartTasksRequest,
+    devices: Device[],
+    workspaceRoot?: string,
+    repairJobId?: string,
+    commandFactory?: (task: TestTask) => ResolvedCommand | null,
+  ): Promise<TestTask[]> {
     const test = this.config.tests.find(item => item.id === request.testId);
     if (!test) throw new ConsoleError("TEST_UNKNOWN", `测试不存在: ${request.testId}`, 404);
     const parameters = validateParameters(test, request.parameters ?? {});
@@ -62,11 +83,26 @@ export class TaskManager {
     });
 
     const createdAt = new Date().toISOString();
-    const tasks = selected.map(device => this.createTask(test, device, parameters, createdAt));
-    for (const task of tasks) this.tasks.set(task.id, task);
+    const tasks = selected.map(device => this.createTask(test, device, parameters, createdAt, workspaceRoot, repairJobId));
+    for (const task of tasks) {
+      this.tasks.set(task.id, task);
+      const override = commandFactory?.(structuredClone(task));
+      if (override) this.commandOverrides.set(task.id, override);
+    }
     await this.persistNow();
     for (const task of tasks) queueMicrotask(() => void this.execute(task.id, test));
     return tasks.map(task => structuredClone(task));
+  }
+
+  async waitForTerminal(taskId: string, timeoutMs = 120_000): Promise<TestTask> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const task = this.tasks.get(taskId);
+      if (!task) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${taskId}`, 404);
+      if (!ACTIVE_STATUSES.has(task.status)) return structuredClone(task);
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new ConsoleError("TASK_WAIT_TIMEOUT", `等待任务完成超时: ${taskId}`, 504);
   }
 
   async stop(taskId: string): Promise<TestTask> {
@@ -89,6 +125,21 @@ export class TaskManager {
     return structuredClone(task);
   }
 
+  async delete(taskId: string): Promise<TestTask> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${taskId}`, 404);
+    if (!TERMINAL_STATUSES.has(task.status)) {
+      throw new ConsoleError("TASK_ACTIVE", `活动任务不能删除，请先停止任务: ${taskId}`, 409);
+    }
+
+    const cleanupCommand = resolveTaskDeletionCommand(this.config, task);
+    if (cleanupCommand) await this.runTaskDeletionCleanup(task, cleanupCommand);
+
+    this.tasks.delete(taskId);
+    await this.persistNow();
+    return structuredClone(task);
+  }
+
   async shutdown(): Promise<void> {
     const activeIds = [...this.processes.keys()];
     await Promise.all(activeIds.map(taskId => this.stop(taskId)));
@@ -104,6 +155,8 @@ export class TaskManager {
     device: Device,
     parameters: Record<string, string>,
     createdAt: string,
+    workspaceRoot?: string,
+    repairJobId?: string,
   ): TestTask {
     const id = randomUUID();
     const compactTime = createdAt.replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -123,6 +176,8 @@ export class TaskManager {
       exitCode: null,
       error: "",
       logs: [],
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+      ...(repairJobId ? { repairJobId } : {}),
     };
   }
 
@@ -140,7 +195,8 @@ export class TaskManager {
     this.schedulePersist();
 
     try {
-      const command = resolveCommand(this.config, test, task.device, task, task.parameters);
+      const command = this.commandOverrides.get(taskId)
+        ?? resolveCommand(this.config, test, task.device, task, task.parameters, task.workspaceRoot);
       this.appendLog(task, `[console] cwd: ${command.cwd}`);
       this.appendLog(task, `[console] command: ${formatCommand(command.executable, command.args)}`);
       if (this.cancelRequests.has(taskId)) {
@@ -164,6 +220,7 @@ export class TaskManager {
 
       const result = await completion;
       this.processes.delete(taskId);
+      this.commandOverrides.delete(taskId);
       if (this.cancelRequests.has(taskId)) {
         await this.finalize(task, "cancelled", result.code, "");
       } else if (result.error) {
@@ -175,6 +232,7 @@ export class TaskManager {
       }
     } catch (error) {
       this.processes.delete(taskId);
+      this.commandOverrides.delete(taskId);
       const message = error instanceof Error ? error.message : String(error);
       await this.finalize(task, this.cancelRequests.has(taskId) ? "cancelled" : "failed", null, message);
     }
@@ -183,6 +241,28 @@ export class TaskManager {
   private bindLogs(task: TestTask, child: ChildProcess): void {
     child.stdout?.on("data", chunk => this.appendChunk(task, String(chunk)));
     child.stderr?.on("data", chunk => this.appendChunk(task, String(chunk), "stderr"));
+  }
+
+  private async runTaskDeletionCleanup(task: TestTask, command: ResolvedCommand): Promise<void> {
+    const child = spawn(command.executable, command.args, {
+      cwd: command.cwd,
+      env: { ...process.env, ...command.env },
+      shell: false,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr?.on("data", chunk => {
+      stderr = `${stderr}${String(chunk)}`.slice(-MAX_LOG_LINE_LENGTH);
+    });
+    const result = await waitForProcess(child);
+    if (!result.error && result.code === 0) return;
+
+    const reason = result.error?.message || stderr.trim() || `退出码 ${result.code ?? "unknown"}`;
+    throw new ConsoleError(
+      "TASK_DELETE_CLEANUP_FAILED",
+      `清理 ${task.runId} 本地文件失败: ${reason}`,
+      500,
+    );
   }
 
   private appendChunk(task: TestTask, chunk: string, source = "stdout"): void {

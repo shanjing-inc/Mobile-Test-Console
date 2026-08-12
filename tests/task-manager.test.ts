@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Device, TaskStatus } from "../src/shared/contracts.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
+import { ConsoleError } from "../src/server/errors.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
 
@@ -64,6 +65,80 @@ describe("任务管理器", () => {
     expect(manager.list()[0]).toMatchObject({ status: "interrupted", phase: "服务重启，任务已中断" });
     await manager.shutdown();
   });
+
+  it("删除终态任务并立即持久化结果", async () => {
+    const dir = await createTempDir("mtc-task-delete-");
+    const config = createConfig(dir);
+    config.taskDeletion.cleanup = {
+      executable: process.execPath,
+      args: [
+        "-e",
+        "require('node:fs').writeFileSync('deleted-run.txt', process.argv[1])",
+        "{{task.runId}}",
+      ],
+    };
+    const manager = new TaskManager(config, new StateStore(dir));
+    await manager.initialize();
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, created.id, "passed");
+
+    await expect(manager.delete(created.id)).resolves.toMatchObject({ id: created.id, status: "passed" });
+    expect(await fs.readFile(path.join(dir, "deleted-run.txt"), "utf8")).toBe(created.runId);
+    expect(manager.list()).toEqual([]);
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as { tasks: unknown[] };
+    expect(stored.tasks).toEqual([]);
+
+    const restored = new TaskManager(createConfig(dir), new StateStore(dir));
+    await restored.initialize();
+    expect(restored.list()).toEqual([]);
+    await restored.shutdown();
+    await manager.shutdown();
+  });
+
+  it("本地文件清理失败时保留任务记录", async () => {
+    const dir = await createTempDir("mtc-task-delete-failure-");
+    const config = createConfig(dir);
+    config.taskDeletion.cleanup = {
+      executable: process.execPath,
+      args: ["-e", "process.stderr.write('cleanup failed'); process.exit(7)"],
+    };
+    const manager = new TaskManager(config, new StateStore(dir));
+    await manager.initialize();
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, created.id, "passed");
+
+    await expect(manager.delete(created.id)).rejects.toMatchObject({
+      code: "TASK_DELETE_CLEANUP_FAILED",
+      statusCode: 500,
+    } satisfies Partial<ConsoleError>);
+    expect(manager.list()).toContainEqual(expect.objectContaining({ id: created.id, status: "passed" }));
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as { tasks: Array<{ id: string }> };
+    expect(stored.tasks.map(task => task.id)).toContain(created.id);
+    await manager.shutdown();
+  });
+
+  it("保护活动任务并拒绝未知任务删除", async () => {
+    const { manager } = await createManager();
+    const [created] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
+    const running = await waitForStatus(manager, created.id, "running");
+
+    await expect(manager.delete(created.id)).rejects.toMatchObject({
+      code: "TASK_ACTIVE",
+      statusCode: 409,
+    } satisfies Partial<ConsoleError>);
+    expect(manager.list().find(task => task.id === created.id)).toMatchObject({
+      status: running.status,
+      phase: running.phase,
+    });
+    await expect(manager.delete("missing-task")).rejects.toMatchObject({
+      code: "TASK_UNKNOWN",
+      statusCode: 404,
+    } satisfies Partial<ConsoleError>);
+
+    await manager.stop(created.id);
+    await waitForStatus(manager, created.id, "cancelled");
+    await manager.shutdown();
+  });
 });
 
 const device: Device = {
@@ -73,16 +148,23 @@ const device: Device = {
   platform: "android",
   type: "physical",
   connectionState: "available",
+  controlState: "ready",
+  controlReason: "",
   osVersion: "14",
   detail: "",
 };
 
 async function createManager() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-task-"));
-  tempDirs.push(dir);
+  const dir = await createTempDir("mtc-task-");
   const manager = new TaskManager(createConfig(dir), new StateStore(dir));
   await manager.initialize();
   return { manager, dir };
+}
+
+async function createTempDir(prefix: string) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
 }
 
 function createConfig(stateDir: string): LoadedProjectConfig {
@@ -92,6 +174,8 @@ function createConfig(stateDir: string): LoadedProjectConfig {
     project: { id: "demo", name: "Demo", root: stateDir },
     stateDir,
     deviceProviders: ["android"],
+    lifecycle: {},
+    taskDeletion: {},
     tests: [
       {
         id: "pass",

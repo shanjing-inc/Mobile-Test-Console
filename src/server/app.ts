@@ -3,11 +3,20 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { ConsoleSnapshot, StartTasksRequest } from "../shared/contracts.js";
-import { toPublicTests, type LoadedProjectConfig } from "./config.js";
+import { ACCOUNT_PROFILE_PROVIDERS, PAGE_PARAMETER_PLATFORMS, PLATFORMS, type BusinessSuite, type ConsoleSnapshot, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest } from "../shared/contracts.js";
+import { toPublicTests, validateParameters, type LoadedProjectConfig } from "./config.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import type { TaskManager } from "./task-manager.js";
+import { TaskResultService } from "./task-results.js";
+import { PageParameterStore } from "./page-parameter-store.js";
+import { PageParameterService } from "./page-parameters.js";
+import { AccountProfileStore } from "./account-profile-store.js";
+import { AccountProfileService, toAccountProfileRecordingSummary, toAccountProfileSummary } from "./account-profiles.js";
+import { BusinessScriptStore } from "./business-script-store.js";
+import { BusinessScriptService } from "./business-scripts.js";
+import type { RepairJobManager } from "./repair-job-manager.js";
+import type { TaskResultService as TaskResultServiceType } from "./task-results.js";
 
 const startRequestSchema = z.object({
   testId: z.string().min(1),
@@ -15,15 +24,160 @@ const startRequestSchema = z.object({
   parameters: z.record(z.string()).default({}),
 });
 
+const startDeviceRequestSchema = z.object({
+  deviceKey: z.string().min(1),
+});
+
+const createRepairRequestSchema = z.object({
+  caseRunId: z.string().min(1).optional(),
+  projectDirectory: z.string().min(1).optional(),
+});
+
+const installDevicePreparationSchema = z.object({
+  deviceKey: z.string().min(1),
+  preparationId: z.string().min(1),
+});
+
+const startPageParameterRecordingSchema = z.object({
+  deviceKey: z.string().min(1),
+  environment: z.string().min(1),
+});
+
+const replayPageParameterProfileSchema = z.object({
+  deviceKey: z.string().min(1),
+});
+
+const pageScenarioAssertionSchema = z.object({
+  type: z.enum(["runtimeEvent", "visible", "text", "selected"]),
+  target: z.string().optional(),
+  event: z.string().optional(),
+  value: z.string().optional(),
+});
+
+const savePageParameterProfileSchema = z.object({
+  scenario: z.string().min(1),
+  platform: z.enum(PAGE_PARAMETER_PLATFORMS).default("all"),
+  isDefault: z.boolean().optional(),
+  environment: z.string().min(1),
+  accountLabel: z.string().default(""),
+  values: z.record(z.object({
+    strategy: z.enum(["literal", "secretRef", "runtimeResolver"]),
+    value: z.string(),
+  })),
+  capturedKeys: z.array(z.string().min(1)).optional(),
+  navigation: z.object({
+    route: z.string().min(1),
+    params: z.record(z.string()),
+  }).optional(),
+  actions: z.array(z.object({
+    type: z.enum(["tap", "input", "select", "submit", "waitFor", "screenshot"]),
+    target: z.string(),
+    value: z.string().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+    assertions: z.array(pageScenarioAssertionSchema).optional(),
+  })).optional(),
+  assertions: z.array(pageScenarioAssertionSchema).optional(),
+  source: z.enum(["recording", "manual", "manifest"]).optional(),
+  recordedAt: z.string().optional(),
+  expiresAt: z.string().optional(),
+});
+
+const setDefaultPageParameterProfileSchema = z.object({
+  isDefault: z.boolean().default(true),
+}).default({});
+
+const startAccountProfileRecordingSchema = z.object({
+  deviceKey: z.string().min(1),
+  profileId: z.string().regex(/^[A-Za-z0-9._-]+$/),
+  accountLabel: z.string().min(1).max(80),
+  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+  environment: z.string().min(1).max(40),
+});
+
+const replayAccountProfileSchema = z.object({
+  deviceKey: z.string().min(1),
+  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+});
+
+const accountProfileSourceSchema = z.object({
+  provider: z.enum(ACCOUNT_PROFILE_PROVIDERS),
+});
+
+const startBusinessScriptRecordingSchema = z.object({
+  deviceKey: z.string().min(1),
+  environment: z.string().min(1),
+  appBuild: z.string().default("qa-installed"),
+});
+
+const businessTargetSchema = z.object({
+  strategy: z.enum(["accessibilityId", "text", "point", "system"]),
+  value: z.string(),
+  status: z.enum(["resolved", "needs-review"]),
+});
+
+const businessStepSchema = z.object({
+  stepId: z.string().min(1), name: z.string().min(1), kind: z.enum(["action", "system", "pageTransition"]),
+  actionType: z.enum(["tap", "input", "swipe", "back", "waitFor", "screenshot", "pageTransition"]),
+  semanticTarget: businessTargetSchema.optional(),
+  rawPoint: z.object({ x: z.number(), y: z.number() }).nullable().optional(),
+  start: z.tuple([z.number(), z.number()]).nullable().optional(), end: z.tuple([z.number(), z.number()]).nullable().optional(),
+  inputBinding: z.object({ strategy: z.enum(["literal", "secretRef", "runtimeResolver"]), value: z.string() }).optional(),
+  timeoutMs: z.number().positive().optional(), pageId: z.string().optional(), beforePageInstanceId: z.string().optional(),
+  afterPageInstanceId: z.string().optional(), screenshotRef: z.string().optional(), hierarchyRef: z.string().optional(),
+  status: z.enum(["resolved", "needs-review"]), raw: z.record(z.unknown()).optional(),
+});
+
+const businessAssertionSchema = z.object({
+  assertionId: z.string().min(1), type: z.enum(["page", "visible", "text", "runtimeEvent"]),
+  page: z.string().optional(), target: z.string().optional(), value: z.string().optional(), event: z.string().optional(),
+});
+
+const businessScenarioSchema = z.object({
+  scenarioId: z.string().min(1), name: z.string().min(1), setupRef: z.string().optional(), startPage: z.string(),
+  expectedFinalPage: z.string(), tags: z.array(z.string()), stepIds: z.array(z.string()), assertionIds: z.array(z.string()),
+});
+
+const saveBusinessScriptDraftSchema = z.object({
+  name: z.string().min(1), startPage: z.string(), expectedFinalPage: z.string(),
+  variables: z.array(z.object({
+    name: z.string().min(1),
+    strategy: z.enum(["literal", "secretRef", "runtimeResolver"]),
+    sensitive: z.boolean(),
+  })).optional(),
+  steps: z.array(businessStepSchema), assertions: z.array(businessAssertionSchema), scenarios: z.array(businessScenarioSchema),
+});
+
+const replayBusinessScriptSchema = z.object({ deviceKey: z.string().min(1) });
+const saveBusinessSuiteSchema = z.object({
+  name: z.string().min(1),
+  scenarioRefs: z.array(z.object({ scriptId: z.string().min(1), version: z.number().int().positive(), scenarioId: z.string().min(1) })).min(1),
+  platformMatrix: z.array(z.enum(PLATFORMS)).min(1),
+});
+
 export interface CreateAppOptions {
   config: LoadedProjectConfig;
   devices: DeviceDiscoveryService;
   tasks: TaskManager;
+  repairs?: RepairJobManager;
+  taskResults?: TaskResultServiceType;
   staticDir?: string;
 }
 
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  const taskResults = options.taskResults ?? new TaskResultService(options.config, options.tasks);
+  const pageParameters = new PageParameterService(
+    options.config,
+    new PageParameterStore(options.config.stateDir),
+  );
+  const accountProfiles = new AccountProfileService(
+    options.config,
+    new AccountProfileStore(options.config.stateDir),
+  );
+  const businessScripts = new BusinessScriptService(
+    options.config,
+    new BusinessScriptStore(options.config.stateDir),
+  );
 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("Cache-Control", "no-store");
@@ -32,16 +186,182 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
 
   app.get("/api/health", async () => ({ ok: true }));
 
-  app.get("/api/snapshot", async (): Promise<ConsoleSnapshot> => {
-    const discovery = await options.devices.discover();
+  app.get<{ Querystring: { refresh?: string } }>("/api/snapshot", async (request): Promise<ConsoleSnapshot> => {
+    const discovery = await options.devices.snapshot({ refresh: request.query.refresh === "1" });
     return {
       project: options.config.project,
       devices: discovery.devices,
       deviceErrors: discovery.errors,
+      deviceDiscoveryPending: discovery.refreshing,
       tests: toPublicTests(options.config.tests),
       tasks: options.tasks.list(),
+      codexRepairEnabled: options.config.codexRepair?.enabled === true,
+      repairJobs: options.repairs?.list() ?? [],
       updatedAt: new Date().toISOString(),
     };
+  });
+
+  app.get("/api/page-parameters", async () => pageParameters.snapshot());
+
+  app.get("/api/business-scripts", async () => businessScripts.snapshot());
+
+  app.post<{ Body: StartBusinessScriptRecordingRequest }>("/api/business-script-recordings", async request => {
+    const parsed = startBusinessScriptRecordingSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const device = await findAvailableDevice(options, parsed.data.deviceKey);
+    return { recording: await businessScripts.startRecording(device, parsed.data.environment, parsed.data.appBuild) };
+  });
+
+  app.get<{ Params: { recordingId: string } }>("/api/business-script-recordings/:recordingId", async request => ({
+    recording: await businessScripts.refreshRecording(request.params.recordingId),
+  }));
+
+  app.post<{ Params: { recordingId: string } }>("/api/business-script-recordings/:recordingId/stop", async request => (
+    businessScripts.stopRecording(request.params.recordingId)
+  ));
+
+  app.put<{ Params: { draftId: string }; Body: SaveBusinessScriptDraftRequest }>("/api/business-script-drafts/:draftId", async request => {
+    const parsed = saveBusinessScriptDraftSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return { draft: await businessScripts.saveDraft(request.params.draftId, parsed.data) };
+  });
+
+  app.post<{ Params: { draftId: string } }>("/api/business-script-drafts/:draftId/publish", async request => ({
+    script: await businessScripts.publish(request.params.draftId),
+  }));
+
+  app.delete<{ Params: { scriptId: string; version: string } }>("/api/business-scripts/:scriptId/versions/:version", async request => {
+    const version = Number(request.params.version);
+    if (!Number.isInteger(version) || version <= 0) throw new ConsoleError("REQUEST_INVALID", "脚本版本必须为正整数");
+    return businessScripts.deletePublishedVersion(request.params.scriptId, version);
+  });
+
+  app.put<{ Params: { suiteId: string }; Body: Omit<BusinessSuite, "suiteId" | "updatedAt"> }>("/api/business-suites/:suiteId", async request => {
+    const parsed = saveBusinessSuiteSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return { suite: await businessScripts.saveSuite(request.params.suiteId, parsed.data) };
+  });
+
+  app.post<{ Params: { scriptId: string; version: string; scenarioId: string }; Body: { deviceKey: string } }>(
+    "/api/business-scripts/:scriptId/versions/:version/scenarios/:scenarioId/replay",
+    async request => {
+      const parsed = replayBusinessScriptSchema.safeParse(request.body);
+      if (!parsed.success) throw invalidRequest(parsed.error);
+      const device = await findAvailableDevice(options, parsed.data.deviceKey);
+      const version = Number(request.params.version);
+      if (!Number.isInteger(version) || version <= 0) throw new ConsoleError("REQUEST_INVALID", "脚本版本必须为正整数");
+      return { replay: await businessScripts.replayScenario(request.params.scriptId, version, request.params.scenarioId, device) };
+    },
+  );
+
+  app.post<{ Params: { suiteId: string }; Body: { deviceKey: string } }>("/api/business-suites/:suiteId/replay", async request => {
+    const parsed = replayBusinessScriptSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const device = await findAvailableDevice(options, parsed.data.deviceKey);
+    return { replays: await businessScripts.replaySuite(request.params.suiteId, device) };
+  });
+
+  app.post<{ Body: StartPageParameterRecordingRequest }>("/api/page-parameter-recordings", async request => {
+    const parsed = startPageParameterRecordingSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const discovery = await options.devices.discover();
+    const device = discovery.devices.find(item => item.key === parsed.data.deviceKey);
+    if (!device) throw new ConsoleError("DEVICE_UNKNOWN", `设备不存在: ${parsed.data.deviceKey}`, 404);
+    if (device.connectionState !== "available") throw new ConsoleError("DEVICE_UNAVAILABLE", `${device.name} 当前不可用`, 409);
+    return { recording: await pageParameters.startRecording(device, parsed.data.environment) };
+  });
+
+  app.get<{ Params: { recordingId: string } }>("/api/page-parameter-recordings/:recordingId", async request => ({
+    recording: await pageParameters.refreshRecording(request.params.recordingId),
+  }));
+
+  app.post<{ Params: { recordingId: string } }>("/api/page-parameter-recordings/:recordingId/stop", async request => ({
+    recording: await pageParameters.stopRecording(request.params.recordingId),
+  }));
+
+  app.post<{ Params: { pageId: string; profileId: string }; Body: { deviceKey: string } }>(
+    "/api/page-parameters/:pageId/profiles/:profileId/replay",
+    async request => {
+      const parsed = replayPageParameterProfileSchema.safeParse(request.body);
+      if (!parsed.success) throw invalidRequest(parsed.error);
+      const discovery = await options.devices.discover();
+      const device = discovery.devices.find(item => item.key === parsed.data.deviceKey);
+      if (!device) throw new ConsoleError("DEVICE_UNKNOWN", `设备不存在: ${parsed.data.deviceKey}`, 404);
+      if (device.connectionState !== "available") throw new ConsoleError("DEVICE_UNAVAILABLE", `${device.name} 当前不可用`, 409);
+      return { replay: await pageParameters.replayProfile(request.params.pageId, request.params.profileId, device) };
+    },
+  );
+
+  app.put<{ Params: { pageId: string; profileId: string }; Body: SavePageParameterProfileRequest }>(
+    "/api/page-parameters/:pageId/profiles/:profileId",
+    async request => {
+      const parsed = savePageParameterProfileSchema.safeParse(request.body);
+      if (!parsed.success) throw invalidRequest(parsed.error);
+      return { profile: await pageParameters.saveProfile(request.params.pageId, request.params.profileId, parsed.data) };
+    },
+  );
+
+  app.post<{ Params: { pageId: string; profileId: string } }>(
+    "/api/page-parameters/:pageId/profiles/:profileId/default",
+    async request => {
+      const parsed = setDefaultPageParameterProfileSchema.safeParse(request.body);
+      if (!parsed.success) throw invalidRequest(parsed.error);
+      return { profile: await pageParameters.setDefaultProfile(request.params.pageId, request.params.profileId, parsed.data.isDefault) };
+    },
+  );
+
+  app.delete<{ Params: { pageId: string; profileId: string } }>(
+    "/api/page-parameters/:pageId/profiles/:profileId/default",
+    async request => ({ profile: await pageParameters.setDefaultProfile(request.params.pageId, request.params.profileId, false) }),
+  );
+
+  app.delete<{ Params: { pageId: string; profileId: string } }>("/api/page-parameters/:pageId/profiles/:profileId", async request => {
+    await pageParameters.deleteProfile(request.params.pageId, request.params.profileId);
+    return { ok: true };
+  });
+
+  app.get("/api/account-profiles", async () => accountProfiles.snapshot());
+
+  app.get<{ Params: { profileId: string }; Querystring: { provider?: string } }>("/api/account-profiles/:profileId/source", async request => {
+    const parsed = accountProfileSourceSchema.safeParse(request.query);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return accountProfiles.source(request.params.profileId, parsed.data.provider);
+  });
+
+  app.post<{ Body: StartAccountProfileRecordingRequest }>("/api/account-profile-recordings", async request => {
+    const parsed = startAccountProfileRecordingSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const device = await findAvailableDevice(options, parsed.data.deviceKey);
+    const recording = await accountProfiles.startRecording(device, parsed.data);
+    return { recording: toAccountProfileRecordingSummary(recording) };
+  });
+
+  app.get<{ Params: { recordingId: string } }>("/api/account-profile-recordings/:recordingId", async request => ({
+    recording: toAccountProfileRecordingSummary(await accountProfiles.refreshRecording(request.params.recordingId)),
+  }));
+
+  app.post<{ Params: { recordingId: string } }>("/api/account-profile-recordings/:recordingId/stop", async request => {
+    const result = await accountProfiles.stopRecording(request.params.recordingId);
+    return {
+      recording: toAccountProfileRecordingSummary(result.recording),
+      ...(result.profile ? { profile: toAccountProfileSummary(result.profile) } : {}),
+    };
+  });
+
+  app.post<{ Params: { recordingId: string } }>("/api/account-profile-recordings/:recordingId/terminate", async request => ({
+    recording: toAccountProfileRecordingSummary(await accountProfiles.terminateRecording(request.params.recordingId)),
+  }));
+
+  app.post<{ Params: { profileId: string }; Body: { deviceKey: string; provider: typeof ACCOUNT_PROFILE_PROVIDERS[number] } }>("/api/account-profiles/:profileId/replay", async request => {
+    const parsed = replayAccountProfileSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const device = await findAvailableDevice(options, parsed.data.deviceKey);
+    return { replay: await accountProfiles.replayProfile(request.params.profileId, parsed.data.provider, device) };
+  });
+
+  app.delete<{ Params: { profileId: string } }>("/api/account-profiles/:profileId", async request => {
+    await accountProfiles.deleteProfile(request.params.profileId);
+    return { ok: true };
   });
 
   app.post<{ Body: StartTasksRequest }>("/api/tasks", async request => {
@@ -53,16 +373,119 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       );
     }
     const discovery = await options.devices.discover();
+    const test = options.config.tests.find(item => item.id === parsed.data.testId);
+    if (test) {
+      const parameters = validateParameters(test, parsed.data.parameters ?? {});
+      const selectedDevices = discovery.devices.filter(device => parsed.data.deviceKeys.includes(device.key));
+      const blockedPreparation = selectedDevices.flatMap(device => (device.preparations ?? [])
+        .filter(item => item.blocksTests && item.status !== "ready")
+        .map(item => ({ device, preparation: item })))[0];
+      if (blockedPreparation) {
+        throw new ConsoleError(
+          "DEVICE_PREPARATION_REQUIRED",
+          `${blockedPreparation.device.name} 需要先完成${blockedPreparation.preparation.label}：${blockedPreparation.preparation.detail}`,
+          409,
+        );
+      }
+      const environment = parameters.environment || "qa";
+      for (const parameter of test.parameters) {
+        if (parameter.type !== "account-profile") continue;
+        const selection = parameters[parameter.id];
+        if (selection === "current-session") continue;
+        const separator = selection.lastIndexOf(":");
+        const profileId = selection.slice(0, separator);
+        const provider = selection.slice(separator + 1) as (typeof ACCOUNT_PROFILE_PROVIDERS)[number];
+        await accountProfiles.validateTaskSelection(
+          profileId,
+          provider,
+          parameter.capability,
+          environment,
+          selectedDevices,
+        );
+      }
+    }
     return { tasks: await options.tasks.start(parsed.data, discovery.devices) };
+  });
+
+  app.post<{ Body: { deviceKey: string } }>("/api/devices/start", async request => {
+    const parsed = startDeviceRequestSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return { device: await options.devices.start(parsed.data.deviceKey) };
+  });
+
+  app.post<{ Body: { deviceKey: string; preparationId: string } }>("/api/devices/preparations/install", async request => {
+    const parsed = installDevicePreparationSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return options.devices.installPreparation(parsed.data.deviceKey, parsed.data.preparationId);
   });
 
   app.post<{ Params: { taskId: string } }>("/api/tasks/:taskId/stop", async request => ({
     task: await options.tasks.stop(request.params.taskId),
   }));
 
+  app.get("/api/repairs", async () => ({
+    schemaVersion: "mobile-test-console.repair-jobs.v1" as const,
+    jobs: options.repairs?.list() ?? [],
+  }));
+
+  app.get<{ Params: { repairJobId: string } }>("/api/repairs/:repairJobId", async request => ({
+    job: requireRepairJob(options, request.params.repairJobId),
+  }));
+
+  app.post<{ Params: { taskId: string }; Body: { caseRunId?: string } }>("/api/tasks/:taskId/repairs", async request => {
+    const parsed = createRepairRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return { job: await requireRepairs(options).create(request.params.taskId, parsed.data.caseRunId, parsed.data.projectDirectory) };
+  });
+
+  app.post<{ Params: { taskId: string }; Body: { caseRunId?: string } }>("/api/tasks/:taskId/repairs/preview", async request => {
+    const parsed = createRepairRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return { preview: await requireRepairs(options).preview(request.params.taskId, parsed.data.caseRunId) };
+  });
+
+  app.post("/api/repairs/select-project-directory", async () => ({
+    projectDirectory: await requireRepairs(options).selectProjectDirectory(),
+  }));
+
+  app.post<{ Params: { repairJobId: string } }>("/api/repairs/:repairJobId/cancel", async request => ({
+    job: await requireRepairs(options).cancel(request.params.repairJobId),
+  }));
+
+  app.post<{ Params: { repairJobId: string } }>("/api/repairs/:repairJobId/retry-test", async request => ({
+    job: await requireRepairs(options).retryTest(request.params.repairJobId),
+  }));
+
+  app.post<{ Params: { repairJobId: string } }>("/api/repairs/:repairJobId/open-task", async request => ({
+    job: await requireRepairs(options).openTask(request.params.repairJobId),
+  }));
+
+  app.get<{ Params: { taskId: string }; Querystring: { refresh?: string } }>("/api/tasks/:taskId/result", async request => ({
+    result: await taskResults.load(request.params.taskId, { refresh: request.query.refresh === "1" }),
+  }));
+
+  app.get<{ Params: { taskId: string; artifactId: string } }>(
+    "/api/tasks/:taskId/artifacts/:artifactId",
+    async (request, reply) => {
+      const artifact = await taskResults.artifact(request.params.taskId, request.params.artifactId);
+      reply.type(artifact.mimeType);
+      reply.header("Content-Length", artifact.sizeBytes);
+      reply.header("Content-Disposition", "inline");
+      reply.header("X-Content-Type-Options", "nosniff");
+      return reply.send(fs.createReadStream(artifact.absolutePath));
+    },
+  );
+
+  app.delete<{ Params: { taskId: string } }>("/api/tasks/:taskId", async request => {
+    const task = await options.tasks.delete(request.params.taskId);
+    taskResults.invalidate(request.params.taskId);
+    return { task };
+  });
+
   app.setErrorHandler((error, _request, reply) => {
     const known = error instanceof ConsoleError;
     const statusCode = known ? error.statusCode : 500;
+    if (!known) console.error("[server] 未处理的请求异常", error);
     reply.status(statusCode).send({
       error: {
         code: known ? error.code : "INTERNAL_ERROR",
@@ -86,4 +509,30 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   }
 
   return app;
+}
+
+async function findAvailableDevice(options: CreateAppOptions, deviceKey: string) {
+  const discovery = await options.devices.discover();
+  const device = discovery.devices.find(item => item.key === deviceKey);
+  if (!device) throw new ConsoleError("DEVICE_UNKNOWN", `设备不存在: ${deviceKey}`, 404);
+  if (device.connectionState !== "available") throw new ConsoleError("DEVICE_UNAVAILABLE", `${device.name} 当前不可用`, 409);
+  return device;
+}
+
+function invalidRequest(error: z.ZodError): ConsoleError {
+  return new ConsoleError(
+    "REQUEST_INVALID",
+    error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "),
+  );
+}
+
+function requireRepairs(options: CreateAppOptions): RepairJobManager {
+  if (!options.repairs) throw new ConsoleError("CODEX_REPAIR_DISABLED", "项目未初始化 Codex 修复服务", 409);
+  return options.repairs;
+}
+
+function requireRepairJob(options: CreateAppOptions, repairJobId: string) {
+  const job = requireRepairs(options).get(repairJobId);
+  if (!job) throw new ConsoleError("REPAIR_JOB_UNKNOWN", `修复任务不存在: ${repairJobId}`, 404);
+  return job;
 }

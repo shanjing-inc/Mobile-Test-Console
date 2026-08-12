@@ -18,7 +18,8 @@
     "test": "vitest run",
     "build": "pnpm typecheck && vite build && tsup src/server/cli.ts --format esm --platform node --target node18 --out-dir dist/server --sourcemap --clean",
     "start": "node dist/server/cli.js",
-    "check": "pnpm lint && pnpm test && pnpm build"
+    "check": "pnpm lint && pnpm test && pnpm build",
+    "test:fanli": "pnpm dev -- --config ../fanli/qa/mobile-test.config.cjs"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",
