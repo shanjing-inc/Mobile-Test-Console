@@ -1,8 +1,20 @@
 # Mobile Test Console
 
-Mobile Test Console 是一个运行在开发机上的多终端测试控制台。它按项目配置管理 App 设备与小程序运行目标，支持测试调度、并发控制、停止任务、运行状态、日志和统一结果展示。
+[简体中文](README.md) | [English](README.en.md)
+
+Mobile Test Console 是一个开源、配置驱动的多终端测试控制台，运行在开发机上，为移动 App 和小程序提供统一的设备管理、测试调度、运行监控、日志与结果分析工作区。
+
+它支持 Android、iOS、HarmonyOS 和小程序运行目标。项目通过配置、Runner、Project Provider 与 Result Bundle 协议接入，测试实现和业务数据继续保留在各自仓库中。
 
 当前版本为 `0.1.0-beta.1`，面向 App 与小程序项目开放接入验证。平台核心使用 MIT License，项目能力通过配置、Runner、Project Provider 和 Result Bundle 契约注册。
+
+## 核心能力
+
+- 统一发现和管理 Android、iOS、HarmonyOS 设备及小程序运行目标
+- 调度测试任务，提供并发控制、停止操作、实时状态和日志
+- 汇总用例、断言、截图、网络证据与诊断信息
+- 通过 SDK、JSON Schema、Runner 和 Project Provider 扩展项目能力
+- 管理测试产物的保留、清理、磁盘空间与审计记录
 
 ## 环境
 
