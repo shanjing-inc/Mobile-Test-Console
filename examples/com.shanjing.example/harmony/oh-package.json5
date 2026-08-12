@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "com.shanjing.example",
+  "version": "0.1.0",
+  "description": "Minimal Lynx host for Mobile Test Console",
+  "dependencies": {},
+  "devDependencies": {}
+}

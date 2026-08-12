@@ -2,6 +2,8 @@
 
 Mobile Test Console 是一个运行在开发机上的跨 App 移动测试控制台。它发现 Android、iOS、HarmonyOS 设备，按项目配置展示测试入口，支持多设备并行启动、停止任务、查看运行状态和日志。
 
+当前版本为 `0.1.0-beta.1`，面向 Lynx App 项目开放接入验证。平台核心使用 MIT License，项目能力通过配置、Runner、Project Provider 和 Result Bundle 契约注册。
+
 ## 环境
 
 - Node.js `>=18.20.0`
@@ -232,7 +234,25 @@ Result Bundle 的 artifact 使用 URI 和可选摘要描述证据。项目适配
 
 ## Runner SDK 与连接器
 
-平台通过 `src/runner` 暴露进程内 Runner SDK。`RunPlan`、`RunnerEvent` 和 `RunnerResult` 描述一次执行，`DeviceConnector` 负责设备发现与厂商能力，`InProcessConnectorRegistry` 根据平台、目标类型、设备类型和能力集合选择连接器。Android、iOS、HarmonyOS 的命令与输出解析位于 `src/runner/app-device-connectors.ts`；`DeviceDiscoveryService` 只负责缓存、排序、并发控制和 Connector 调度。快照的 `connectors` 和设备的 `connectorId/capabilities` 字段提供能力观测。
+公开包通过 `mobile-test-console/sdk` 暴露 Runner、Project Provider、Connector 与 Result Bundle 类型和运行时校验器。`mobile-test-console/runner` 在 `0.1.x` 中继续作为兼容入口。
+
+```bash
+pnpm add -D mobile-test-console@beta
+```
+
+项目配置可以直接获得 TypeScript 提示：
+
+```js
+/** @type {import("mobile-test-console/sdk").ProjectConfigInput} */
+module.exports = {
+  schemaVersion: "mobile-test-console.config.v1",
+  // ...
+};
+```
+
+编辑器和外部工具可以读取 `mobile-test-console/schemas/mobile-test.config.v1.json` 与 `mobile-test-console/schemas/test-analysis.run.v1.json`。这两个文件由 Zod 契约生成，并由 CI 校验同步状态。
+
+`RunPlan`、`RunnerEvent` 和 `RunnerResult` 描述一次执行，`DeviceConnector` 负责设备发现与厂商能力，`InProcessConnectorRegistry` 根据平台、目标类型、设备类型和能力集合选择连接器。Android、iOS、HarmonyOS 的命令与输出解析位于 `src/runner/app-device-connectors.ts`；`DeviceDiscoveryService` 只负责缓存、排序、并发控制和 Connector 调度。快照的 `connectors` 和设备的 `connectorId/capabilities` 字段提供能力观测。
 
 App connector 能力覆盖 Android、iOS、HarmonyOS 的设备发现、启动、安装、截图、录屏、网络、日志和结果导出。小程序 connector 使用独立的 `mini-program` 目标模型，要求声明 `appId`、运行时和 attach/launch/reload 能力；真实开发者工具可以在后续通过同一接口接入。
 
@@ -263,7 +283,7 @@ import {
   RUNNER_PLUGIN_API_VERSION,
   createRunnerEvent,
   defineRunnerPlugin,
-} from "mobile-test-console/runner";
+} from "mobile-test-console/sdk";
 
 export default defineRunnerPlugin({
   apiVersion: RUNNER_PLUGIN_API_VERSION,
@@ -330,7 +350,12 @@ iOS 模拟器的 boot/open/bootstatus 通过 Connector `start` 生命周期 port
 ## 开发检查
 
 ```bash
-pnpm test
-pnpm typecheck
-pnpm build
+pnpm test:integrations
+pnpm schema:check
+pnpm check:open-source
+pnpm check
 ```
+
+`pnpm check` 覆盖 lint、全量测试、Schema 一致性、开源安全扫描、TypeScript、Web/Server/SDK 构建和 npm 发布包内容检查。CI 在 Node.js 18.20.7 与当前 LTS 上执行同一套门禁。
+
+开源协作与发布规则参见 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md)、[版本兼容策略](docs/versioning.md) 和 [发布清单](docs/publishing.md)。

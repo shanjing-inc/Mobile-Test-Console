@@ -1,3 +1,4 @@
+/** @type {import("mobile-test-console/sdk").ProjectConfigInput} */
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {

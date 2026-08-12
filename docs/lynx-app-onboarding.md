@@ -144,6 +144,7 @@ MTC 会在写入前校验 `runId`、`projectId` 和终态；相同 `runId` 与�
 ### 最小配置
 
 ```js
+/** @type {import("mobile-test-console/sdk").ProjectConfigInput} */
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: { id: "my-lynx-app", name: "My Lynx App", root: ".", integrationType: "lynx-app" },
@@ -167,6 +168,8 @@ runnerPlugins: [{ module: "./qa/lynx-runner.cjs" }],
 
 Provider manifest 的 `scope.targetKinds` 使用 `app`，Lynx 项目使用 `runtimes: ["lynx"]`，平台列表按实际支持范围填写。声明 `result.analysis` 时必须实现 `collectResult()`；Runner 通过 `services.createProviderCommandRunner()` 复用平台的执行、取消和结果摄取语义。
 
+Runner、Provider、Connector 和 Result Bundle 的类型从 `mobile-test-console/sdk` 导入。项目配置 JSON Schema 位于 `mobile-test-console/schemas/mobile-test.config.v1.json`，结果协议位于 `mobile-test-console/schemas/test-analysis.run.v1.json`。
+
 ## 5. 推荐开发顺序
 
 1. 先用 `legacy-command-runner` 跑通一个只读页面 Smoke。
@@ -189,6 +192,8 @@ pnpm dev -- --config examples/lynx-app-starter/mobile-test.config.cjs
 
 模板中的 `qa/prepare.cjs`、`qa/lynx-suite.cjs` 和 `qa/result-bundle.cjs` 是项目适配边界。迁移到真实 App 时保留 Provider、Runner 和参数契约，替换这三个脚本的示例实现。
 
+仓库中的 [examples/com.shanjing.example](../examples/com.shanjing.example) 提供可实际构建的 Android、iOS 和 HarmonyOS 最小宿主。它演示三端构建、签名、安装、启动、运行事件、截图和 Result Bundle 生成，同时让全部平台实现留在接入项目内。iOS 真机签名使用 `MTC_IOS_DEVELOPMENT_TEAM`，HarmonyOS 签名 HAP 使用 `MTC_HARMONY_HAP_PATH`。
+
 ## 7. 发布前检查
 
 - 三个平台至少各有一个可运行 QA 设备或模拟器。
@@ -197,3 +202,5 @@ pnpm dev -- --config examples/lynx-app-starter/mobile-test.config.cjs
 - Result Bundle 的上下文校验、幂等和冲突测试通过。
 - 截图、录屏、日志和网络证据全部位于受控产物目录。
 - README、Starter、Provider 类型和示例配置保持同一协议版本。
+- `pnpm test:integrations` 同时加载 Starter 与独立 Lynx 示例项目。
+- `pnpm schema:check`、`pnpm check:open-source` 和 `pnpm check:package` 全部通过。

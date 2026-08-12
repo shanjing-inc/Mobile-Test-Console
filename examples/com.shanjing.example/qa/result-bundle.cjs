@@ -17,10 +17,19 @@ function buildResultBundle(projectRoot, request) {
         events: [],
       };
   const passed = request.result.status === "passed";
-  const screenshotPath = path.join(artifactRoot, "page.png");
+  const screenshotPath = ["page.png", "page.jpeg"]
+    .map(name => path.join(artifactRoot, name))
+    .find(filePath => fs.existsSync(filePath));
   const logPath = path.join(artifactRoot, "runtime.log");
   const artifacts = [
-    buildArtifact(projectRoot, screenshotPath, "page-screenshot", "页面截图", "screenshot", "image/png"),
+    screenshotPath && buildArtifact(
+      projectRoot,
+      screenshotPath,
+      "page-screenshot",
+      "页面截图",
+      "screenshot",
+      screenshotPath.endsWith(".jpeg") ? "image/jpeg" : "image/png",
+    ),
     buildArtifact(projectRoot, logPath, "runtime-log", "Lynx Runtime 日志", "log", "text/plain"),
   ].filter(Boolean);
   const evidenceRefs = artifacts.map(artifact => artifact.id);
@@ -59,7 +68,7 @@ function buildResultBundle(projectRoot, request) {
         assertionId: "page-ready",
         kind: "runtimeEvent",
         passed,
-        description: "Android 日志收到 page_ready",
+        description: `${platformLabel(raw.platform)} 日志收到 page_ready`,
         evidenceRefs,
       }],
       evidenceRefs,
@@ -81,6 +90,10 @@ function buildResultBundle(projectRoot, request) {
       generatedAt: new Date().toISOString(),
     },
   };
+}
+
+function platformLabel(platform) {
+  return { android: "Android", ios: "iOS", harmony: "HarmonyOS" }[platform] || String(platform || "设备");
 }
 
 function buildArtifact(projectRoot, filePath, id, label, role, mimeType) {

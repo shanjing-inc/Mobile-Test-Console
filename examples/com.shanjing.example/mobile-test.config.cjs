@@ -1,3 +1,4 @@
+/** @type {import("mobile-test-console/sdk").ProjectConfigInput} */
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
@@ -25,15 +26,19 @@ module.exports = {
       fixingMessage: "正在修复示例项目",
     },
   },
-  deviceProviders: ["android"],
+  deviceProviders: ["android", "ios", "harmony"],
+  iosSimulator: {
+    workspace: "ios/Example.xcworkspace",
+    scheme: "Example",
+  },
   projectProviderPlugins: [{ module: "./qa/lynx-project-provider.cjs" }],
   runnerPlugins: [{ module: "./qa/lynx-runner.cjs" }],
   tests: [{
     id: "lynx-smoke",
     label: "Lynx 单页 Smoke",
-    description: "构建并安装 Android QA App，打开单页 Bundle，验证 page_ready 与结果分析链路。",
+    description: "构建并安装 Android、iOS 或 HarmonyOS QA App，打开单页 Bundle，验证 page_ready 与结果分析链路。",
     runnerId: "shanjing-example-runner",
-    platforms: ["android"],
+    platforms: ["android", "ios", "harmony"],
     parameters: [{
       id: "environment",
       label: "环境",
@@ -50,9 +55,31 @@ module.exports = {
           "--device", "{{device.id}}",
           "--run-id", "{{task.runId}}",
           "--environment", "{{params.environment}}",
+          "--device-type", "{{device.type}}",
+        ],
+      },
+      ios: {
+        executable: "node",
+        args: [
+          "qa/ios-suite.cjs",
+          "--platform", "{{device.platform}}",
+          "--device", "{{device.id}}",
+          "--run-id", "{{task.runId}}",
+          "--environment", "{{params.environment}}",
+          "--device-type", "{{device.type}}",
+        ],
+      },
+      harmony: {
+        executable: "node",
+        args: [
+          "qa/harmony-suite.cjs",
+          "--platform", "{{device.platform}}",
+          "--device", "{{device.id}}",
+          "--run-id", "{{task.runId}}",
+          "--environment", "{{params.environment}}",
+          "--device-type", "{{device.type}}",
         ],
       },
     },
   }],
 };
-

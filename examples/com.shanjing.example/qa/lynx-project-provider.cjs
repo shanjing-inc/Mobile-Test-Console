@@ -23,7 +23,7 @@ module.exports = {
         scope: {
           targetKinds: ["app"],
           runtimes: ["lynx"],
-          platforms: ["android"],
+          platforms: ["android", "ios", "harmony"],
         },
         capabilities: CAPABILITIES.map(id => ({ id, version: 1 })),
       },
@@ -38,6 +38,7 @@ module.exports = {
               "--capabilities", request.capabilities.join(","),
               "--platform", request.plan.device.platform,
               "--device", request.plan.device.id,
+              "--device-type", request.plan.device.type,
             ],
             cwd: context.project.root,
           }],

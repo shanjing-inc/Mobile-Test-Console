@@ -1,0 +1,12 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "Minimal HarmonyOS Lynx host",
+  "main": "",
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@lynx/lynx": "4.0.0",
+    "@lynx/primjs": "4.0.0"
+  }
+}

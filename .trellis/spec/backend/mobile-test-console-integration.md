@@ -105,6 +105,102 @@ pnpm dev
 
 The development command starts the platform shell and exposes the project onboarding workspace. Use `--config <path>` for an explicit project runtime. The local catalog keeps project registration and selection metadata; the developer switches to a project from the browser before project lifecycle work begins.
 
+## Scenario: Independent three-platform Lynx example
+
+### 1. Scope / Trigger
+
+- Trigger: the independent `com.shanjing.example` fixture gains or changes Android, iOS, or HarmonyOS execution support.
+- The fixture proves that one external Lynx repository can own native hosts, preparation, test commands, and result conversion through the public MTC contracts.
+
+### 2. Signatures
+
+```js
+deviceProviders: ["android", "ios", "harmony"]
+projectProviderPlugins: [{ module: "./qa/lynx-project-provider.cjs" }]
+runnerPlugins: [{ module: "./qa/lynx-runner.cjs" }]
+
+tests: [{
+  id: "lynx-smoke",
+  runnerId: "shanjing-example-runner",
+  platforms: ["android", "ios", "harmony"],
+  commands: {
+    android: { executable: "node", args: ["qa/android-suite.cjs", "..."] },
+    ios: { executable: "node", args: ["qa/ios-suite.cjs", "..."] },
+    harmony: { executable: "node", args: ["qa/harmony-suite.cjs", "..."] },
+  },
+}]
+```
+
+```text
+node qa/prepare.cjs --capabilities <ids> --platform <android|ios|harmony> --device <id> --device-type <physical|simulator>
+MTC_IOS_DEVELOPMENT_TEAM=<Apple team ID>
+MTC_HARMONY_HAP_PATH=<signed HAP path>
+HARMONY_HVIGORW=<hvigorw path>
+HARMONY_OHPM=<ohpm path>
+HDC_PATH=<hdc path>
+```
+
+### 3. Contracts
+
+- `com.shanjing.example` owns one minimal native host per platform and keeps the shared application ID `com.shanjing.example`.
+- Its Provider manifest scopes the same five capabilities to `targetKinds=[app]`, `runtimes=[lynx]`, and all three platforms.
+- `prepareRun()` returns a project-root command and forwards platform, device ID, and device type. Platform build, signing, installation, launch, logs, and screenshots stay inside the example repository.
+- Every platform emits `MTC_EVENT page_opened` and `MTC_EVENT page_ready`, then writes `qa/artifacts/<runId>/raw-result.json` and runtime evidence.
+- The Result Bundle keeps `project.id=shanjing-example`, `target.kind=app`, `target.runtime=lynx`, and derives `target.platform` from the active plan.
+- iOS simulator builds use CocoaPods with Lynx/PrimJS `4.0.0`. iOS physical builds read the development team from the environment.
+- HarmonyOS source contains an unsigned, credential-free build profile. Device installation consumes a developer-signed HAP from local build output or `MTC_HARMONY_HAP_PATH`.
+- Git, npm packaging, and ESLint exclude generated native dependencies, build products, runtime state, and QA artifacts while retaining manifests, lock files, native source, and empty resource-directory markers.
+- MTC `src/` stays free of the example application ID, route, native project path, and suite command names.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Unsupported platform reaches `qa/prepare.cjs` | Fail with the platform value before any build command |
+| iOS physical build lacks `MTC_IOS_DEVELOPMENT_TEAM` | Fail with development-team setup guidance |
+| HarmonyOS install resolves an unsigned HAP | Fail with DevEco signing and `MTC_HARMONY_HAP_PATH` guidance |
+| Required local tool is absent | Fail with the executable and environment-key guidance |
+| Native host emits no `page_ready` within 15 seconds | Write failed raw result and exit with code 7 |
+| Result Bundle platform differs from the active plan | Runtime ingestion rejects the bundle through the shared validation contract |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an iOS simulator build installs the example, records both runtime events, captures a screenshot, and produces an iOS Result Bundle.
+- Good: Android, iOS, and HarmonyOS commands all originate from `mobile-test.config.cjs` and project-owned scripts.
+- Base: HarmonyOS CLI is absent on one workstation; config, Provider, Runner, native source, and static contract tests remain verifiable while onboarding reports the missing tool.
+- Bad: MTC core selects an example-specific suite through an application ID branch.
+- Bad: a HarmonyOS sample commits a certificate path, profile, keystore, or password.
+
+### 6. Tests Required
+
+- Load the example config and assert all three device providers, test platforms, command entries, Provider scope, and Runner registration.
+- Call `prepareRun()` for each platform and assert project-root command ownership plus device-type forwarding.
+- Assert Android `applicationId`, iOS `PRODUCT_BUNDLE_IDENTIFIER`, and HarmonyOS `bundleName` share `com.shanjing.example`.
+- Build Result Bundles for all three platforms and assert the same App/Lynx identity with the active platform value.
+- Scan MTC `src/` for the example identity, route, and suite paths; every search result stays empty.
+- Run lint with locally installed CocoaPods and ohpm dependencies present; generated third-party source stays outside the lint input set.
+- Run the Starter integration tests together with the independent example tests to detect public-contract regressions.
+- On an available workstation, build Android and iOS simulator hosts and execute the iOS simulator suite through `page_ready` and screenshot capture.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+if (project.id === "shanjing-example") return runIosExample(plan);
+```
+
+#### Correct
+
+```js
+commands: {
+  ios: {
+    executable: "node",
+    args: ["qa/ios-suite.cjs", "--device", "{{device.id}}"],
+  },
+}
+```
+
 Production command:
 
 ```bash
@@ -2728,6 +2824,7 @@ interface ProjectSetupPlan {
 - Generic App projects expose their declared Provider capabilities without inheriting the Lynx App six-capability requirement. Historical catalog records may omit `capabilities`; loading normalizes them to an empty list until the next verification.
 - Successful config verification snapshots every declared test in config order as `ProjectTestEntryCheck`. Each entry keeps its public ID, label, description, Runner ID, supported platforms, and parameter labels without exposing executable commands.
 - The project overview renders the `template.testEntries` snapshot as a two-column `测试入口清单`, with one card per test and a one-column narrow-screen fallback. Historical catalog records may omit `testEntries`; loading normalizes that state to an empty list until the next verification.
+- Selecting the sidebar add action enters a dedicated add-project mode. The sidebar clears the selected-project highlight, project-level navigation is hidden, and the right workspace renders only the add-project heading, registration controls, and cancel action. Selecting an existing project, cancelling, or completing registration exits add mode and restores that project's overview.
 - The browser displays every action, target path, command, working directory, content preview, and impact statement before confirmation. Cancel closes the dialog without calling apply.
 - The top project navigation always shows five peer entries. `项目概览` remains enabled; other entries use `workspaceDisabledReason`. `页面列表`, `业务脚本`, and `账号画像` additionally require their IDs in `adapter.workspaces`.
 
@@ -2778,6 +2875,7 @@ interface ProjectSetupPlan {
 - Assert legacy catalog entries without `capabilities` remain readable.
 - Assert config verification snapshots every declared test entry with its ID, label, description, Runner ID, platforms, and parameter labels.
 - Assert the browser renders every test entry inside the expandable configuration step and distinguishes parameterized entries from entries with no parameters.
+- Assert add-project mode hides the selected project overview and project navigation, highlights the sidebar add control, and exits through cancel, existing-project selection, and successful registration.
 - Assert legacy catalog entries without `testEntries` remain readable.
 
 ### 7. Wrong vs Correct
@@ -3063,4 +3161,92 @@ if (preset === "p0") return fanliP0Pages;
 
 ```ts
 return pages.filter(page => matchesPagePreset(page, preset.filter));
+```
+
+## Scenario: Public beta package and open-source release gate
+
+### 1. Scope / Trigger
+
+- Trigger: Mobile Test Console publishes a beta CLI/SDK package or accepts an integration change that affects external Lynx projects.
+- The package manifest, SDK exports, generated JSON Schemas, generic fixtures, CI, and package-content audit form one release boundary.
+
+### 2. Signatures
+
+```text
+mobile-test-console/sdk
+mobile-test-console/runner
+mobile-test-console/schemas/mobile-test.config.v1.json
+mobile-test-console/schemas/test-analysis.run.v1.json
+
+pnpm schema:generate
+pnpm schema:check
+pnpm test:integrations
+pnpm check:open-source
+pnpm check:package
+pnpm check
+```
+
+### 3. Contracts
+
+- `mobile-test-console/sdk` is the preferred public entry and exports Runner, Project Provider, Connector, Result Bundle types, protocol constants, and runtime validators. `mobile-test-console/runner` remains compatible for the `0.1.x` line.
+- `ProjectConfigInput` is derived from the Zod `configSchema`; Result Bundle types and runtime validation are derived from `resultBundleSchema`.
+- `scripts/generate-schemas.ts` generates both JSON Schemas from those Zod owners. Hand-authored schema copies are forbidden.
+- The npm package includes compiled CLI/SDK files, generated schemas, license, security policy, onboarding docs, and generic examples. It excludes source, tests, Trellis state, dependencies, `.mtc-state`, and OS metadata.
+- `check-open-source.mjs` rejects credentials, private keys, developer-specific absolute paths, tracked local runtime data, and project-domain names in platform `src/`.
+- Integration coverage loads both `examples/lynx-app-starter` and `examples/com.shanjing.example`, validates their raw configs against JSON Schema, then registers each project's Provider and Runner through the production config/runtime boundary.
+- CI runs on Node.js `18.20.7` and current LTS with pnpm `10.28.2`. `prepack` runs the complete `pnpm check` gate.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Generated schema differs from its Zod owner | `pnpm schema:check` fails with regeneration guidance |
+| Package is private or lacks license/SDK/schema exports | `pnpm check:open-source` fails |
+| Platform source contains an application brand or route name | `pnpm check:open-source` fails with the source path |
+| Publish set contains `.mtc-state`, source, tests, dependencies, or OS metadata | `pnpm check:package` fails with the package path |
+| Starter or independent example cannot load its Provider/Runner | `pnpm test:integrations` fails before publication |
+| SDK declaration or runtime entry is absent from `dist` | package-content check fails |
+| A public contract needs an incompatible shape | introduce a new schema/API version and migration notes |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a third-party Lynx project imports `ProjectConfigInput` from `mobile-test-console/sdk`, validates configuration with the exported schema, and registers its own Provider/Runner.
+- Good: a Result Bundle field changes in the Zod owner, schema generation updates the tracked JSON, and CI validates the example bundle.
+- Base: an existing `mobile-test-console/runner` integration continues through the documented `0.1.x` compatibility window.
+- Bad: publish a package containing a developer home path, local state, account material, or an application-specific adapter.
+- Bad: edit a JSON Schema independently from the Zod runtime validator.
+
+### 6. Tests Required
+
+- Import every public protocol constant through `src/sdk/index.ts` and assert its exact version.
+- Validate both Lynx project configs and the mini-program Result Bundle fixture with exported JSON Schemas.
+- Load both project configs through `loadProjectConfig()` and `loadRunnerRuntime()`; assert project-owned Provider and Runner IDs.
+- Build CLI, compatibility Runner, and public SDK declarations before auditing npm package contents.
+- Run the source security/brand scan and assert the package manifest is public, MIT-licensed, and on the beta version line.
+- Run `pnpm check` on the minimum Node.js version and current LTS in CI.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```json
+{
+  "private": true,
+  "exports": { "./runner": "./src/runner/index.ts" }
+}
+```
+
+#### Correct
+
+```json
+{
+  "license": "MIT",
+  "exports": {
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
+    "./schemas/mobile-test.config.v1.json": "./schemas/mobile-test.config.v1.schema.json"
+  }
+}
 ```

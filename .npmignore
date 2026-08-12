@@ -1,0 +1,8 @@
+**/.DS_Store
+**/.mtc-state/**
+**/node_modules/**
+examples/**/.mtc-state/**
+examples/**/node_modules/**
+.trellis
+src
+tests

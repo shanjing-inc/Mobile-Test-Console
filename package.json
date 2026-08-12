@@ -1,24 +1,47 @@
 {
   "name": "mobile-test-console",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
+  "description": "Configuration-driven mobile test console for Lynx applications",
+  "license": "MIT",
+  "keywords": [
+    "lynx",
+    "mobile-testing",
+    "android",
+    "ios",
+    "harmonyos",
+    "test-automation"
+  ],
   "type": "module",
   "bin": {
     "mobile-test-console": "dist/server/cli.js",
     "mobile-test-console-result": "dist/server/result-bundle-cli.js"
   },
   "exports": {
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    },
     "./runner": {
       "types": "./dist/runner/index.d.ts",
       "import": "./dist/runner/index.js"
-    }
+    },
+    "./schemas/mobile-test.config.v1.json": "./schemas/mobile-test.config.v1.schema.json",
+    "./schemas/test-analysis.run.v1.json": "./schemas/test-analysis.run.v1.schema.json",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "schemas",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "README.md",
     "docs",
     "examples"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18.20.0"
   },
@@ -30,10 +53,16 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "pnpm typecheck && vite build && tsup src/server/cli.ts src/server/result-bundle-cli.ts --format esm --platform node --target node18 --out-dir dist/server --sourcemap --clean && tsup src/runner/index.ts --format esm --platform node --target node18 --out-dir dist/runner --sourcemap --dts",
+    "test:integrations": "vitest run tests/open-source-readiness.test.ts tests/lynx-app-starter.test.ts tests/runner-runtime.test.ts",
+    "schema:generate": "tsx scripts/generate-schemas.ts",
+    "schema:check": "tsx scripts/generate-schemas.ts --check",
+    "check:open-source": "node scripts/check-open-source.mjs",
+    "check:package": "node scripts/check-package-contents.mjs",
+    "build": "pnpm typecheck && vite build && tsup src/server/cli.ts src/server/result-bundle-cli.ts --format esm --platform node --target node18 --out-dir dist/server --sourcemap --clean && tsup src/runner/index.ts src/sdk/index.ts --format esm --platform node --target node18 --out-dir dist --sourcemap --dts",
     "start": "node dist/server/cli.js",
-    "check": "pnpm lint && pnpm test && pnpm build",
-    "test:shanjing-example": "pnpm dev -- --config examples/com.shanjing.example/mobile-test.config.cjs"
+    "check": "pnpm lint && pnpm test && pnpm schema:check && pnpm check:open-source && pnpm build && pnpm check:package",
+    "test:shanjing-example": "pnpm dev -- --config examples/com.shanjing.example/mobile-test.config.cjs",
+    "prepack": "pnpm check"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",
@@ -50,17 +79,19 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "ajv": "^8.20.0",
     "concurrently": "^9.1.2",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.1.0",
     "eslint-plugin-react-refresh": "^0.4.16",
     "globals": "^15.14.0",
-    "tsx": "^4.19.2",
     "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.19.1",
     "vite": "^5.4.21",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "zod-to-json-schema": "^3.25.2"
   },
   "packageManager": "pnpm@10.28.2"
 }

@@ -221,7 +221,7 @@ const testSchema = z.object({
   }).default({}),
 });
 
-const configSchema = z.object({
+export const configSchema = z.object({
   schemaVersion: z.literal("mobile-test-console.config.v1"),
   project: z.object({
     id: z.string().regex(/^[a-z][a-z0-9-]*$/),
@@ -370,6 +370,8 @@ const configSchema = z.object({
     }
   }
 });
+
+export type ProjectConfigInput = z.input<typeof configSchema>;
 
 export type CommandDefinition = z.infer<typeof commandSchema>;
 type ParsedTestDefinition = z.infer<typeof testSchema>;

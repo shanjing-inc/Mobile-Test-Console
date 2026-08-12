@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Minimal Lynx host"
+    },
+    {
+      "name": "entry_ability_desc",
+      "value": "Lynx MTC Example"
+    },
+    {
+      "name": "entry_ability_label",
+      "value": "Lynx MTC Example"
+    }
+  ]
+}
