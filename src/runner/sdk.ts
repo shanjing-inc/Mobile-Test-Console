@@ -5,6 +5,7 @@ import type {
   ConnectorCapabilityId,
   ConnectorCapabilityManifest,
   Device,
+  TaskRetrySource,
   TestTask,
   TestTarget,
 } from "../shared/contracts.js";
@@ -53,6 +54,22 @@ export interface RunnerCommand {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+}
+
+export function retryEnvironmentOfPlan(plan: Pick<RunPlan, "metadata">): Record<string, string> {
+  const retry = plan.metadata?.retry;
+  if (!retry || typeof retry !== "object") return {};
+  const source = retry as Partial<TaskRetrySource>;
+  return {
+    MTC_RETRY_SCOPE: String(source.scope ?? ""),
+    MTC_RETRY_ATTEMPT: String(source.attempt ?? ""),
+    MTC_RETRY_CASE_RUN_IDS: (source.caseRunIds ?? []).join(","),
+    MTC_RETRY_CASE_IDS: (source.caseIds ?? []).join(","),
+    MTC_RETRY_TARGET_PAGES: (source.targetPages ?? []).join(","),
+    MTC_RETRY_CASES: JSON.stringify(source.caseRuns ?? []),
+    MTC_RETRY_SOURCE_TASK_ID: String(source.taskId ?? ""),
+    MTC_RETRY_SOURCE_RUN_ID: String(source.runId ?? ""),
+  };
 }
 
 export interface RunPlan {
@@ -286,8 +303,17 @@ export function createRunPlan(task: TestTask, command?: RunnerCommand): RunPlan 
     runnerId: task.runnerId ?? LEGACY_COMMAND_RUNNER_ID,
     device: structuredClone(device),
     ...(task.target ? { target: structuredClone(task.target) } : { target: appRunTargetOf(device) }),
-    ...(command ? { command: structuredClone(command) } : {}),
-    metadata: { taskId: task.id, parameters: structuredClone(task.parameters) },
+    ...(command ? {
+      command: {
+        ...structuredClone(command),
+        env: { ...(command.env ?? {}), ...retryEnvironmentOfPlan({ metadata: { retry: task.retryOf } }) },
+      },
+    } : {}),
+    metadata: {
+      taskId: task.id,
+      parameters: structuredClone(task.parameters),
+      ...(task.retryOf ? { retry: structuredClone(task.retryOf) } : {}),
+    },
   };
 }
 

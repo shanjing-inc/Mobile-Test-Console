@@ -8,6 +8,7 @@ import {
   type MiniProgramRunTarget,
   type RunTarget,
   type StartTasksRequest,
+  type TaskRetrySource,
   type TestTask,
 } from "../shared/contracts.js";
 import {
@@ -94,6 +95,7 @@ export class TaskManager {
     repairJobId?: string,
     commandFactory?: (task: TestTask) => ResolvedCommand | null,
     targets: RunTarget[] = [],
+    retryOf?: TaskRetrySource,
   ): Promise<TestTask[]> {
     const test = this.config.tests.find(item => item.id === request.testId);
     if (!test) throw new ConsoleError("TEST_UNKNOWN", `测试不存在: ${request.testId}`, 404);
@@ -121,7 +123,7 @@ export class TaskManager {
         return target;
       });
       const createdAt = new Date().toISOString();
-      const tasks = selectedTargets.map(target => this.createTask(test, target, parameters, createdAt, workspaceRoot, repairJobId));
+      const tasks = selectedTargets.map(target => this.createTask(test, target, parameters, createdAt, workspaceRoot, repairJobId, retryOf));
       await this.enqueueTasks(tasks, test, commandFactory);
       return tasks.map(task => structuredClone(task));
     }
@@ -142,7 +144,7 @@ export class TaskManager {
     });
 
     const createdAt = new Date().toISOString();
-    const tasks = selected.map(device => this.createTask(test, appRunTargetOf(device), parameters, createdAt, workspaceRoot, repairJobId));
+    const tasks = selected.map(device => this.createTask(test, appRunTargetOf(device), parameters, createdAt, workspaceRoot, repairJobId, retryOf));
     await this.enqueueTasks(tasks, test, commandFactory);
     return tasks.map(task => structuredClone(task));
   }
@@ -193,12 +195,35 @@ export class TaskManager {
       throw new ConsoleError("TASK_ACTIVE", `活动任务不能删除，请先停止任务: ${taskId}`, 409);
     }
 
-    const cleanupCommand = resolveTaskDeletionCommand(this.config, task);
-    if (cleanupCommand) await this.runTaskDeletionCleanup(task, cleanupCommand);
-
-    this.tasks.delete(taskId);
+    const relatedTasks = this.retryLineage(taskId);
+    for (const related of relatedTasks) {
+      if (!TERMINAL_STATUSES.has(related.status)) {
+        throw new ConsoleError("TASK_ACTIVE", `重试链中存在活动任务，暂时不能删除: ${related.id}`, 409);
+      }
+    }
+    for (const related of relatedTasks) {
+      const cleanupCommand = resolveTaskDeletionCommand(this.config, related);
+      if (cleanupCommand) await this.runTaskDeletionCleanup(related, cleanupCommand);
+    }
+    for (const related of relatedTasks) this.tasks.delete(related.id);
     await this.persistNow();
     return structuredClone(task);
+  }
+
+  private retryLineage(taskId: string): TestTask[] {
+    const related = new Map<string, TestTask>();
+    const queue = [taskId];
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      if (related.has(currentId)) continue;
+      const current = this.tasks.get(currentId);
+      if (!current) continue;
+      related.set(current.id, current);
+      for (const candidate of this.tasks.values()) {
+        if (candidate.retryOf?.taskId === current.id) queue.push(candidate.id);
+      }
+    }
+    return [...related.values()];
   }
 
   async setRetained(taskId: string, retained: boolean): Promise<TestTask> {
@@ -245,6 +270,7 @@ export class TaskManager {
     createdAt: string,
     workspaceRoot?: string,
     repairJobId?: string,
+    retryOf?: TaskRetrySource,
   ): TestTask {
     const id = randomUUID();
     const compactTime = createdAt.replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -268,6 +294,7 @@ export class TaskManager {
       logs: [],
       ...(workspaceRoot ? { workspaceRoot } : {}),
       ...(repairJobId ? { repairJobId } : {}),
+      ...(retryOf ? { retryOf: structuredClone(retryOf) } : {}),
     };
   }
 

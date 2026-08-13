@@ -276,3 +276,102 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: 支持测试结果模块复测
+
+**Date**: 2026-08-13
+**Task**: 支持测试结果模块复测
+**Branch**: `main`
+
+### Summary
+
+为终态测试结果增加任意用例模块重新测试入口，复测生成独立任务并聚焦最新结果；旧任务通过运行历史和入库能力保留。更新 Runner/API/UI 契约、回归测试和规范，完整测试、类型检查、lint 与构建通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2ad30b9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 10: 修复单页面复测范围
+
+**Date**: 2026-08-13
+**Task**: 修复单页面复测范围
+**Branch**: `main`
+
+### Summary
+
+定位到单页面复测范围只写入 metadata、项目测试脚本未消费导致整套页面重跑。新增标准重测环境变量与模板变量，Runner 统一下发范围，Starter 示例按 targetPages 过滤并生成单页面 Result Bundle；全量 40 个测试文件、323 个测试、类型检查、lint 和构建通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `681973f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 11: 复测沿用原运行记录
+
+**Date**: 2026-08-13
+**Task**: 复测沿用原运行记录
+**Branch**: `main`
+
+### Summary
+
+运行监控按重试来源链只显示最新 attempt；复测仍使用独立 task/run 保存执行和产物，来源任务自动标记长期保留。补充归并与 API 入库回归测试，全量 40 个测试文件、324 个测试、类型检查、lint 和构建通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d88233a6b4be0d79dcbec36541a9054e7eea41e3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

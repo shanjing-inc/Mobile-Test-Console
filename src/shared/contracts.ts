@@ -263,6 +263,27 @@ export type TaskStatus =
 export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = ["queued", "preparing", "running"];
 export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = ["passed", "failed", "cancelled", "interrupted"];
 
+export interface TaskRetrySource {
+  taskId: string;
+  runId: string;
+  scope: "task" | "cases" | "failed-cases";
+  attempt: number;
+  caseRunIds?: string[];
+  caseIds?: string[];
+  targetPages?: string[];
+  /** 选中用例的页面启动信息，供项目 Runner 精确回放。 */
+  caseRuns?: TaskRetryCase[];
+}
+
+export interface TaskRetryCase {
+  caseRunId: string;
+  caseId: string;
+  targetPage: string;
+  launchPage: string;
+  routeParams?: Record<string, unknown>;
+  parameterProfileId?: string;
+}
+
 export interface TestTask {
   id: string;
   runId: string;
@@ -289,6 +310,8 @@ export interface TestTask {
   /** 修复验证任务运行在独立 worktree 时记录其代码根目录。 */
   workspaceRoot?: string;
   repairJobId?: string;
+  /** 手动重试任务的直接来源与请求范围。 */
+  retryOf?: TaskRetrySource;
   /** 用户显式保留的运行不会进入自动或手动清理候选。 */
   retained?: boolean;
 }
@@ -702,6 +725,14 @@ export interface StartTasksRequest {
 }
 
 export interface StartTasksResponse {
+  tasks: TestTask[];
+}
+
+export interface RetryTaskRequest {
+  caseRunIds?: string[];
+}
+
+export interface RetryTaskResponse {
   tasks: TestTask[];
 }
 

@@ -1,4 +1,4 @@
-import { CheckSquare2, LoaderCircle, Search, Square } from "lucide-react";
+import { CheckCheck, ListChecks, LoaderCircle, Search, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type {
   PageParameterPage,
@@ -7,18 +7,34 @@ import type {
 } from "../shared/contracts";
 import { ApiError, fetchPageParameters } from "./api";
 
+export interface PageSelectionItem {
+  id: string;
+  label: string;
+  secondary?: string;
+  searchText?: string;
+  badge?: string;
+  platforms?: string[];
+  metadata?: {
+    priority?: string;
+    tags?: string[];
+    scope?: string;
+  };
+}
+
 export function PageSelectionField({
   parameter,
   value,
   platforms,
   onChange,
   onMessage,
+  items,
 }: {
   parameter: PageSelectionParameterDefinition;
   value: string;
   platforms: Platform[];
   onChange: (value: string) => void;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
+  items?: PageSelectionItem[];
 }) {
   const [pages, setPages] = useState<PageParameterPage[]>([]);
   const [query, setQuery] = useState("");
@@ -50,31 +66,48 @@ export function PageSelectionField({
     || !page.platforms?.length
     || platforms.every(platform => page.platforms?.includes(platform))
   )), [pages, platforms]);
+  const selectionItems = useMemo<PageSelectionItem[]>(() => items ?? supportedPages.map(page => ({
+    id: page.pageId,
+    label: page.label,
+    secondary: `${page.pageId} · ${page.bundle || "未声明 Bundle"}`,
+    searchText: `${page.pageId} ${page.label} ${page.bundle}`,
+    badge: page.priority || "未分级",
+    platforms: page.platforms,
+    metadata: { priority: page.priority, tags: page.tags, scope: page.testScope },
+  })), [items, supportedPages]);
   const selectedIds = useMemo(
-    () => resolveSelectedPageIds(parameter, value, supportedPages),
-    [parameter, supportedPages, value],
+    () => resolveSelectedIds(parameter, value, selectionItems),
+    [parameter, selectionItems, value],
   );
   const visiblePages = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return supportedPages.filter(page => !normalized || [page.pageId, page.label, page.bundle]
-      .some(item => item.toLowerCase().includes(normalized)));
-  }, [query, supportedPages]);
-  const visibleIds = visiblePages.map(page => page.pageId);
+    return selectionItems.filter(item => !normalized || `${item.id} ${item.label} ${item.secondary || ""} ${item.searchText || ""}`.toLowerCase().includes(normalized));
+  }, [query, selectionItems]);
+  const visibleIds = visiblePages.map(item => item.id);
   const visibleSelected = visibleIds.filter(pageId => selectedIds.has(pageId)).length;
 
   const setExplicitSelection = (next: Set<string>) => {
-    const ordered = supportedPages.map(page => page.pageId).filter(pageId => next.has(pageId));
+    const ordered = selectionItems.map(item => item.id).filter(id => next.has(id));
     onChange(ordered.join(","));
   };
+
+  const toggleVisible = () => {
+    const next = new Set(selectedIds);
+    if (visibleSelected === visibleIds.length) visibleIds.forEach(pageId => next.delete(pageId));
+    else visibleIds.forEach(pageId => next.add(pageId));
+    setExplicitSelection(next);
+  };
+
+  const clearSelection = () => setExplicitSelection(new Set());
 
   return <div className="page-selection-field">
     <div className="page-selection-heading">
       <div><strong>{parameter.label}</strong><small>从项目配置和页面目录生成测试范围</small></div>
-      <span>已选 {selectedIds.size} / {supportedPages.length}</span>
+      <span>已选 {selectedIds.size} / {selectionItems.length}</span>
     </div>
     <div className="page-selection-presets" aria-label="页面测试预设">
       {parameter.presets.map(preset => {
-        const matchedCount = supportedPages.filter(page => matchesPagePreset(page, preset.filter)).length;
+        const matchedCount = selectionItems.filter(item => matchesSelectionPreset(item, preset.filter)).length;
         return <button
           key={preset.value}
           type="button"
@@ -87,35 +120,32 @@ export function PageSelectionField({
     </div>
     <div className="page-selection-toolbar">
       <label><Search size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索页面、Bundle" /></label>
-      <button
-        type="button"
-        onClick={() => {
-          const next = new Set(selectedIds);
-          if (visibleSelected === visibleIds.length) visibleIds.forEach(pageId => next.delete(pageId));
-          else visibleIds.forEach(pageId => next.add(pageId));
-          setExplicitSelection(next);
-        }}
-        disabled={visibleIds.length === 0}
-      >{visibleSelected === visibleIds.length && visibleIds.length > 0 ? <CheckSquare2 size={14} /> : <Square size={14} />}{visibleSelected === visibleIds.length && visibleIds.length > 0 ? "取消当前" : "选择当前"}</button>
+      <div className="page-selection-actions">
+        <button type="button" onClick={toggleVisible} disabled={visibleIds.length === 0} title="切换当前筛选结果的选择状态"><CheckCheck size={14} />{visibleSelected === visibleIds.length ? "取消当前" : "全选当前"}</button>
+        <button type="button" onClick={clearSelection} disabled={selectedIds.size === 0} title="清空所有页面选择"><X size={14} />清空</button>
+      </div>
+    </div>
+    <div className="page-selection-summary">
+      <span><ListChecks size={14} />当前筛选 {visibleIds.length} 项，已选 {visibleSelected} 项</span>
     </div>
     <div className="page-selection-list">
       {loading ? <div className="page-selection-empty"><LoaderCircle className="spin" size={16} />读取页面目录</div> : null}
       {!loading && visiblePages.length === 0 ? <div className="page-selection-empty">当前筛选没有可测试页面</div> : null}
       {visiblePages.map(page => {
-        const checked = selectedIds.has(page.pageId);
-        return <label className={checked ? "page-selection-row selected" : "page-selection-row"} key={page.pageId}>
+        const checked = selectedIds.has(page.id);
+        return <label className={checked ? "page-selection-row selected" : "page-selection-row"} key={page.id}>
           <input
             type="checkbox"
             checked={checked}
             onChange={() => {
               const next = new Set(selectedIds);
-              if (checked) next.delete(page.pageId);
-              else next.add(page.pageId);
+              if (checked) next.delete(page.id);
+              else next.add(page.id);
               setExplicitSelection(next);
             }}
           />
-          <span><strong>{page.label}</strong><small>{page.pageId} · {page.bundle || "未声明 Bundle"}</small></span>
-          <span className="page-selection-meta">{page.priority || "未分级"}</span>
+          <span><strong>{page.label}</strong><small>{page.secondary || page.id}</small></span>
+          <span className="page-selection-meta">{page.badge || ""}</span>
         </label>;
       })}
     </div>
@@ -128,10 +158,14 @@ export function resolveSelectedPageIds(
   value: string,
   pages: PageParameterPage[],
 ): Set<string> {
+  return resolveSelectedIds(parameter, value, pages.map(page => ({ id: page.pageId, label: page.label, metadata: { priority: page.priority, tags: page.tags, scope: page.testScope } })));
+}
+
+export function resolveSelectedIds(parameter: PageSelectionParameterDefinition, value: string, items: PageSelectionItem[]): Set<string> {
   const preset = parameter.presets.find(item => item.value === value);
-  if (preset) return new Set(pages.filter(page => matchesPagePreset(page, preset.filter)).map(page => page.pageId));
-  const available = new Set(pages.map(page => page.pageId));
-  return new Set(value.split(",").map(item => item.trim()).filter(pageId => available.has(pageId)));
+  if (preset) return new Set(items.filter(item => matchesSelectionPreset(item, preset.filter)).map(item => item.id));
+  const available = new Set(items.map(item => item.id));
+  return new Set(value.split(",").map(item => item.trim()).filter(id => available.has(id)));
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -142,5 +176,12 @@ export function matchesPagePreset(
   if (filter.priorities?.length && !filter.priorities.includes(page.priority ?? "")) return false;
   if (filter.tags?.length && !filter.tags.some(tag => page.tags?.includes(tag))) return false;
   if (filter.testScopes?.length && !filter.testScopes.includes(page.testScope ?? "")) return false;
+  return true;
+}
+
+export function matchesSelectionPreset(item: PageSelectionItem, filter: PageSelectionParameterDefinition["presets"][number]["filter"]): boolean {
+  if (filter.priorities?.length && !filter.priorities.includes(item.metadata?.priority ?? "")) return false;
+  if (filter.tags?.length && !filter.tags.some(tag => item.metadata?.tags?.includes(tag))) return false;
+  if (filter.testScopes?.length && !filter.testScopes.includes(item.metadata?.scope ?? "")) return false;
   return true;
 }

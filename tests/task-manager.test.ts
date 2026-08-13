@@ -97,6 +97,52 @@ describe("任务管理器", () => {
     expect(fallbackShutdown).not.toHaveBeenCalled();
   });
 
+  it("持久化手动重试来源并传入 Runner metadata", async () => {
+    const dir = await createTempDir("mtc-task-retry-");
+    const plans: RunPlan[] = [];
+    const runner: InProcessRunner = {
+      id: "retry-runner",
+      async run(plan) {
+        plans.push(plan);
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), runner, { resolve: () => runner });
+    await manager.initialize();
+    const retryOf = {
+      taskId: "source-task",
+      runId: "source-run",
+      scope: "failed-cases" as const,
+      attempt: 2,
+      caseRunIds: ["case-run-one"],
+      caseIds: ["case-one"],
+      targetPages: ["pages/demo/index"],
+    };
+
+    const [created] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      retryOf,
+    );
+    await waitForStatus(manager, created.id, "passed");
+
+    expect(created.retryOf).toEqual(retryOf);
+    expect(plans[0].metadata).toMatchObject({ taskId: created.id, retry: retryOf });
+    expect(plans[0].command?.env).toMatchObject({
+      MTC_RETRY_CASE_IDS: "case-one",
+      MTC_RETRY_TARGET_PAGES: "pages/demo/index",
+    });
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as {
+      tasks: Array<{ retryOf?: typeof retryOf }>;
+    };
+    expect(stored.tasks[0].retryOf).toEqual(retryOf);
+    await manager.shutdown();
+  });
+
   it("自定义 Runner 可以在没有 legacy 命令时直接接收运行计划", async () => {
     const dir = await createTempDir("mtc-task-plugin-only-");
     const config = createConfig(dir);
@@ -468,6 +514,57 @@ describe("任务管理器", () => {
     await restored.initialize();
     expect(restored.list()).toEqual([]);
     await restored.shutdown();
+    await manager.shutdown();
+  });
+
+  it("删除来源任务时一次清理整条重试链", async () => {
+    const dir = await createTempDir("mtc-task-delete-retries-");
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir));
+    await manager.initialize();
+    const [source] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, source.id, "passed");
+    const [retry] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device], undefined, undefined, undefined, [],
+      { taskId: source.id, runId: source.runId, scope: "cases", attempt: 1, caseRunIds: ["case-one"] },
+    );
+    await waitForStatus(manager, retry.id, "passed");
+    const [retryAgain] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device], undefined, undefined, undefined, [],
+      { taskId: retry.id, runId: retry.runId, scope: "cases", attempt: 2, caseRunIds: ["case-one"] },
+    );
+    await waitForStatus(manager, retryAgain.id, "passed");
+
+    await manager.delete(source.id);
+
+    expect(manager.list()).toEqual([]);
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as { tasks: unknown[] };
+    expect(stored.tasks).toEqual([]);
+    await manager.shutdown();
+  });
+
+  it("活动重试期间锁定来源测试组删除", async () => {
+    const dir = await createTempDir("mtc-task-delete-active-retry-");
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir));
+    await manager.initialize();
+    const [source] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, source.id, "passed");
+    const [retry] = await manager.start(
+      { testId: "long", deviceKeys: [device.key], parameters: {} },
+      [device], undefined, undefined, undefined, [],
+      { taskId: source.id, runId: source.runId, scope: "cases", attempt: 1, caseRunIds: ["case-one"] },
+    );
+    await waitForStatus(manager, retry.id, "running");
+
+    await expect(manager.delete(source.id)).rejects.toMatchObject({
+      code: "TASK_ACTIVE",
+      statusCode: 409,
+    } satisfies Partial<ConsoleError>);
+    expect(manager.list().map(task => task.id)).toEqual(expect.arrayContaining([source.id, retry.id]));
+
+    await manager.stop(retry.id);
+    await waitForStatus(manager, retry.id, "cancelled");
     await manager.shutdown();
   });
 

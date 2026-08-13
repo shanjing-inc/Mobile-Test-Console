@@ -32,6 +32,8 @@ import type {
   RepairJob,
   RepairJobPreviewResponse,
   RepairJobsResponse,
+  RetryTaskRequest,
+  RetryTaskResponse,
   SavePageParameterProfileRequest,
   StartDeviceResponse,
   InstallDevicePreparationResponse,
@@ -267,6 +269,13 @@ export async function waitForProjectActivation(
 
 export function startTasks(body: StartTasksRequest): Promise<StartTasksResponse> {
   return request<StartTasksResponse>("/api/tasks", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function retryTask(taskId: string, body: RetryTaskRequest = {}): Promise<RetryTaskResponse> {
+  return request<RetryTaskResponse>(`/api/tasks/${encodeURIComponent(taskId)}/retry`, {
     method: "POST",
     body: JSON.stringify(body),
   });

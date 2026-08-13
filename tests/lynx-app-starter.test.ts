@@ -137,4 +137,35 @@ describe("Lynx App Starter", () => {
     expect(applied.bytesFreed).toBeGreaterThan(0);
     await expect(fs.stat(runDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("单页面复测只生成目标页面 Result Bundle", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-lynx-starter-retry-"));
+    tempDirs.push(root);
+    await fs.cp(starterRoot, root, { recursive: true });
+    const config = await loadProjectConfig(path.join(root, "mobile-test.config.cjs"));
+    const bundles = new ResultBundleStore(config.stateDir);
+    const runtime = await loadRunnerRuntime(config, [], bundles);
+    const plan: RunPlan = {
+      runId: "starter-retry-run",
+      projectId: config.project.id,
+      testId: "lynx-smoke",
+      runnerId: "lynx-app-starter-runner",
+      device: {
+        key: "android:pixel-8", id: "pixel-8", name: "Pixel 8", platform: "android", type: "physical",
+        connectionState: "available", controlState: "ready", controlReason: "", osVersion: "15", detail: "",
+      },
+      command: {
+        executable: process.execPath,
+        args: ["qa/lynx-suite.cjs", "--platform", "android", "--device", "pixel-8", "--run-id", "starter-retry-run", "--environment", "qa", "--outcome", "passed"],
+        cwd: root,
+        env: { MTC_RETRY_TARGET_PAGES: "detail.bundle" },
+      },
+      metadata: { parameters: { environment: "qa", outcome: "passed" }, retry: { taskId: "source", runId: "source-run", scope: "cases", attempt: 1, targetPages: ["detail.bundle"] } },
+    };
+    const result = await runtime.resolver.resolve(plan).run(plan, { signal: new AbortController().signal, emit: () => undefined });
+    expect(result.status).toBe("passed");
+    const bundle = await bundles.get("starter-retry-run");
+    expect(bundle?.cases).toHaveLength(1);
+    expect(bundle?.cases[0]?.targetPage).toBe("detail.bundle");
+  });
 });

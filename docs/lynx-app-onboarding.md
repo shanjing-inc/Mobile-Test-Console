@@ -112,6 +112,7 @@ commands: {
 - 接收终止信号，结束子进程并清理临时文件。
 - 将每次运行的原始结果写入 `qa/artifacts/<runId>/`。
 - 将日志、截图、网络文件和事件文件放在项目产物目录内。
+- 单页面复测时读取 `MTC_RETRY_TARGET_PAGES`、`MTC_RETRY_CASE_IDS` 和 `MTC_RETRY_CASE_RUN_IDS`，只执行对应页面；变量为空时执行完整测试集合。
 
 ### Result Bundle
 

@@ -121,6 +121,14 @@ Keep the preview link beside the detail button so the markup does not nest inter
 - Hiding the gallery changes `aria-expanded` to `false` and removes all `<img>` nodes.
 - Entry previews sit beside the entry copy and make the preview image define the cell height. The image is rendered directly without a background block at `420px` high on desktop and `330px` high at a `390px` viewport. The disclosure chevron stays at the far-right edge and the page has no horizontal overflow.
 
+### Result retry actions
+
+Terminal results expose re-test actions at the scope where the evidence is visible. Every result module retries its own `caseRunId`; the overview toolbar retries every failed `caseRunId`. Module actions use a module-level pending key and disable repeated submission for the active request. The source task remains focused while the retry runs.
+
+The browser submits case-run identifiers only. Result parsing, failed-status validation, and `caseId` / target-page projection remain server-owned so the UI does not duplicate the Result Bundle contract.
+
+The run monitor collapses a retry chain to its root source row. The execution layer keeps each retry as an independent task/run for cancellation, artifacts, and audit. While a descendant retry is active, the source row and detail header display `正在重试`; retry, deletion, and retention controls remain disabled. Terminal retry results merge into the source detail in creation order, with passed items replacing their matching source items and unsuccessful items preserving the previous evidence. Deleting the source row after all retries finish removes the complete retry lineage.
+
 ---
 
 ## Accessibility

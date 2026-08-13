@@ -299,7 +299,95 @@ DELETE /api/tasks/:taskId
 - Assert old state without `target` migrates to an App target.
 - Assert template resolution and UI labels prefer `target` over the compatibility device.
 
+## Scenario: Manual re-test from terminal results
+
+### 1. Scope / Trigger
+
+- Trigger: a user re-tests a terminal task or selects one or more case runs from the result detail.
+- MTC owns retry validation, task creation, scheduling, persistence, and Runner metadata.
+- The integrated project consumes the optional retry metadata and maps it to project-specific filters.
+
+### 2. Signatures
+
+```ts
+interface TaskRetrySource {
+  taskId: string;
+  runId: string;
+  scope: "task" | "cases" | "failed-cases";
+  attempt: number;
+  caseRunIds?: string[];
+  caseIds?: string[];
+  targetPages?: string[];
+}
+
+interface TestTask {
+  retryOf?: TaskRetrySource;
+}
+
+POST /api/tasks/:taskId/retry
+{ "caseRunIds": ["case-run-id"] }
+```
+
+### 3. Contracts
+
+- A retry creates a new task and run while preserving the source task and result.
+- The new task reuses the source test, parameters, and frozen run target.
+- The source task must be terminal.
+- An explicit case range contains unique `caseRunId` values from the source `TaskResult`, including passed cases.
+- MTC projects the selected runs into stable `caseRunIds`, `caseIds`, and `targetPages` fields.
+- `TestTask.retryOf` survives persistence and the Runner plan exposes the same value as `metadata.retry`.
+- Runner commands receive the optional retry context as environment variables: `MTC_RETRY_SCOPE`, `MTC_RETRY_ATTEMPT`, `MTC_RETRY_CASE_RUN_IDS`, `MTC_RETRY_CASE_IDS`, `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_SOURCE_TASK_ID`, and `MTC_RETRY_SOURCE_RUN_ID`. Command templates may use `{{retry.scope}}`, `{{retry.attempt}}`, `{{retry.caseRunIds}}`, `{{retry.caseIds}}`, `{{retry.targetPages}}`, `{{retry.sourceTaskId}}`, and `{{retry.sourceRunId}}`.
+- A project Runner must apply `MTC_RETRY_TARGET_PAGES` or `MTC_RETRY_CASE_IDS` to its page/case selector. MTC cannot infer project-specific navigation from a generic command.
+- Retry execution passes through storage capacity, device preparation, account profile, platform support, and target concurrency gates.
+- A Runner or project adapter may ignore `metadata.retry`; this produces a complete execution of the original test while retaining the requested range for audit.
+- The run monitor collapses retry tasks into their root source task. While any descendant retry has an active status, the root row and detail header expose `正在重试`, all retry actions remain disabled, and run-group mutations such as deletion or retention changes remain locked.
+- `TaskManager.delete(rootTaskId)` traverses the retry lineage. It returns `TASK_ACTIVE` while any descendant is active; after every descendant reaches a terminal state, one delete removes the complete lineage and its project-owned artifacts.
+- Terminal retries merge into the root result in creation order. Each retry replaces only matching runs whose new status is `passed`; failed, cancelled, interrupted, malformed, or missing retry results preserve the existing item and its evidence. A batch retry may therefore update its passed items while retaining the previous content of failed items.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Unknown task | `TASK_UNKNOWN`, HTTP 404 |
+| Active source task | `TASK_NOT_RETRYABLE`, HTTP 409 |
+| Non-terminal source task | `TASK_NOT_RETRYABLE`, HTTP 409 |
+| Unknown case run | `RETRY_CASE_UNKNOWN`, HTTP 404 |
+| Duplicate case run IDs | `RETRY_CASE_DUPLICATE`, HTTP 400 |
+| Busy frozen target | `TARGET_BUSY`, HTTP 409 |
+| Delete source while a descendant retry is active | `TASK_ACTIVE`, HTTP 409; preserve the complete retry lineage |
+| Retry item status differs from `passed`, or retry analysis is unavailable | Preserve the current source item and append a warning |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a passed page module is re-tested, the source row shows `正在重试`, and only that result item is replaced after completion.
+- Good: retry A passes and retry B fails; the final source result contains the new A item and the original B item.
+- Base: a terminal retry restores deletion and retention controls on the source row.
+- Bad: the source row enables deletion while an active retry still belongs to its lineage.
+
+### 6. Tests Required
+
+- Cover task persistence and Runner metadata round-trip.
+- Cover unknown and active tasks, passed and unknown cases, duplicate case IDs, terminal-state validation, and busy targets.
+- Cover App device and mini-program target reconstruction from the source task.
+- Cover API request encoding and result-page actions for all failed cases and one arbitrary case.
+- Cover active descendant retries across direct and multi-attempt lineages. Assert the root ID is identified, `正在重试` is rendered, deletion is disabled, and controls recover at terminal status.
+- Cover `TaskManager.delete(rootTaskId)` returning `TASK_ACTIVE` during retry and removing the full lineage after completion.
+- Cover sequential sibling and nested retries, partial batch success, failed retry preservation, stable source `caseRunId`, and unavailable retry analysis.
+
 ### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+if (run.status !== "failed") throw new Error("only failed cases can retry");
+```
+
+#### Correct
+
+```ts
+if (!TERMINAL_TASK_STATUSES.includes(source.status)) throw new ConsoleError("TASK_NOT_RETRYABLE", "终态任务才支持重新测试", 409);
+// caseRunId may refer to a passed or failed module; the latest run becomes the focused result.
+```
 
 #### Wrong
 
@@ -311,6 +399,19 @@ const runtime = task.device.connectorId;
 
 ```ts
 const runtime = task.target?.runtime;
+```
+
+#### Wrong
+
+```tsx
+<button onClick={() => deleteTask(source.id)}>删除</button>
+```
+
+#### Correct
+
+```tsx
+const retrying = activeRetryRootTaskIds(snapshot.tasks).has(source.id);
+<button disabled={retrying} title={retrying ? "正在重试，完成后可删除" : "删除此运行记录"}>删除</button>
 ```
 
 ## Scenario: Project Provider and Runner ownership
@@ -515,6 +616,14 @@ const root = config.taskResults
 ```
 
 ## Design Decisions
+
+### Single-case retry execution scope
+
+- A single-case retry creates a new task/run/attempt while keeping the source task available for retention and audit.
+- `RunPlan.metadata.retry` is the shared retry contract. Runner and Project Provider preparation commands and the final test command all receive the corresponding `MTC_RETRY_*` environment variables.
+- Integrated test scripts consume `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_CASE_IDS`, and `MTC_RETRY_CASE_RUN_IDS` to limit execution and Result Bundle creation to the selected cases/pages.
+- Each selected result item also persists `caseRuns` with `caseRunId`, `caseId`, `targetPage`, `launchPage`, route parameters, and parameter profile. Retry scripts use this record to launch the original page with the original invocation data and emit a result for that item.
+- The final test command must receive the retry environment after Provider preparation; forwarding it only to preparation commands causes a retry to execute the full page set.
 
 ### Project-owned domain semantics
 

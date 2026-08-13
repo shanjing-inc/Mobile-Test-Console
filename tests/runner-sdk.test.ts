@@ -7,6 +7,7 @@ import {
   InProcessConnectorRegistry,
   InProcessRunnerRegistry,
   LEGACY_COMMAND_RUNNER_ID,
+  retryEnvironmentOfPlan,
   RUNNER_PLUGIN_API_VERSION,
   type InProcessRunner,
   validateCapabilityManifest,
@@ -30,6 +31,26 @@ import {
 import { validateProjectProviderManifest } from "../src/runner/project-provider.js";
 
 describe("Runner SDK", () => {
+  it("将单页面复测范围转换为标准命令环境变量", () => {
+    expect(retryEnvironmentOfPlan({ metadata: { retry: {
+      taskId: "source-task",
+      runId: "source-run",
+      scope: "cases",
+      attempt: 1,
+      caseRunIds: ["case-run"],
+      caseIds: ["case-one"],
+      targetPages: ["pages/home"],
+    } } })).toEqual({
+      MTC_RETRY_SCOPE: "cases",
+      MTC_RETRY_ATTEMPT: "1",
+      MTC_RETRY_CASE_RUN_IDS: "case-run",
+      MTC_RETRY_CASE_IDS: "case-one",
+      MTC_RETRY_TARGET_PAGES: "pages/home",
+      MTC_RETRY_CASES: "[]",
+      MTC_RETRY_SOURCE_TASK_ID: "source-task",
+      MTC_RETRY_SOURCE_RUN_ID: "source-run",
+    });
+  });
   it("按 RunPlan.runnerId 从进程内 Registry 选择 Runner", () => {
     const legacyRunner = fakeRunner(LEGACY_COMMAND_RUNNER_ID);
     const customRunner = fakeRunner("custom-runner");

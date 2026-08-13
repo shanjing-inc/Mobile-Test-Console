@@ -22,6 +22,11 @@ const pages: PageParameterPage[] = [
 ];
 
 describe("页面测试选择", () => {
+  it("显式选择值只包含目录中当前可用的页面 ID", () => {
+    expect([...resolveSelectedPageIds(parameter, "pageOrders,pageHome", pages)]).toEqual(["pageOrders", "pageHome"]);
+    expect([...resolveSelectedPageIds(parameter, "", pages)]).toEqual([]);
+  });
+
   it("根据项目提供的页面元数据应用预设", () => {
     expect([...resolveSelectedPageIds(parameter, "smoke", pages)]).toEqual(["pageHome"]);
     expect([...resolveSelectedPageIds(parameter, "p0", pages)]).toEqual(["pageHome", "internalDebug"]);

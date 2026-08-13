@@ -47,6 +47,46 @@ describe("项目 Provider 命令 Runner", () => {
     expect(messages).toEqual(expect.arrayContaining(["项目能力准备开始", "项目能力准备完成"]));
   });
 
+  it("将单页面复测范围传给最终测试命令并保留原始重试元数据", async () => {
+    let collectedPlan: RunPlan | undefined;
+    const provider = fakeProvider(async () => ({ commands: [] }));
+    provider.manifest.capabilities.push({ id: "result.analysis", version: 1 });
+    provider.collectResult = request => {
+      collectedPlan = request.plan;
+      return { bundle: { runId: request.plan.runId, status: request.result.status } };
+    };
+    const messages: string[] = [];
+    const runner = new ProjectProviderCommandRunner("project-runner", provider, ["app.build"], {
+      async ingest() {
+        return { resultUri: "result-bundle://runs/run-1", status: "created", fingerprint: "digest" };
+      },
+    });
+
+    const result = await runner.run(createPlan({
+      executable: process.execPath,
+      args: ["-e", "console.log(process.env.MTC_RETRY_TARGET_PAGES)"],
+    }, {
+      retry: {
+        taskId: "source-task",
+        runId: "source-run",
+        scope: "cases",
+        attempt: 1,
+        caseRunIds: ["case-run"],
+        caseIds: ["case-one"],
+        targetPages: ["pages/detail"],
+      },
+    }), {
+      signal: new AbortController().signal,
+      emit: event => { if (event.message) messages.push(event.message); },
+    });
+
+    expect(result.status).toBe("passed");
+    expect(messages).toContain("pages/detail");
+    expect(collectedPlan?.metadata).toMatchObject({
+      retry: { targetPages: ["pages/detail"], caseIds: ["case-one"] },
+    });
+  });
+
   it("账号前置命令失败时停止任务命令", async () => {
     const provider = fakeProvider(async () => ({
       commands: [
@@ -253,7 +293,7 @@ function fakeProvider(
   };
 }
 
-function createPlan(command?: RunPlan["command"]): RunPlan {
+function createPlan(command?: RunPlan["command"], metadata?: RunPlan["metadata"]): RunPlan {
   return {
     runId: "run-1",
     projectId: "demo",
@@ -272,6 +312,6 @@ function createPlan(command?: RunPlan["command"]): RunPlan {
       detail: "",
     },
     command,
-    metadata: { parameters: { suite: "smoke" } },
+    metadata: { parameters: { suite: "smoke" }, ...metadata },
   };
 }

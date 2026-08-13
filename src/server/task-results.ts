@@ -163,7 +163,38 @@ export class TaskResultService {
 
   async load(taskId: string, options: { refresh?: boolean } = {}): Promise<TaskResult> {
     const task = this.requireTerminalTask(taskId);
-    const fingerprint = `${task.runId}:${task.finishedAt}:${task.status}:${task.resultUri ?? ""}`;
+    const retryTasks = task.retryOf ? [] : terminalRetryTasks(this.tasks.list(), task.id);
+    if (retryTasks.length === 0) return this.loadSingle(task, options);
+
+    const sourceFingerprint = taskResultFingerprint(task);
+    const mergedFingerprint = `${sourceFingerprint}:retries:${retryTasks.map(retry => `${retry.runId}:${retry.finishedAt}:${retry.status}:${retry.resultUri ?? ""}`).join("|")}`;
+    const cached = this.cache.get(task.id);
+    if (!options.refresh && cached?.fingerprint === mergedFingerprint) return structuredClone(cached.result);
+    if (cached?.fingerprint.includes(":retries:")) this.cache.delete(task.id);
+
+    let merged = await this.loadSingle(task, options);
+    const sourceCache = this.cache.get(task.id);
+    const artifacts = new Map(sourceCache?.artifacts.entries() ?? []);
+    for (const retryTask of retryTasks) {
+      try {
+        const retry = await this.loadSingle(retryTask, options);
+        merged = mergeRetryTaskResult(task, merged, retry, retryTask.retryOf!);
+        for (const [artifactId, artifact] of this.cache.get(retryTask.id)?.artifacts.entries() ?? []) {
+          artifacts.set(artifactId, artifact);
+        }
+      } catch {
+        merged = {
+          ...merged,
+          warnings: [...merged.warnings, `第 ${retryTask.retryOf!.attempt} 次重试结果不可用，保留原结果`],
+        };
+      }
+    }
+    if (sourceCache) this.cache.set(task.id, { fingerprint: mergedFingerprint, result: merged, artifacts });
+    return structuredClone(merged);
+  }
+
+  private async loadSingle(task: TestTask, options: { refresh?: boolean } = {}): Promise<TaskResult> {
+    const fingerprint = taskResultFingerprint(task);
     const cached = this.cache.get(task.id);
     if (!options.refresh && cached?.fingerprint === fingerprint) return structuredClone(cached.result);
 
@@ -400,6 +431,78 @@ export class TaskResultService {
       artifacts,
     };
   }
+}
+
+export function mergeRetryTaskResult(
+  sourceTask: TestTask,
+  source: TaskResult,
+  retry: TaskResult,
+  retryOf: NonNullable<TestTask["retryOf"]>,
+): TaskResult {
+  const passedRetryRuns = retry.runs.filter(run => run.status === "passed");
+  const replacements = matchPassedRetryRuns(source.runs, passedRetryRuns, retryOf);
+  if (replacements.size === 0) {
+    return {
+      ...source,
+      warnings: [...source.warnings, ...retry.warnings, `第 ${retryOf.attempt} 次重试未通过，保留原结果`],
+    };
+  }
+  const runs = source.runs.map(run => replacements.get(run.caseRunId) ?? run);
+  return {
+    ...source,
+    generatedAt: retry.generatedAt,
+    taskId: sourceTask.id,
+    runId: sourceTask.runId,
+    total: runs.length,
+    caseRunCount: runs.length,
+    passed: runs.filter(run => run.status === "passed").length,
+    failed: runs.filter(run => run.status !== "passed").length,
+    warnings: [...source.warnings, ...retry.warnings, `已合并第 ${retryOf.attempt} 次重试中通过的 ${replacements.size} 个结果`],
+    preconditions: source.preconditions,
+    runs,
+  };
+}
+
+function matchPassedRetryRuns(
+  sourceRuns: TaskResultRun[],
+  passedRetryRuns: TaskResultRun[],
+  retryOf: NonNullable<TestTask["retryOf"]>,
+): Map<string, TaskResultRun> {
+  const selectedIds = new Set(retryOf.caseRunIds ?? sourceRuns.map(run => run.caseRunId));
+  const candidates = sourceRuns.filter(run => selectedIds.has(run.caseRunId));
+  const replacements = new Map<string, TaskResultRun>();
+  const usedSourceIds = new Set<string>();
+  for (const retryRun of passedRetryRuns) {
+    const sourceRun = candidates.find(run => !usedSourceIds.has(run.caseRunId) && run.caseRunId === retryRun.caseRunId)
+      ?? candidates.find(run => !usedSourceIds.has(run.caseRunId) && run.caseId && run.caseId === retryRun.caseId)
+      ?? candidates.find(run => !usedSourceIds.has(run.caseRunId) && run.targetPage && run.targetPage === retryRun.targetPage);
+    if (!sourceRun) continue;
+    usedSourceIds.add(sourceRun.caseRunId);
+    replacements.set(sourceRun.caseRunId, { ...retryRun, caseRunId: sourceRun.caseRunId });
+  }
+  return replacements;
+}
+
+// 来源任务的全部终态重试按创建顺序累计合并，兄弟重试和多层重试都保留先前成功结果。
+export function terminalRetryTasks(tasks: TestTask[], sourceTaskId: string): TestTask[] {
+  const descendants: TestTask[] = [];
+  const queue = [sourceTaskId];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    if (visited.has(currentId)) continue;
+    visited.add(currentId);
+    for (const task of tasks) {
+      if (task.retryOf?.taskId !== currentId) continue;
+      queue.push(task.id);
+      if (!ACTIVE_STATUSES.has(task.status)) descendants.push(task);
+    }
+  }
+  return descendants.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function taskResultFingerprint(task: TestTask): string {
+  return `${task.runId}:${task.finishedAt}:${task.status}:${task.resultUri ?? ""}`;
 }
 
 function bundleArtifactReference(

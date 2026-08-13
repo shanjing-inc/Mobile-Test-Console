@@ -3,7 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget } from "../shared/contracts.js";
+import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource } from "../shared/contracts.js";
 import { toPublicTests, validateParameters, type LoadedProjectConfig } from "./config.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
@@ -33,6 +33,10 @@ const startRequestSchema = z.object({
 }).refine(value => !value.deviceKeys?.length || !value.targetKeys?.length, {
   message: "设备和运行目标只能选择其中一种",
 });
+
+const retryTaskRequestSchema = z.object({
+  caseRunIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+}).strict();
 
 const accountProfileProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
 
@@ -537,47 +541,67 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         parsed.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; "),
       );
     }
-    await options.artifacts?.assertCanStart();
-    const discovery = await options.devices.discover();
-    const test = options.config.tests.find(item => item.id === parsed.data.testId);
-    if (test) {
-      const parameters = validateParameters(test, parsed.data.parameters ?? {});
-      const selectedDevices = discovery.devices.filter(device => parsed.data.deviceKeys?.includes(device.key));
-      const blockedPreparation = selectedDevices.flatMap(device => (device.preparations ?? [])
-        .filter(item => item.blocksTests && item.status !== "ready")
-        .map(item => ({ device, preparation: item })))[0];
-      if (blockedPreparation) {
-        throw new ConsoleError(
-          "DEVICE_PREPARATION_REQUIRED",
-          `${blockedPreparation.device.name} 需要先完成${blockedPreparation.preparation.label}：${blockedPreparation.preparation.detail}`,
-          409,
-        );
-      }
-      const environment = parameters.environment || "qa";
-      if ((parsed.data.deviceKeys?.length ?? 0) > 0) for (const parameter of test.parameters) {
-        if (parameter.type !== "account-profile") continue;
-        const selection = parameters[parameter.id];
-        if (selection === "current-session") continue;
-        const separator = selection.lastIndexOf(":");
-        const profileId = selection.slice(0, separator);
-        const provider = selection.slice(separator + 1) as AccountProfileProvider;
-        await accountProfiles.validateTaskSelection(
-          profileId,
-          provider,
-          parameter.capability,
-          environment,
-          selectedDevices,
-        );
-      }
+    return { tasks: await startTaskRequest(options, accountProfiles, parsed.data, undefined, undefined, pageParameters) };
+  });
+
+  app.post<{ Params: { taskId: string }; Body: RetryTaskRequest }>("/api/tasks/:taskId/retry", async request => {
+    const parsed = retryTaskRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const source = options.tasks.get(request.params.taskId);
+    if (!source) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${request.params.taskId}`, 404);
+    if (!TERMINAL_TASK_STATUSES.includes(source.status)) {
+      throw new ConsoleError("TASK_NOT_RETRYABLE", "终态任务才支持重新测试", 409);
     }
+
+    const requestedCaseRunIds = parsed.data.caseRunIds;
+    const retryOf: TaskRetrySource = {
+      taskId: source.id,
+      runId: source.runId,
+      scope: requestedCaseRunIds ? "cases" : "task",
+      attempt: (source.retryOf?.attempt ?? 0) + 1,
+    };
+    if (requestedCaseRunIds) {
+      const uniqueCaseRunIds = [...new Set(requestedCaseRunIds)];
+      if (uniqueCaseRunIds.length !== requestedCaseRunIds.length) {
+        throw new ConsoleError("RETRY_CASE_DUPLICATE", "重试范围包含重复用例");
+      }
+      const result = await taskResults.load(source.id);
+      const runsById = new Map(result.runs.map(run => [run.caseRunId, run]));
+      const selectedRuns = uniqueCaseRunIds.map(caseRunId => {
+        const run = runsById.get(caseRunId);
+        if (!run) throw new ConsoleError("RETRY_CASE_UNKNOWN", `测试结果中不存在用例: ${caseRunId}`, 404);
+        return run;
+      });
+      retryOf.caseRunIds = uniqueCaseRunIds;
+      retryOf.caseIds = [...new Set(selectedRuns.map(run => run.caseId).filter(Boolean))];
+      retryOf.targetPages = [...new Set(selectedRuns.map(run => run.targetPage).filter(Boolean))];
+      retryOf.caseRuns = selectedRuns.map(run => ({
+        caseRunId: run.caseRunId,
+        caseId: run.caseId,
+        targetPage: run.targetPage,
+        launchPage: run.launchPage,
+        ...(run.routeParams ? { routeParams: structuredClone(run.routeParams) } : {}),
+        ...(run.parameterProfileId ? { parameterProfileId: run.parameterProfileId } : {}),
+      }));
+    }
+
+    const startRequest: StartTasksRequest = {
+      testId: source.testId,
+      parameters: structuredClone(source.parameters),
+      ...(source.target?.kind === "mini-program"
+        ? { targetKeys: [source.target.key] }
+        : { deviceKeys: [source.device.key] }),
+    };
+    // 复测会替代运行监控中的原记录，先保护原任务及其产物。
+    await options.tasks.setRetained(source.id, true);
     return {
-      tasks: await options.tasks.start(
-        parsed.data,
-        discovery.devices,
-        undefined,
-        undefined,
-        undefined,
-        configuredRunTargets(options.config),
+      tasks: await startTaskRequest(
+        options,
+        accountProfiles,
+        startRequest,
+        retryOf,
+        source.target ? [source.target] : undefined,
+        pageParameters,
       ),
     };
   });
@@ -703,6 +727,87 @@ function configuredRunTargets(config: LoadedProjectConfig): RunTarget[] {
     concurrencyKey: target.concurrencyKey,
     ...(target.extensions ? { extensions: structuredClone(target.extensions) } : {}),
   }));
+}
+
+async function startTaskRequest(
+  options: CreateAppOptions,
+  accountProfiles: AccountProfileService,
+  request: StartTasksRequest,
+  retryOf?: TaskRetrySource,
+  targets = configuredRunTargets(options.config),
+  pageParameters?: PageParameterService,
+) {
+  await options.artifacts?.assertCanStart();
+  const discovery = await options.devices.discover();
+  const test = options.config.tests.find(item => item.id === request.testId);
+  if (test) {
+    const parameters = validateParameters(test, request.parameters ?? {});
+    const selectedDevices = discovery.devices.filter(device => request.deviceKeys?.includes(device.key));
+    if (!retryOf) await expandPageSelectionParameters(test, parameters, pageParameters, selectedDevices);
+    request.parameters = parameters;
+    const blockedPreparation = selectedDevices.flatMap(device => (device.preparations ?? [])
+      .filter(item => item.blocksTests && item.status !== "ready")
+      .map(item => ({ device, preparation: item })))[0];
+    if (blockedPreparation) {
+      throw new ConsoleError(
+        "DEVICE_PREPARATION_REQUIRED",
+        `${blockedPreparation.device.name} 需要先完成${blockedPreparation.preparation.label}：${blockedPreparation.preparation.detail}`,
+        409,
+      );
+    }
+    const environment = parameters.environment || "qa";
+    if ((request.deviceKeys?.length ?? 0) > 0) for (const parameter of test.parameters) {
+      if (parameter.type !== "account-profile") continue;
+      const selection = parameters[parameter.id];
+      if (selection === "current-session") continue;
+      const separator = selection.lastIndexOf(":");
+      const profileId = selection.slice(0, separator);
+      const provider = selection.slice(separator + 1) as AccountProfileProvider;
+      await accountProfiles.validateTaskSelection(
+        profileId,
+        provider,
+        parameter.capability,
+        environment,
+        selectedDevices,
+      );
+    }
+  }
+  return options.tasks.start(
+    request,
+    discovery.devices,
+    undefined,
+    undefined,
+    undefined,
+    targets,
+    retryOf,
+  );
+}
+
+export async function expandPageSelectionParameters(
+  test: LoadedProjectConfig["tests"][number],
+  parameters: Record<string, string>,
+  pageParameters: PageParameterService | undefined,
+  selectedDevices: Device[],
+): Promise<void> {
+  const pageParameter = test.parameters.find(item => item.type === "page-selection");
+  if (!pageParameter || !pageParameters || !pageParameters.isEnabled()) return;
+  const value = parameters[pageParameter.id] || pageParameter.defaultValue;
+  if (!pageParameter.presets.some(item => item.value === value)) return;
+  const snapshot = await pageParameters.snapshot();
+  const platforms = [...new Set(selectedDevices.map(device => device.platform))];
+  const pages = snapshot.pages.filter(page => (
+    platforms.length === 0
+      || !page.platforms?.length
+      || platforms.every(platform => page.platforms?.includes(platform))
+  ));
+  const preset = pageParameter.presets.find(item => item.value === value)!;
+  const selected = pages.filter(page => (
+    (!preset.filter.priorities?.length || preset.filter.priorities.includes(page.priority ?? ""))
+    && (!preset.filter.tags?.length || preset.filter.tags.some(tag => page.tags?.includes(tag)))
+    && (!preset.filter.testScopes?.length || preset.filter.testScopes.includes(page.testScope ?? ""))
+  ));
+  if (selected.length === 0) throw new ConsoleError("PAGE_SELECTION_EMPTY", `${pageParameter.label} 没有匹配的页面`);
+  parameters[pageParameter.id] = selected.map(page => page.pageId).join(",");
 }
 
 async function findAvailableDevice(options: CreateAppOptions, deviceKey: string) {

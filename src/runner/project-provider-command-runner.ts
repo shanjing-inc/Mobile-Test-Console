@@ -8,6 +8,7 @@ import {
 } from "./project-provider.js";
 import {
   createRunnerEvent,
+  retryEnvironmentOfPlan,
   type InProcessRunner,
   type RunPlan,
   type RunnerContext,
@@ -70,7 +71,7 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
       data: { providerId: this.provider.id, capabilities: this.capabilities },
     }));
     for (const command of preparation.commands) {
-      const result = await this.commandRunner.run({ ...plan, command: structuredClone(command) }, context);
+      const result = await this.commandRunner.run(this.withRetryEnvironment(plan, command), context);
       if (result.status !== "passed") return this.collect(plan, context, result);
     }
     context.emit(createRunnerEvent(plan.runId, "capability", {
@@ -78,7 +79,10 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
       message: "项目能力准备完成",
       data: { providerId: this.provider.id, capabilities: this.capabilities },
     }));
-    return this.collect(plan, context, await this.commandRunner.run(plan, context));
+    const testResult = plan.command
+      ? await this.commandRunner.run(this.withRetryEnvironment(plan, plan.command), context)
+      : await this.commandRunner.run(plan, context);
+    return this.collect(plan, context, testResult);
   }
 
   cancel(runId: string): void {
@@ -97,6 +101,16 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
       message: `项目能力准备失败: ${message}`,
     }));
     return { runId, status: "failed", exitCode: null, error: message };
+  }
+
+  private withRetryEnvironment(plan: RunPlan, command: NonNullable<RunPlan["command"]>): RunPlan {
+    return {
+      ...plan,
+      command: {
+        ...structuredClone(command),
+        env: { ...(command.env ?? {}), ...retryEnvironmentOfPlan(plan) },
+      },
+    };
   }
 
   private async collect(

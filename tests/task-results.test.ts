@@ -9,8 +9,8 @@ import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { ResultBundleStore } from "../src/server/result-bundle-store.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
-import { TaskResultService } from "../src/server/task-results.js";
-import type { TestTask } from "../src/shared/contracts.js";
+import { mergeRetryTaskResult, TaskResultService, terminalRetryTasks } from "../src/server/task-results.js";
+import type { TaskResult, TaskResultRun, TestTask } from "../src/shared/contracts.js";
 
 const tempDirs: string[] = [];
 
@@ -19,6 +19,100 @@ afterEach(async () => {
 });
 
 describe("测试结果服务", () => {
+  it("将单用例重试结果合并回来源任务并替换对应失败用例", () => {
+    const run = (caseId: string, status: string) => ({ caseId, targetPage: caseId, status, runId: `run-${caseId}`, caseRunId: `case-run-${caseId}` });
+    const sourceRuns = [run("stable", "passed"), run("flaky", "failed")];
+    const source = { taskId: "source", runId: "source-run", generatedAt: "old", total: 2, caseRunCount: 2, passed: 1, failed: 1, warnings: [], runs: sourceRuns } as unknown as import("../src/shared/contracts.js").TaskResult;
+    const retry = { taskId: "retry", runId: "retry-run", generatedAt: "new", total: 1, caseRunCount: 1, passed: 1, failed: 0, warnings: [], runs: [run("flaky", "passed")] } as unknown as import("../src/shared/contracts.js").TaskResult;
+    const merged = mergeRetryTaskResult(
+      { id: "source", runId: "source-run" } as TestTask,
+      source,
+      retry,
+      { taskId: "source", runId: "source-run", scope: "cases", attempt: 1, caseRunIds: [sourceRuns[1].caseRunId], caseIds: ["flaky"], targetPages: ["flaky"] },
+    );
+    expect(merged.runs.map(item => [item.caseId, item.status])).toEqual([["stable", "passed"], ["flaky", "passed"]]);
+    expect(merged.passed).toBe(2);
+    expect(merged.failed).toBe(0);
+  });
+
+  it("重试失败时保留原条目的全部结果", () => {
+    const sourceRun = retryRun("flaky", "failed", "source-case-run", "原始失败证据");
+    const source = retryResult("source", "old", [sourceRun]);
+    const failedRetry = retryResult("retry", "new", [retryRun("flaky", "failed", "retry-case-run", "重试失败证据")]);
+
+    const merged = mergeRetryTaskResult(
+      { id: "source", runId: "source-run" } as TestTask,
+      source,
+      failedRetry,
+      { taskId: "source", runId: "source-run", scope: "cases", attempt: 1, caseRunIds: [sourceRun.caseRunId], caseIds: ["flaky"], targetPages: ["flaky"] },
+    );
+
+    expect(merged.runs).toEqual([sourceRun]);
+    expect(merged.generatedAt).toBe("old");
+    expect(merged.warnings).toContain("第 1 次重试未通过，保留原结果");
+  });
+
+  it("批量重试只替换通过条目并保持原条目 ID", () => {
+    const first = retryRun("first", "failed", "source-first", "首次失败");
+    const second = retryRun("second", "failed", "source-second", "首次失败");
+    const source = retryResult("source", "old", [first, second]);
+    const retry = retryResult("retry", "new", [
+      retryRun("first", "passed", "retry-first", "重试通过"),
+      retryRun("second", "failed", "retry-second", "重试失败"),
+    ]);
+
+    const merged = mergeRetryTaskResult(
+      { id: "source", runId: "source-run" } as TestTask,
+      source,
+      retry,
+      { taskId: "source", runId: "source-run", scope: "cases", attempt: 1, caseRunIds: [first.caseRunId, second.caseRunId], caseIds: ["first", "second"], targetPages: ["first", "second"] },
+    );
+
+    expect(merged.runs.map(run => [run.caseRunId, run.caseId, run.status, run.errorSummary])).toEqual([
+      ["source-first", "first", "passed", "重试通过"],
+      ["source-second", "second", "failed", "首次失败"],
+    ]);
+  });
+
+  it("连续重试累计成功结果并忽略后续失败结果", () => {
+    const first = retryRun("first", "failed", "source-first", "A 原始失败");
+    const second = retryRun("second", "failed", "source-second", "B 原始失败");
+    const sourceTask = { id: "source", runId: "source-run" } as TestTask;
+    const source = retryResult("source", "old", [first, second]);
+
+    const afterFirstPassed = mergeRetryTaskResult(
+      sourceTask,
+      source,
+      retryResult("retry-first", "retry-a", [retryRun("first", "passed", "retry-first", "A 重试通过")]),
+      { taskId: "source", runId: "source-run", scope: "cases", attempt: 1, caseRunIds: [first.caseRunId], caseIds: ["first"] },
+    );
+    const afterSecondFailed = mergeRetryTaskResult(
+      sourceTask,
+      afterFirstPassed,
+      retryResult("retry-second", "retry-b", [retryRun("second", "failed", "retry-second", "B 重试失败")]),
+      { taskId: "source", runId: "source-run", scope: "cases", attempt: 1, caseRunIds: [second.caseRunId], caseIds: ["second"] },
+    );
+
+    expect(afterSecondFailed.runs.map(run => [run.caseId, run.status, run.errorSummary])).toEqual([
+      ["first", "passed", "A 重试通过"],
+      ["second", "failed", "B 原始失败"],
+    ]);
+  });
+
+  it("按创建时间累计来源任务的兄弟和多层终态重试", () => {
+    const source = retryTask("source", "2026-08-13T00:00:00.000Z");
+    const retryA = retryTask("retry-a", "2026-08-13T00:01:00.000Z", source.id);
+    const retryB = retryTask("retry-b", "2026-08-13T00:02:00.000Z", source.id);
+    const nested = retryTask("retry-c", "2026-08-13T00:03:00.000Z", retryA.id);
+    const active = { ...retryTask("retry-active", "2026-08-13T00:04:00.000Z", source.id), status: "running" as const };
+
+    expect(terminalRetryTasks([nested, retryB, active, source, retryA], source.id).map(task => task.id)).toEqual([
+      retryA.id,
+      retryB.id,
+      nested.id,
+    ]);
+  });
+
   it("读取终态任务结果并限制截图在产物目录内", async () => {
     const fixture = await createFixture();
     const result = await fixture.results.load(fixture.task.id);
@@ -438,6 +532,53 @@ function createTask(): TestTask {
     error: "",
     logs: [],
   };
+}
+
+function retryRun(caseId: string, status: string, caseRunId: string, errorSummary: string): TaskResultRun {
+  return {
+    runId: caseRunId,
+    caseRunId,
+    caseRunCount: 1,
+    caseId,
+    targetPage: caseId,
+    launchPage: caseId,
+    scenario: caseId,
+    fixture: "",
+    platform: "android",
+    device: "device-1",
+    status,
+    errorSummary,
+    requiredEvents: [],
+    missingEvents: [],
+    runtimeEventCount: 0,
+    uiActionCount: 0,
+    apiCalls: [],
+    screenshots: [],
+    evidenceFiles: [],
+    failureLogExcerpt: "",
+  };
+}
+
+function retryResult(taskId: string, generatedAt: string, runs: TaskResultRun[]): TaskResult {
+  return {
+    schemaVersion: "mobile-test-console.task-result.v1",
+    generatedAt,
+    taskId,
+    runId: `${taskId}-run`,
+    total: runs.length,
+    caseRunCount: runs.length,
+    passed: runs.filter(run => run.status === "passed").length,
+    failed: runs.filter(run => run.status !== "passed").length,
+    warnings: [],
+    runs,
+  };
+}
+
+function retryTask(id: string, createdAt: string, parentTaskId?: string): TestTask {
+  const task = { ...createTask(), id, runId: `${id}-run`, createdAt };
+  return parentTaskId
+    ? { ...task, retryOf: { taskId: parentTaskId, runId: `${parentTaskId}-run`, scope: "cases", attempt: 1 } }
+    : task;
 }
 
 async function waitForTaskStatus(manager: TaskManager, taskId: string, status: TestTask["status"]) {

@@ -2,13 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { TaskStatus } from "../src/shared/contracts.js";
-import { createApp } from "../src/server/app.js";
+import type { TaskResult, TaskStatus } from "../src/shared/contracts.js";
+import { createApp, expandPageSelectionParameters } from "../src/server/app.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
+import type { TaskResultService } from "../src/server/task-results.js";
 import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 import { ProjectCatalogService, ProjectCatalogStore } from "../src/server/project-catalog.js";
 import { DirectoryPicker } from "../src/server/directory-picker.js";
@@ -20,6 +21,30 @@ afterEach(async () => {
 });
 
 describe("HTTP API", () => {
+  it("创建页面任务时将全部页面预设展开为冻结的页面 ID 列表", async () => {
+    const parameters = { pages: "all-pages" };
+    const test = {
+      parameters: [{
+        id: "pages",
+        label: "页面范围",
+        type: "page-selection" as const,
+        source: "page-parameters" as const,
+        defaultValue: "all-pages",
+        presets: [{ value: "all-pages", label: "全部页面", description: "", filter: { testScopes: ["user-facing"] } }],
+      }],
+    } as unknown as LoadedProjectConfig["tests"][number];
+    const pageParameters = {
+      isEnabled: () => true,
+      snapshot: async () => ({ pages: [
+        { pageId: "pageHome", platforms: ["android"], testScope: "user-facing" },
+        { pageId: "pageInternal", platforms: ["android"], testScope: "internal" },
+      ] }),
+    } as unknown as Parameters<typeof expandPageSelectionParameters>[2];
+
+    await expandPageSelectionParameters(test, parameters, pageParameters, [{ platform: "android" } as never]);
+    expect(parameters.pages).toBe("pageHome");
+  });
+
   it("登记项目并返回持久化接入步骤", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-projects-"));
     tempDirs.push(dir);
@@ -346,6 +371,132 @@ describe("HTTP API", () => {
       expect(response.statusCode).toBe(400);
       expect(response.json().error.code).toBe("REQUEST_INVALID");
     } finally {
+      await app.close();
+    }
+  });
+
+  it("从失败结果创建定向重试任务并校验用例范围", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-retry-"));
+    tempDirs.push(dir);
+    const config = createMiniProgramConfig(dir);
+    config.tests[0].commands = { default: { executable: process.execPath, args: ["-e", "process.exit(1)"] } };
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const taskResult: TaskResult = {
+      schemaVersion: "mobile-test-console.task-result.v1",
+      generatedAt: "2026-08-13T00:00:00.000Z",
+      taskId: "",
+      runId: "",
+      total: 2,
+      caseRunCount: 2,
+      passed: 1,
+      failed: 1,
+      warnings: [],
+      runs: [
+        createRetryResultRun("failed-case-run", "failed-case", "failed"),
+        createRetryResultRun("passed-case-run", "passed-case", "passed"),
+      ],
+    };
+    const taskResults = {
+      async load(taskId: string) {
+        const source = tasks.get(taskId);
+        return { ...taskResult, taskId, runId: source?.runId ?? "" };
+      },
+      invalidate() {},
+    } as unknown as TaskResultService;
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, []),
+      tasks,
+      taskResults,
+    });
+
+    try {
+      const sourceResponse = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { testId: "smoke", targetKeys: ["wechat-devtools"], parameters: {} },
+      });
+      const [source] = sourceResponse.json().tasks;
+      const activeRetry = await app.inject({ method: "POST", url: `/api/tasks/${source.id}/retry`, payload: {} });
+      expect(activeRetry.statusCode).toBe(409);
+      expect(activeRetry.json().error.code).toBe("TASK_NOT_RETRYABLE");
+      await tasks.waitForTerminal(source.id);
+
+      const unknown = await app.inject({ method: "POST", url: "/api/tasks/missing-task/retry", payload: {} });
+      expect(unknown.statusCode).toBe(404);
+      expect(unknown.json().error.code).toBe("TASK_UNKNOWN");
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { caseRunIds: ["failed-case-run"] },
+      });
+      expect(response.statusCode).toBe(200);
+      const [retry] = response.json().tasks;
+      expect(retry).toMatchObject({
+        retryOf: {
+          taskId: source.id,
+          runId: source.runId,
+          scope: "cases",
+          attempt: 1,
+          caseRunIds: ["failed-case-run"],
+          caseIds: ["failed-case"],
+          targetPages: ["pages/demo/index"],
+          caseRuns: [{ caseRunId: "failed-case-run", targetPage: "pages/demo/index", launchPage: "pages/demo/index" }],
+        },
+      });
+      expect(retry.id).not.toBe(source.id);
+      expect(retry.runId).not.toBe(source.runId);
+      expect(tasks.get(source.id)?.retained).toBe(true);
+
+      const busy = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: {},
+      });
+      expect(busy.statusCode).toBe(409);
+      expect(busy.json().error.code).toBe("TARGET_BUSY");
+
+      await tasks.waitForTerminal(retry.id);
+      expect(tasks.get(source.id)?.id).toBe(source.id);
+      const wholeTask = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: {},
+      });
+      expect(wholeTask.statusCode).toBe(200);
+      expect(wholeTask.json().tasks[0]).toMatchObject({
+        retryOf: { taskId: source.id, scope: "task", attempt: 1 },
+      });
+      await tasks.waitForTerminal(wholeTask.json().tasks[0].id);
+
+      const passed = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { caseRunIds: ["passed-case-run"] },
+      });
+      expect(passed.statusCode).toBe(200);
+      expect(passed.json().tasks[0]).toMatchObject({ retryOf: { scope: "cases", caseRunIds: ["passed-case-run"] } });
+      await tasks.waitForTerminal(passed.json().tasks[0].id);
+
+      const unknownCase = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { caseRunIds: ["missing-case-run"] },
+      });
+      expect(unknownCase.statusCode).toBe(404);
+      expect(unknownCase.json().error.code).toBe("RETRY_CASE_UNKNOWN");
+
+      const duplicate = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { caseRunIds: ["failed-case-run", "failed-case-run"] },
+      });
+      expect(duplicate.statusCode).toBe(400);
+      expect(duplicate.json().error.code).toBe("RETRY_CASE_DUPLICATE");
+    } finally {
+      await tasks.shutdown();
       await app.close();
     }
   });
@@ -699,6 +850,31 @@ function createMiniProgramConfig(stateDir: string): LoadedProjectConfig {
       parameters: [],
       commands: { default: { executable: process.execPath, args: ["-e", "process.exit(0)"] } },
     }],
+  };
+}
+
+function createRetryResultRun(caseRunId: string, caseId: string, status: "passed" | "failed") {
+  return {
+    runId: caseRunId,
+    caseRunId,
+    caseRunCount: 1,
+    caseId,
+    targetPage: "pages/demo/index",
+    launchPage: "pages/demo/index",
+    scenario: "render",
+    fixture: "fixture-v1",
+    platform: "wechat",
+    device: "微信开发者工具",
+    status,
+    errorSummary: status === "failed" ? "页面失败" : "",
+    requiredEvents: [],
+    missingEvents: [],
+    runtimeEventCount: 0,
+    uiActionCount: 0,
+    apiCalls: [],
+    screenshots: [],
+    evidenceFiles: [],
+    failureLogExcerpt: "",
   };
 }
 

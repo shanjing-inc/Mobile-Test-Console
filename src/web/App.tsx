@@ -65,7 +65,7 @@ import type {
 import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, PROJECT_EXECUTION_PREREQUISITE_STEP_IDS, TERMINAL_TASK_STATUSES, projectFamilyOf } from "../shared/contracts";
 import { supportsAccountProfileProvider } from "../shared/account-profile-compatibility";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults";
-import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, registerProject, retryRepairTest, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
+import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, registerProject, retryRepairTest, retryTask, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
 import { PageParametersWorkspace } from "./PageParametersWorkspace";
 import { PageSelectionField } from "./PageSelectionField";
 import { AccountProfilesWorkspace } from "./AccountProfilesWorkspace";
@@ -185,6 +185,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [switchingProjectId, setSwitchingProjectId] = useState("");
   const [actionPending, setActionPending] = useState(false);
+  const [retryingCaseRunId, setRetryingCaseRunId] = useState<string | null>(null);
   const [startingDeviceKeys, setStartingDeviceKeys] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<TestTask | null>(null);
@@ -310,8 +311,14 @@ export default function App() {
     const available = new Set((snapshot?.projectProviders ?? []).flatMap(provider => provider.capabilities.map(capability => capability.id)));
     return (selectedTest?.requiredCapabilities ?? []).filter(capability => !available.has(capability));
   }, [selectedTest, snapshot?.projectProviders]);
-  const tasks = useMemo(() => snapshot?.tasks ?? [], [snapshot]);
+  const tasks = useMemo(() => collapseRetryTasks(snapshot?.tasks ?? []), [snapshot]);
+  const retryingRootTaskIds = useMemo(() => activeRetryRootTaskIds(snapshot?.tasks ?? []), [snapshot]);
   const focusedTask = focusedTaskId ? tasks.find(task => task.id === focusedTaskId) : undefined;
+  const focusedRetryStatus = focusedTask
+    ? snapshot?.tasks
+      .filter(task => task.retryOf?.taskId === focusedTask.id)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.status || ""
+    : "";
   const focusedResultTaskId = focusedTask?.id || "";
   const focusedResultTaskStatus = focusedTask?.status || "";
   const repairJobs = useMemo(() => snapshot?.repairJobs ?? [], [snapshot]);
@@ -349,7 +356,7 @@ export default function App() {
     }
     setDetailTab("overview");
     void loadTaskResult(focusedResultTaskId);
-  }, [focusedResultTaskId, focusedResultTaskStatus, loadTaskResult]);
+  }, [focusedResultTaskId, focusedResultTaskStatus, focusedRetryStatus, loadTaskResult]);
 
   useEffect(() => {
     if (!selectedTest) return;
@@ -357,7 +364,7 @@ export default function App() {
     setParameters(previous => {
       const next = { ...previous };
       for (const parameter of selectedTest.parameters) {
-        if (!next[parameter.id]) next[parameter.id] = parameter.defaultValue;
+        if (!Object.hasOwn(next, parameter.id)) next[parameter.id] = parameter.defaultValue;
       }
       return next;
     });
@@ -703,6 +710,28 @@ export default function App() {
     }
   };
 
+  const handleRetryTask = async (task: TestTask, caseRunIds?: string[]) => {
+    setActionPending(true);
+    setRetryingCaseRunId(caseRunIds?.length === 1 ? caseRunIds[0] : caseRunIds ? "__batch__" : "__task__");
+    try {
+      await retryTask(task.id, caseRunIds ? { caseRunIds } : {});
+      setFocusedTaskId(task.id);
+      setDetailTab("logs");
+      setMessage({
+        kind: "info",
+        text: caseRunIds
+          ? `已启动 ${caseRunIds.length} 个用例的重新测试任务`
+          : "已启动整任务重新测试",
+      });
+      await load();
+    } catch (error) {
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "启动重试失败" });
+    } finally {
+      setActionPending(false);
+      setRetryingCaseRunId(null);
+    }
+  };
+
   const handlePrepareRepair = async (task: TestTask, run: TaskResultRun) => {
     setActionPending(true);
     try {
@@ -933,7 +962,7 @@ export default function App() {
                     return <div className="field page-selection-wrapper" key={parameter.id}>
                       <PageSelectionField
                         parameter={parameter}
-                        value={parameters[parameter.id] || parameter.defaultValue}
+                        value={Object.hasOwn(parameters, parameter.id) ? parameters[parameter.id] : parameter.defaultValue}
                         platforms={selectedDevicePlatforms}
                         onChange={value => setParameters(previous => ({ ...previous, [parameter.id]: value }))}
                         onMessage={handlePageSelectionMessage}
@@ -972,7 +1001,7 @@ export default function App() {
 
             <section className="section-panel runs-panel">
               <div className="section-heading"><div><p className="eyebrow">RUN MONITOR</p><h2>运行状态</h2></div><span className="count-label">{tasks.length} 条记录</span></div>
-              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : <div className="run-list">{tasks.map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}</div>}
+              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : <div className="run-list">{tasks.map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} retrying={retryingRootTaskIds.has(task.id)} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}</div>}
             </section>
 
             {focusedTask && <TaskDetail
@@ -982,11 +1011,15 @@ export default function App() {
               repairJobs={focusedRepairJobs}
               codexRepairEnabled={selectedProjectFamily === "app" && snapshot?.codexRepairEnabled === true}
               repairPending={actionPending}
+              retryPending={actionPending || retryingRootTaskIds.has(focusedTask.id)}
+              retrying={retryingRootTaskIds.has(focusedTask.id)}
+              retryingCaseRunId={retryingCaseRunId}
               adapter={snapshot?.adapter}
               onTab={setDetailTab}
               onReload={() => void loadTaskResult(focusedTask.id, true)}
               onCopy={(label, value) => void copyJson(label, value)}
               onCreateRepair={run => void handlePrepareRepair(focusedTask, run)}
+              onRetryTask={caseRunIds => void handleRetryTask(focusedTask, caseRunIds)}
               onCancelRepair={job => void handleCancelRepair(job)}
               onRetryRepair={job => void handleRetryRepairTest(job)}
               onOpenRepair={job => void handleOpenRepairTask(job)}
@@ -1000,7 +1033,7 @@ export default function App() {
             : <AccountProfilesWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />}
         </main>
       </div>
-      {deleteCandidate && <DeleteConfirmation task={deleteCandidate} pending={actionPending} onCancel={() => setDeleteCandidate(null)} onConfirm={() => void handleDelete()} />}
+      {deleteCandidate && <DeleteConfirmation task={deleteCandidate} pending={actionPending} retrying={retryingRootTaskIds.has(deleteCandidate.id)} onCancel={() => setDeleteCandidate(null)} onConfirm={() => void handleDelete()} />}
       {projectDeleteCandidate && <ProjectDeleteConfirmation project={projectDeleteCandidate} runtimeProjectId={snapshot?.project.id ?? ""} pending={projectDeletePending} onCancel={() => setProjectDeleteCandidate(null)} onConfirm={() => void handleDeleteProject()} />}
       {repairPreview && <RepairPromptConfirmation preview={repairPreview.preview} pending={actionPending} onCancel={() => setRepairPreview(null)} onConfirm={() => void handleConfirmRepair()} />}
     </div>
@@ -1068,10 +1101,14 @@ function TaskDetail({
   repairJobs,
   codexRepairEnabled,
   repairPending,
+  retryPending,
+  retrying,
+  retryingCaseRunId,
   onTab,
   onReload,
   onCopy,
   onCreateRepair,
+  onRetryTask,
   onCancelRepair,
   onRetryRepair,
   onOpenRepair,
@@ -1083,16 +1120,21 @@ function TaskDetail({
   repairJobs: RepairJob[];
   codexRepairEnabled: boolean;
   repairPending: boolean;
+  retryPending: boolean;
+  retrying: boolean;
+  retryingCaseRunId?: string | null;
   onTab: (tab: DetailTab) => void;
   onReload: () => void;
   onCopy: (label: string, value: unknown) => void;
   onCreateRepair: (run: TaskResultRun) => void;
+  onRetryTask: (caseRunIds?: string[]) => void;
   onCancelRepair: (job: RepairJob) => void;
   onRetryRepair: (job: RepairJob) => void;
   onOpenRepair: (job: RepairJob) => void;
   adapter?: ConsoleSnapshot["adapter"];
 }) {
   const terminal = TERMINAL_STATUSES.has(task.status);
+  const retryable = terminal;
   const tabs: Array<{ id: DetailTab; label: string; icon: React.ReactNode }> = terminal ? [
     { id: "overview", label: "概览", icon: <BarChart3 size={14} /> },
     { id: "screenshots", label: "截图", icon: <ImageIcon size={14} /> },
@@ -1103,8 +1145,8 @@ function TaskDetail({
     { id: "logs", label: "日志", icon: <Terminal size={14} /> },
   ];
   return <section className="section-panel detail-panel">
-    <div className="section-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>{taskTargetLabel(task)}</h2></div><StatusBadge status={task.status} /></div>
-    <div className="detail-meta"><span>{taskTargetEnvironment(task)}</span><span>{task.testLabel}</span><span>{task.phase}</span><span>{formatDuration(task.startedAt, task.finishedAt)}</span></div>
+    <div className="section-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>{taskTargetLabel(task)}</h2></div><div className="detail-heading-actions">{retryable && <button type="button" className="secondary-button" onClick={() => onRetryTask()} disabled={retryPending}><RotateCcw className={retrying ? "spin" : ""} size={14} />{retrying ? "正在重试" : "重试任务"}</button>}{retrying ? <span className="status-badge status-running">正在重试</span> : <StatusBadge status={task.status} />}</div></div>
+    <div className="detail-meta"><span>{taskTargetEnvironment(task)}</span><span>{task.testLabel}</span><span>{task.phase}</span><span>{formatDuration(task.startedAt, task.finishedAt)}</span>{task.retryOf && <span>第 {task.retryOf.attempt} 次重试 · 来源 {task.retryOf.runId}</span>}</div>
     <div className="detail-tabs" role="tablist" aria-label="运行详情视图">
       {tabs.map(item => <button
         key={item.id}
@@ -1126,8 +1168,11 @@ function TaskDetail({
           repairJobs={repairJobs}
           codexRepairEnabled={codexRepairEnabled}
           repairPending={repairPending}
+          retryPending={retryPending}
+          retryingCaseRunId={retryingCaseRunId}
           adapter={adapter}
           onCreateRepair={onCreateRepair}
+          onRetryTask={terminal ? onRetryTask : undefined}
           onCancelRepair={onCancelRepair}
           onRetryRepair={onRetryRepair}
           onOpenRepair={onOpenRepair}
@@ -1207,7 +1252,10 @@ export function ResultPanel({
   repairJobs = [],
   codexRepairEnabled = false,
   repairPending = false,
+  retryPending = false,
+  retryingCaseRunId = null,
   onCreateRepair,
+  onRetryTask,
   onCancelRepair,
   onRetryRepair,
   onOpenRepair,
@@ -1223,7 +1271,10 @@ export function ResultPanel({
   repairJobs?: RepairJob[];
   codexRepairEnabled?: boolean;
   repairPending?: boolean;
+  retryPending?: boolean;
+  retryingCaseRunId?: string | null;
   onCreateRepair?: (run: TaskResultRun) => void;
+  onRetryTask?: (caseRunIds?: string[]) => void;
   onCancelRepair?: (job: RepairJob) => void;
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
@@ -1270,7 +1321,10 @@ export function ResultPanel({
     repairJobs={repairJobs}
     codexRepairEnabled={codexRepairEnabled}
     repairPending={repairPending}
+    retryPending={retryPending}
+    retryingCaseRunId={retryingCaseRunId}
     onCreateRepair={onCreateRepair}
+    onRetryTask={onRetryTask}
     onCancelRepair={onCancelRepair}
     onRetryRepair={onRetryRepair}
     onOpenRepair={onOpenRepair}
@@ -1290,7 +1344,10 @@ function OverviewResult({
   repairJobs,
   codexRepairEnabled,
   repairPending,
+  retryPending,
+  retryingCaseRunId,
   onCreateRepair,
+  onRetryTask,
   onCancelRepair,
   onRetryRepair,
   onOpenRepair,
@@ -1307,7 +1364,10 @@ function OverviewResult({
   repairJobs: RepairJob[];
   codexRepairEnabled: boolean;
   repairPending: boolean;
+  retryPending: boolean;
+  retryingCaseRunId?: string | null;
   onCreateRepair?: (run: TaskResultRun) => void;
+  onRetryTask?: (caseRunIds?: string[]) => void;
   onCancelRepair?: (job: RepairJob) => void;
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
@@ -1315,6 +1375,7 @@ function OverviewResult({
 }) {
   const screenshots = result.runs.reduce((total, run) => total + run.screenshots.length, 0);
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
+  const failedCaseRunIds = result.runs.filter(run => run.status === "failed").map(run => run.caseRunId);
   return <div className="analysis-content">
     <div className="analysis-summary">
       <AnalysisMetric label="用例" value={result.total} />
@@ -1331,15 +1392,18 @@ function OverviewResult({
       </div>)}
     </div>}
     {result.warnings.length > 0 && <div className="result-warning"><AlertCircle size={14} /><span>{result.warnings.join("；")}</span></div>}
-    {screenshots > 0 && <div className="analysis-run-toolbar">
+    <div className="analysis-run-toolbar">
       <div><ImageIcon size={15} /><strong>测试条目</strong><span>{result.runs.length} 条 · {screenshots} 张截图</span></div>
-      <button
-        type="button"
-        aria-expanded={imagesVisible}
-        aria-controls="analysis-run-list"
-        onClick={onToggleImages}
-      >{imagesVisible ? <><EyeOff size={13} />隐藏图片</> : <><Eye size={13} />显示图片</>}</button>
-    </div>}
+      <div className="analysis-run-toolbar-actions">
+        {failedCaseRunIds.length > 0 && onRetryTask && <button type="button" onClick={() => onRetryTask(failedCaseRunIds)} disabled={retryPending && retryingCaseRunId === "__batch__"}><RotateCcw size={13} />重试全部失败用例</button>}
+        {screenshots > 0 && <button
+          type="button"
+          aria-expanded={imagesVisible}
+          aria-controls="analysis-run-list"
+          onClick={onToggleImages}
+        >{imagesVisible ? <><EyeOff size={13} />隐藏图片</> : <><Eye size={13} />显示图片</>}</button>}
+      </div>
+    </div>
     <div className="analysis-run-list" id="analysis-run-list">
       {result.runs.map(run => {
         const runKey = taskResultRunKey(run);
@@ -1362,6 +1426,7 @@ function OverviewResult({
               </span>
               <ChevronRight className="analysis-run-chevron" size={16} />
             </button>
+            {onRetryTask && <button type="button" className="run-retry-button" onClick={() => onRetryTask([run.caseRunId])} disabled={retryPending && retryingCaseRunId === run.caseRunId} aria-label={`重新测试 ${run.caseId || run.targetPage || run.runId}`}><RotateCcw size={13} />重新测试</button>}
             {imagesVisible && run.screenshots.length > 0 && <RunScreenshotPreview taskId={taskId} run={run} />}
           </div>
           {selected && <RunDiagnosticDetail
@@ -1620,19 +1685,19 @@ export function TargetRow({ target, task, selected, onToggle }: { target: RunTar
   </label>;
 }
 
-export function RunRow({ task, focused, onFocus, onStop, onRetain, onDelete, pending }: { task: TestTask; focused: boolean; onFocus: () => void; onStop: () => void; onRetain?: () => void; onDelete: () => void; pending: boolean }) {
+export function RunRow({ task, focused, retrying = false, onFocus, onStop, onRetain, onDelete, pending }: { task: TestTask; focused: boolean; retrying?: boolean; onFocus: () => void; onStop: () => void; onRetain?: () => void; onDelete: () => void; pending: boolean }) {
   const active = ACTIVE_STATUSES.has(task.status);
   const deletable = TERMINAL_STATUSES.has(task.status);
   return <div className={`run-row ${focused ? "focused" : ""}`}>
     <button className="run-row-select" type="button" onClick={onFocus} aria-label={`查看 ${taskTargetLabel(task)} ${task.testLabel} 详情`}>
-      <span className="run-row-status"><StatusIcon status={task.status} /><StatusBadge status={task.status} /></span>
-      <span className="run-row-main"><strong>{taskTargetLabel(task)}</strong><span>{taskTargetEnvironment(task)} · {task.testLabel} · {task.phase}</span></span>
+      <span className="run-row-status">{retrying ? <LoaderCircle className="spin" size={16} /> : <StatusIcon status={task.status} />}{retrying ? <span className="status-badge status-running">正在重试</span> : <StatusBadge status={task.status} />}</span>
+      <span className="run-row-main"><strong>{taskTargetLabel(task)}</strong><span>{taskTargetEnvironment(task)} · {task.testLabel} · {retrying ? "正在重试" : task.phase}</span></span>
       <span className="run-row-time">{formatDuration(task.startedAt, task.finishedAt)}</span>
     </button>
     {active && <span className="run-row-action"><button type="button" className="stop-button" onClick={onStop} disabled={pending} title="停止此测试" aria-label={`停止 ${taskTargetLabel(task)} 测试`}><Square size={14} fill="currentColor" />停止</button></span>}
     {deletable && <span className="run-row-action">
-      <button type="button" className={`retain-button ${task.retained ? "active" : ""}`} onClick={onRetain} disabled={pending} title={task.retained ? "恢复按策略管理" : "长期保留此运行"} aria-label={task.retained ? "取消长期保留" : "长期保留此运行"}><Bookmark size={15} fill={task.retained ? "currentColor" : "none"} /></button>
-      <button type="button" className="delete-button" onClick={onDelete} disabled={pending} title="删除此运行记录" aria-label={`删除 ${taskTargetLabel(task)} 的运行记录`}><Trash2 size={15} /></button>
+      <button type="button" className={`retain-button ${task.retained ? "active" : ""}`} onClick={onRetain} disabled={pending || retrying} title={retrying ? "正在重试，完成后可修改保留策略" : task.retained ? "恢复按策略管理" : "长期保留此运行"} aria-label={retrying ? `${taskTargetLabel(task)} 正在重试，完成后可修改保留策略` : task.retained ? "取消长期保留" : "长期保留此运行"}><Bookmark size={15} fill={task.retained ? "currentColor" : "none"} /></button>
+      <button type="button" className="delete-button" onClick={onDelete} disabled={pending || retrying} title={retrying ? "正在重试，完成后可删除" : "删除此运行记录"} aria-label={retrying ? `${taskTargetLabel(task)} 正在重试，完成后可删除` : `删除 ${taskTargetLabel(task)} 的运行记录`}><Trash2 size={15} /></button>
     </span>}
   </div>;
 }
@@ -1644,6 +1709,47 @@ export function reconcileFocusedTaskId(previous: string | null, tasks: TestTask[
     return tasks.find(task => ACTIVE_STATUSES.has(task.status))?.id || tasks[0]?.id || "";
   }
   return previous && tasks.some(task => task.id === previous) ? previous : "";
+}
+
+// 重试结果回写来源任务的对应条目，运行列表继续展示来源任务。
+// eslint-disable-next-line react-refresh/only-export-components
+export function collapseRetryTasks(tasks: TestTask[]): TestTask[] {
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const roots = new Map<string, TestTask>();
+  for (const task of tasks) {
+    let rootId = task.id;
+    const visited = new Set<string>();
+    let current = task;
+    while (current.retryOf && !visited.has(current.id)) {
+      visited.add(current.id);
+      rootId = current.retryOf.taskId;
+      const parent = byId.get(rootId);
+      if (!parent) break;
+      current = parent;
+    }
+    roots.set(rootId, byId.get(rootId) || task);
+  }
+  return [...roots.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+// 活动重试归并到可见的来源任务，供整组交互保持一致。
+// eslint-disable-next-line react-refresh/only-export-components
+export function activeRetryRootTaskIds(tasks: TestTask[]): Set<string> {
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const rootIds = new Set<string>();
+  for (const task of tasks) {
+    if (!task.retryOf || !ACTIVE_STATUSES.has(task.status)) continue;
+    let rootId = task.retryOf.taskId;
+    const visited = new Set([task.id]);
+    let parent = byId.get(rootId);
+    while (parent?.retryOf && !visited.has(parent.id)) {
+      visited.add(parent.id);
+      rootId = parent.retryOf.taskId;
+      parent = byId.get(rootId);
+    }
+    rootIds.add(rootId);
+  }
+  return rootIds;
 }
 
 // 删除请求成功后立即关闭对应详情，后续快照刷新失败时也不会保留失效记录。
@@ -1673,17 +1779,17 @@ export function reconcileSelectedKeysForTest(
   return previous.filter(key => allowedKeys.has(key));
 }
 
-export function DeleteConfirmation({ task, pending, onCancel, onConfirm }: { task: Pick<TestTask, "testLabel" | "device" | "target">; pending: boolean; onCancel: () => void; onConfirm: () => void }) {
+export function DeleteConfirmation({ task, pending, retrying = false, onCancel, onConfirm }: { task: Pick<TestTask, "testLabel" | "device" | "target">; pending: boolean; retrying?: boolean; onCancel: () => void; onConfirm: () => void }) {
   return <div className="confirm-overlay">
     <section className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
       <div className="confirm-icon"><Trash2 size={20} /></div>
       <div className="confirm-copy">
         <h2 id="delete-confirm-title">删除运行记录</h2>
-        <p>将删除 {taskTargetLabel(task)} 的 {task.testLabel} 记录及本地测试文件。此操作无法撤销。</p>
+        <p>{retrying ? "该测试组正在重试，完成后可删除。" : `将删除 ${taskTargetLabel(task)} 的 ${task.testLabel} 记录及本地测试文件。此操作无法撤销。`}</p>
       </div>
       <div className="confirm-actions">
         <button type="button" className="secondary-button" onClick={onCancel} disabled={pending}>取消</button>
-        <button type="button" className="danger-button" onClick={onConfirm} disabled={pending}><Trash2 size={15} />删除</button>
+        <button type="button" className="danger-button" onClick={onConfirm} disabled={pending || retrying}><Trash2 size={15} />{retrying ? "正在重试" : "删除"}</button>
       </div>
     </section>
   </div>;

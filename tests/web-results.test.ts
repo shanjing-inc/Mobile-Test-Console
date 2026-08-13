@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskResult } from "../src/shared/contracts.js";
 import { ResultPanel } from "../src/web/App.js";
-import { fetchSnapshot, fetchTaskResult, taskArtifactUrl } from "../src/web/api.js";
+import { fetchSnapshot, fetchTaskResult, retryTask, taskArtifactUrl } from "../src/web/api.js";
 import { diagnoseTaskResultRun, isFailedApiCall } from "../src/web/result-analysis.js";
 
 describe("QA 结果分析界面", () => {
@@ -88,6 +88,42 @@ describe("QA 结果分析界面", () => {
     expect(markup).not.toContain("交给 Codex 修复");
   });
 
+  it("结果提供整批失败与单模块重新测试入口", () => {
+    const markup = renderToStaticMarkup(createElement(ResultPanel, {
+      taskId: "task-one",
+      tab: "overview",
+      state: { taskId: "task-one", loading: false, result, error: "" },
+      initialSelectedRunKey: "run-one-case-one:case-one",
+      retryPending: true,
+      onRetryTask: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+
+    expect(markup).toContain("重试全部失败用例");
+    expect(markup).toContain("重新测试");
+    expect(markup).toContain('aria-label="重新测试 case-one"');
+  });
+
+  it("通过结果保留单模块重新测试入口", () => {
+    const passedResult: TaskResult = {
+      ...result,
+      passed: 1,
+      failed: 0,
+      runs: [{ ...result.runs[0], status: "passed", errorSummary: "" }],
+    };
+    const markup = renderToStaticMarkup(createElement(ResultPanel, {
+      taskId: "task-one",
+      tab: "overview",
+      state: { taskId: "task-one", loading: false, result: passedResult, error: "" },
+      onRetryTask: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+
+    expect(markup).not.toContain("重试全部失败用例");
+    expect(markup).not.toContain("重试全部失败用例");
+    expect(markup).toContain("重新测试");
+  });
+
   it("选中用例后接口页保留用例范围", () => {
     const markup = renderResult("api", "run-one-case-one:case-one");
 
@@ -145,6 +181,22 @@ describe("QA 结果分析界面", () => {
     await expect(fetchTaskResult("task/one", true)).resolves.toMatchObject({ result: { runId: "run-one" } });
     expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task%2Fone/result?refresh=1", expect.any(Object));
     expect(taskArtifactUrl("task/one", "artifact/one")).toBe("/api/tasks/task%2Fone/artifacts/artifact%2Fone");
+    vi.unstubAllGlobals();
+  });
+
+  it("重试 API 编码任务 ID 并提交失败用例范围", async () => {
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({ tasks: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await retryTask("task/one", { caseRunIds: ["case-run-one"] });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks/task%2Fone/retry", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ caseRunIds: ["case-run-one"] }),
+    }));
     vi.unstubAllGlobals();
   });
 

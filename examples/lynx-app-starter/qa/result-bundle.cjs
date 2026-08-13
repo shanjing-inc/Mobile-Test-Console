@@ -25,12 +25,16 @@ function buildResultBundle(projectRoot, request) {
       startedAt: raw.startedAt,
       finishedAt: raw.finishedAt,
     },
-    cases: [{
-      caseRunId: `${request.plan.runId}-home-render`,
-      caseId: "home-render",
+    cases: (raw.pages || ["home.bundle"]).map(page => {
+      const retryCase = Array.isArray(request.plan.metadata?.retry?.caseRuns)
+        ? request.plan.metadata.retry.caseRuns.find(item => item.targetPage === page)
+        : undefined;
+      return ({
+      caseRunId: retryCase?.caseRunId || `${request.plan.runId}-${page}`,
+      caseId: retryCase?.caseId || (page === "home.bundle" ? "home-render" : page),
       title: "Lynx 首页渲染",
       status: request.result.status,
-      targetPage: "home.bundle",
+      targetPage: page,
       scenario: "打开首页并等待 page_ready",
       steps: [{
         stepId: "open-home",
@@ -46,6 +50,9 @@ function buildResultBundle(projectRoot, request) {
       evidenceRefs: [],
       errorSummary: passed ? "" : request.result.error || "页面未就绪",
       metadata: {
+        ...(retryCase?.launchPage ? { launchPage: retryCase.launchPage } : {}),
+        ...(retryCase?.routeParams ? { routeParams: retryCase.routeParams } : {}),
+        ...(retryCase?.parameterProfileId ? { parameterProfileId: retryCase.parameterProfileId } : {}),
         platform: raw.platform,
         device: raw.device,
         requiredEvents: ["page_ready"],
@@ -53,7 +60,8 @@ function buildResultBundle(projectRoot, request) {
         runtimeEventCount: 2,
         uiActionCount: 0,
       },
-    }],
+    });
+    }),
     artifacts: [],
     warnings: fs.existsSync(resultPath) ? [] : ["测试命令未生成 raw-result.json"],
     provenance: {

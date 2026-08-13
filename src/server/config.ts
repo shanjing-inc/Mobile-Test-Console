@@ -16,6 +16,7 @@ import {
   type ProjectTestingManifest,
   type RepairJob,
   type RunTarget,
+  type TaskRetrySource,
   type TestTask,
 } from "../shared/contracts.js";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
@@ -703,7 +704,7 @@ export function resolveOptionalCommand(
   config: LoadedProjectConfig,
   test: TestDefinition,
   device: Device,
-  task: { id: string; runId: string },
+  task: { id: string; runId: string; retryOf?: TaskRetrySource },
   parameters: Record<string, string>,
   workspaceRoot = config.project.root,
 ): ResolvedCommand | null {
@@ -729,6 +730,7 @@ export function resolveOptionalCommand(
   for (const [key, value] of Object.entries(parameters)) {
     values[`params.${key}`] = value;
   }
+  Object.assign(values, buildRetryTemplateValues(task.retryOf));
 
   return resolveCommandDefinition(config, definition, values, workspaceRoot);
 }
@@ -737,7 +739,7 @@ export function resolveTargetCommand(
   config: LoadedProjectConfig,
   test: TestDefinition,
   target: RunTarget,
-  task: { id: string; runId: string },
+  task: { id: string; runId: string; retryOf?: TaskRetrySource },
   parameters: Record<string, string>,
   workspaceRoot = config.project.root,
 ): ResolvedCommand | null {
@@ -752,6 +754,7 @@ export function resolveTargetCommand(
     "task.id": task.id,
     "task.runId": task.runId,
     ...Object.fromEntries(Object.entries(parameters).map(([key, value]) => [`params.${key}`, value])),
+    ...buildRetryTemplateValues(task.retryOf),
   }, workspaceRoot);
 }
 
@@ -955,6 +958,7 @@ function buildTaskTemplateValues(config: LoadedProjectConfig, task: TestTask): R
   for (const [key, value] of Object.entries(task.parameters)) {
     values[`params.${key}`] = value;
   }
+  Object.assign(values, buildRetryTemplateValues(task.retryOf));
   return values;
 }
 
@@ -981,6 +985,18 @@ function buildTargetTemplateValues(target: RunTarget): Record<string, string> {
     "target.runtime": target.runtime,
     "target.appId": target.kind === "mini-program" ? target.appId : "",
     "target.concurrencyKey": target.concurrencyKey,
+  };
+}
+
+function buildRetryTemplateValues(retry?: TaskRetrySource): Record<string, string> {
+  return {
+    "retry.scope": retry?.scope ?? "task",
+    "retry.attempt": String(retry?.attempt ?? ""),
+    "retry.caseRunIds": (retry?.caseRunIds ?? []).join(","),
+    "retry.caseIds": (retry?.caseIds ?? []).join(","),
+    "retry.targetPages": (retry?.targetPages ?? []).join(","),
+    "retry.sourceTaskId": retry?.taskId ?? "",
+    "retry.sourceRunId": retry?.runId ?? "",
   };
 }
 

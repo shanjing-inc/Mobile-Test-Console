@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
-- **Last Active**: 2026-08-11
+- **Total Sessions**: 11
+- **Last Active**: 2026-08-13
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~278 | Active |
+| `journal-1.md` | ~377 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,9 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-08-13 | 复测沿用原运行记录 | `d88233a6b4be0d79dcbec36541a9054e7eea41e3` | `main` |
+| 10 | 2026-08-13 | 修复单页面复测范围 | `681973f` | `main` |
+| 9 | 2026-08-13 | 支持测试结果模块复测 | `2ad30b9` | `main` |
 | 8 | 2026-08-11 | 接入小程序测试产物清理 | `e45bf00` | `main` |
 | 7 | 2026-08-11 | 完成 MTC 小程序接入与提交审核 | `1e26b8e`, `8a63e87`, `a6e895a` | `main` |
 | 6 | 2026-08-01 | 修复页面列表滚动并显示总数（迁移） | `bd46f16` | `main` |

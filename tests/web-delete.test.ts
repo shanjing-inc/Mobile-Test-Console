@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ConsoleSnapshot, TestTask } from "../src/shared/contracts.js";
 import {
+  activeRetryRootTaskIds,
   clearDeletedFocusedTaskId,
+  collapseRetryTasks,
   DeleteConfirmation,
   excludeDeletedTasks,
   reconcileFocusedTaskId,
@@ -40,6 +42,25 @@ describe("运行记录删除交互", () => {
     expect(excludeDeletedTasks(snapshot, deletedTaskIds).tasks.map(item => item.id)).toEqual(["task-two"]);
   });
 
+  it("运行列表只展示来源任务", () => {
+    const retry = { ...task, id: "task-retry", runId: "run-retry", createdAt: "2026-08-13T00:01:00.000Z", retryOf: { taskId: task.id, runId: task.runId, scope: "cases" as const, attempt: 1, caseRunIds: ["case-run"], caseIds: ["case-one"] } };
+    expect(collapseRetryTasks([task, retry]).map(item => item.id)).toEqual([task.id]);
+  });
+
+  it("重试链存在中间 attempt 时继续展示来源任务", () => {
+    const retry = { ...task, id: "task-retry", runId: "run-retry", createdAt: "2026-08-13T00:01:00.000Z", retryOf: { taskId: task.id, runId: task.runId, scope: "cases" as const, attempt: 1, caseRunIds: ["case-run"], caseIds: ["case-one"] } };
+    const retryAgain = { ...retry, id: "task-retry-again", runId: "run-retry-again", createdAt: "2026-08-13T00:02:00.000Z", retryOf: { ...retry.retryOf, taskId: retry.id, runId: retry.runId, attempt: 2 } };
+    expect(collapseRetryTasks([task, retry, retryAgain]).map(item => item.id)).toEqual([task.id]);
+  });
+
+  it("将活动重试归并到来源测试组", () => {
+    const terminalRetry = { ...task, id: "task-retry", runId: "run-retry", createdAt: "2026-08-13T00:01:00.000Z", retryOf: { taskId: task.id, runId: task.runId, scope: "cases" as const, attempt: 1, caseRunIds: ["case-run"] } };
+    const activeRetry = { ...terminalRetry, id: "task-retry-again", runId: "run-retry-again", status: "running" as const, retryOf: { ...terminalRetry.retryOf, taskId: terminalRetry.id, runId: terminalRetry.runId, attempt: 2 } };
+
+    expect([...activeRetryRootTaskIds([task, terminalRetry, activeRetry])]).toEqual([task.id]);
+    expect(activeRetryRootTaskIds([task, terminalRetry])).toEqual(new Set());
+  });
+
   it("终态行显示删除按钮，活动行保留停止按钮", () => {
     const terminal = renderRow(task);
     const active = renderRow({ ...task, status: "running" });
@@ -50,6 +71,33 @@ describe("运行记录删除交互", () => {
     expect(terminal).not.toContain('class="stop-button"');
     expect(active).toContain('class="stop-button"');
     expect(active).not.toContain('class="delete-button"');
+  });
+
+  it("来源测试组重试期间显示提示并锁定删除", () => {
+    const row = renderToStaticMarkup(createElement(RunRow, {
+      task,
+      focused: false,
+      retrying: true,
+      onFocus: vi.fn(),
+      onStop: vi.fn(),
+      onRetain: vi.fn(),
+      onDelete: vi.fn(),
+      pending: false,
+    }));
+    const confirmation = renderToStaticMarkup(createElement(DeleteConfirmation, {
+      task,
+      retrying: true,
+      pending: false,
+      onCancel: vi.fn(),
+      onConfirm: vi.fn(),
+    }));
+
+    expect(row).toContain("正在重试");
+    expect(row).toContain('title="正在重试，完成后可删除"');
+    expect(row).toContain('title="正在重试，完成后可修改保留策略"');
+    expect(row).toContain('class="delete-button" disabled=""');
+    expect(confirmation).toContain("该测试组正在重试，完成后可删除");
+    expect(confirmation).toContain('class="danger-button" disabled=""');
   });
 
   it("运行记录展示 iOS 模拟器和真机类型", () => {

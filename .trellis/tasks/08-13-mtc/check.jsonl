@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"检查页面选择冻结、重试元数据、成功结果合并、活动链删除保护和完整链清理。"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"检查页面选择器和重试中的来源组交互状态。"}
+{"file":".trellis/tasks/08-13-mtc/research/verification.md","reason":"复用本任务已经执行的 MTC 与 Fanli 验证命令和结果。"}
