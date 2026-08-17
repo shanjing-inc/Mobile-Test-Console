@@ -43,6 +43,16 @@ describe("HTTP API", () => {
 
     await expandPageSelectionParameters(test, parameters, pageParameters, [{ platform: "android" } as never]);
     expect(parameters.pages).toBe("pageHome");
+
+    const explicit = { pages: "pageHome" };
+    await expandPageSelectionParameters(test, explicit, pageParameters, [{ platform: "android" } as never]);
+    expect(explicit.pages).toBe("pageHome");
+    await expect(expandPageSelectionParameters(
+      test,
+      { pages: "pageMissing" },
+      pageParameters,
+      [{ platform: "android" } as never],
+    )).rejects.toMatchObject({ code: "PAGE_SELECTION_UNKNOWN" });
   });
 
   it("登记项目并返回持久化接入步骤", async () => {
@@ -467,7 +477,7 @@ describe("HTTP API", () => {
       });
       expect(wholeTask.statusCode).toBe(200);
       expect(wholeTask.json().tasks[0]).toMatchObject({
-        retryOf: { taskId: source.id, scope: "task", attempt: 1 },
+        retryOf: { taskId: source.id, scope: "task", attempt: 2 },
       });
       await tasks.waitForTerminal(wholeTask.json().tasks[0].id);
 
@@ -477,7 +487,7 @@ describe("HTTP API", () => {
         payload: { caseRunIds: ["passed-case-run"] },
       });
       expect(passed.statusCode).toBe(200);
-      expect(passed.json().tasks[0]).toMatchObject({ retryOf: { scope: "cases", caseRunIds: ["passed-case-run"] } });
+      expect(passed.json().tasks[0]).toMatchObject({ retryOf: { scope: "cases", attempt: 3, caseRunIds: ["passed-case-run"] } });
       await tasks.waitForTerminal(passed.json().tasks[0].id);
 
       const unknownCase = await app.inject({

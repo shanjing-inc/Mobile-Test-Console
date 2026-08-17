@@ -9,7 +9,7 @@ import {
   type RunnerResolver,
   type RunnerResult,
 } from "../src/runner/sdk.js";
-import type { Device, MiniProgramRunTarget, TaskStatus } from "../src/shared/contracts.js";
+import type { Device, MiniProgramRunTarget, TaskStatus, TestTask } from "../src/shared/contracts.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { ConsoleError } from "../src/server/errors.js";
 import { StateStore } from "../src/server/state-store.js";
@@ -140,6 +140,26 @@ describe("任务管理器", () => {
       tasks: Array<{ retryOf?: typeof retryOf }>;
     };
     expect(stored.tasks[0].retryOf).toEqual(retryOf);
+    await manager.shutdown();
+  });
+
+  it("复测计划生成失败时保留来源任务原状态", async () => {
+    const dir = await createTempDir("mtc-task-retry-plan-failure-");
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir));
+    await manager.initialize();
+    const [source] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, source.id, "passed");
+
+    await expect(manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device], undefined, undefined,
+      () => { throw new Error("计划生成失败"); },
+      [],
+      { taskId: source.id, runId: source.runId, scope: "task", attempt: 1 },
+    )).rejects.toThrow("计划生成失败");
+
+    expect(manager.get(source.id)?.retained).toBeUndefined();
+    expect(manager.list()).toHaveLength(1);
     await manager.shutdown();
   });
 
@@ -544,6 +564,27 @@ describe("任务管理器", () => {
     await manager.shutdown();
   });
 
+  it("运行列表达到上限时保留可见复测的来源任务", async () => {
+    const dir = await createTempDir("mtc-task-list-retry-root-");
+    const storedTasks = Array.from({ length: 101 }, (_, index) => ({
+      ...createStoredTask(`task-${index}`, new Date(Date.UTC(2026, 7, 13) + index * 60_000).toISOString()),
+      ...(index === 100 ? {
+        retryOf: { taskId: "task-0", runId: "run-task-0", scope: "task" as const, attempt: 1 },
+      } : {}),
+    }));
+    await new StateStore(dir).save(storedTasks);
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir));
+    await manager.initialize();
+
+    expect(manager.listVisible().some(task => task.id === "task-0")).toBe(true);
+    expect(manager.listVisible().some(task => task.id === "task-100")).toBe(true);
+    expect(manager.list()).toHaveLength(101);
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as { tasks: TestTask[] };
+    expect(stored.tasks).toHaveLength(101);
+    expect(stored.tasks.some(task => task.id === "task-1")).toBe(true);
+    await manager.shutdown();
+  });
+
   it("活动重试期间锁定来源测试组删除", async () => {
     const dir = await createTempDir("mtc-task-delete-active-retry-");
     const manager = new TaskManager(createConfig(dir), new StateStore(dir));
@@ -555,9 +596,14 @@ describe("任务管理器", () => {
       [device], undefined, undefined, undefined, [],
       { taskId: source.id, runId: source.runId, scope: "cases", attempt: 1, caseRunIds: ["case-one"] },
     );
+    expect(manager.get(source.id)?.retained).toBe(true);
     await waitForStatus(manager, retry.id, "running");
 
     await expect(manager.delete(source.id)).rejects.toMatchObject({
+      code: "TASK_ACTIVE",
+      statusCode: 409,
+    } satisfies Partial<ConsoleError>);
+    await expect(manager.setRetained(source.id, false)).rejects.toMatchObject({
       code: "TASK_ACTIVE",
       statusCode: 409,
     } satisfies Partial<ConsoleError>);
@@ -674,6 +720,26 @@ function createConfig(stateDir: string): LoadedProjectConfig {
         commands: { default: { executable: process.execPath, args: ["-e", "setInterval(() => console.log('tick'), 20)"] } },
       },
     ],
+  };
+}
+
+function createStoredTask(id: string, createdAt: string): TestTask {
+  return {
+    id,
+    runId: `run-${id}`,
+    projectId: "demo",
+    testId: "pass",
+    testLabel: "Pass",
+    device: structuredClone(device),
+    parameters: {},
+    status: "passed",
+    phase: "测试通过",
+    createdAt,
+    startedAt: createdAt,
+    finishedAt: createdAt,
+    exitCode: 0,
+    error: "",
+    logs: [],
   };
 }
 

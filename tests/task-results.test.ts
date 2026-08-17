@@ -74,6 +74,115 @@ describe("测试结果服务", () => {
     ]);
   });
 
+  it("同名用例按目标页面匹配复测结果", () => {
+    const first = { ...retryRun("render", "failed", "source-first", "页面一失败"), targetPage: "pages/first" };
+    const second = { ...retryRun("render", "failed", "source-second", "页面二失败"), targetPage: "pages/second" };
+    const retriedSecond = { ...retryRun("render", "passed", "retry-second", "页面二通过"), targetPage: "pages/second" };
+
+    const merged = mergeRetryTaskResult(
+      { id: "source", runId: "source-run" } as TestTask,
+      retryResult("source", "old", [first, second]),
+      retryResult("retry", "new", [retriedSecond]),
+      {
+        taskId: "source",
+        runId: "source-run",
+        scope: "cases",
+        attempt: 1,
+        caseRunIds: [first.caseRunId, second.caseRunId],
+        caseIds: ["render"],
+        targetPages: ["pages/first", "pages/second"],
+      },
+    );
+
+    expect(merged.runs.map(run => [run.caseRunId, run.targetPage, run.status, run.errorSummary])).toEqual([
+      ["source-first", "pages/first", "failed", "页面一失败"],
+      ["source-second", "pages/second", "passed", "页面二通过"],
+    ]);
+  });
+
+  it("同页面同名用例按参数画像匹配复测结果", () => {
+    const first = { ...retryRun("render", "failed", "source-first", "画像一失败"), targetPage: "pages/detail", parameterProfileId: "profile-one" };
+    const second = { ...retryRun("render", "failed", "source-second", "画像二失败"), targetPage: "pages/detail", parameterProfileId: "profile-two" };
+    const retriedSecond = { ...retryRun("render", "passed", "retry-second", "画像二通过"), targetPage: "pages/detail", parameterProfileId: "profile-two" };
+    const retriedFirst = { ...retryRun("render", "passed", "retry-first", "画像一通过"), targetPage: "pages/detail", parameterProfileId: "profile-one" };
+
+    const merged = mergeRetryTaskResult(
+      { id: "source", runId: "source-run" } as TestTask,
+      retryResult("source", "old", [first, second]),
+      retryResult("retry", "new", [retriedSecond, retriedFirst]),
+      {
+        taskId: "source",
+        runId: "source-run",
+        scope: "cases",
+        attempt: 1,
+        caseRunIds: [first.caseRunId, second.caseRunId],
+        caseIds: ["render"],
+        targetPages: ["pages/detail"],
+      },
+    );
+
+    expect(merged.runs.map(run => [run.caseRunId, run.parameterProfileId, run.errorSummary])).toEqual([
+      ["source-first", "profile-one", "画像一通过"],
+      ["source-second", "profile-two", "画像二通过"],
+    ]);
+  });
+
+  it("多层复测将通过结果继续合并到根任务", () => {
+    const sourceRun = { ...retryRun("render", "failed", "source-run", "原始失败"), targetPage: "pages/detail" };
+    const firstRetryRun = { ...retryRun("render", "failed", "first-retry-run", "首次复测失败"), targetPage: "pages/detail" };
+    const nestedRetryRun = { ...retryRun("render", "passed", "nested-retry-run", "二层复测通过"), targetPage: "pages/detail" };
+    const sourceTask = { id: "source", runId: "source-run" } as TestTask;
+
+    const afterFirstRetry = mergeRetryTaskResult(
+      sourceTask,
+      retryResult("source", "old", [sourceRun]),
+      retryResult("retry-first", "first", [firstRetryRun]),
+      {
+        taskId: "source",
+        runId: "source-run",
+        scope: "cases",
+        attempt: 1,
+        caseRunIds: [sourceRun.caseRunId],
+        caseIds: ["render"],
+        targetPages: ["pages/detail"],
+      },
+    );
+    const merged = mergeRetryTaskResult(
+      sourceTask,
+      afterFirstRetry,
+      retryResult("retry-nested", "nested", [nestedRetryRun]),
+      {
+        taskId: "retry-first",
+        runId: "retry-first",
+        scope: "cases",
+        attempt: 2,
+        caseRunIds: [firstRetryRun.caseRunId],
+        caseIds: ["render"],
+        targetPages: ["pages/detail"],
+      },
+    );
+
+    expect(merged.runs.map(run => [run.caseRunId, run.status, run.errorSummary])).toEqual([
+      ["source-run", "passed", "二层复测通过"],
+    ]);
+
+    const unrelated = mergeRetryTaskResult(
+      sourceTask,
+      retryResult("source", "old", [sourceRun]),
+      retryResult("retry-unrelated", "unrelated", [nestedRetryRun]),
+      {
+        taskId: "retry-first",
+        runId: "retry-first",
+        scope: "cases",
+        attempt: 2,
+        caseRunIds: ["unknown-parent-run"],
+        caseIds: ["unrelated"],
+        targetPages: ["pages/unrelated"],
+      },
+    );
+    expect(unrelated.runs).toEqual([sourceRun]);
+  });
+
   it("连续重试累计成功结果并忽略后续失败结果", () => {
     const first = retryRun("first", "failed", "source-first", "A 原始失败");
     const second = retryRun("second", "failed", "source-second", "B 原始失败");

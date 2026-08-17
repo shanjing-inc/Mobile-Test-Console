@@ -161,6 +161,7 @@ export function resolveSelectedPageIds(
   return resolveSelectedIds(parameter, value, pages.map(page => ({ id: page.pageId, label: page.label, metadata: { priority: page.priority, tags: page.tags, scope: page.testScope } })));
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function resolveSelectedIds(parameter: PageSelectionParameterDefinition, value: string, items: PageSelectionItem[]): Set<string> {
   const preset = parameter.presets.find(item => item.value === value);
   if (preset) return new Set(items.filter(item => matchesSelectionPreset(item, preset.filter)).map(item => item.id));
@@ -179,6 +180,7 @@ export function matchesPagePreset(
   return true;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function matchesSelectionPreset(item: PageSelectionItem, filter: PageSelectionParameterDefinition["presets"][number]["filter"]): boolean {
   if (filter.priorities?.length && !filter.priorities.includes(item.metadata?.priority ?? "")) return false;
   if (filter.tags?.length && !filter.tags.some(tag => item.metadata?.tags?.includes(tag))) return false;

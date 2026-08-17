@@ -363,7 +363,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       deviceErrors: discovery.errors,
       deviceDiscoveryPending: discovery.refreshing,
       tests: toPublicTests(options.config.tests),
-      tasks: options.tasks.list(),
+      tasks: options.tasks.listVisible(),
       codexRepairEnabled: options.config.codexRepair?.enabled === true,
       repairJobs: options.repairs?.list() ?? [],
       updatedAt: new Date().toISOString(),
@@ -558,7 +558,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       taskId: source.id,
       runId: source.runId,
       scope: requestedCaseRunIds ? "cases" : "task",
-      attempt: (source.retryOf?.attempt ?? 0) + 1,
+      attempt: options.tasks.nextRetryAttempt(source.id),
     };
     if (requestedCaseRunIds) {
       const uniqueCaseRunIds = [...new Set(requestedCaseRunIds)];
@@ -592,8 +592,6 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
         ? { targetKeys: [source.target.key] }
         : { deviceKeys: [source.device.key] }),
     };
-    // 复测会替代运行监控中的原记录，先保护原任务及其产物。
-    await options.tasks.setRetained(source.id, true);
     return {
       tasks: await startTaskRequest(
         options,
@@ -791,8 +789,7 @@ export async function expandPageSelectionParameters(
 ): Promise<void> {
   const pageParameter = test.parameters.find(item => item.type === "page-selection");
   if (!pageParameter || !pageParameters || !pageParameters.isEnabled()) return;
-  const value = parameters[pageParameter.id] || pageParameter.defaultValue;
-  if (!pageParameter.presets.some(item => item.value === value)) return;
+  const value = parameters[pageParameter.id];
   const snapshot = await pageParameters.snapshot();
   const platforms = [...new Set(selectedDevices.map(device => device.platform))];
   const pages = snapshot.pages.filter(page => (
@@ -800,7 +797,16 @@ export async function expandPageSelectionParameters(
       || !page.platforms?.length
       || platforms.every(platform => page.platforms?.includes(platform))
   ));
-  const preset = pageParameter.presets.find(item => item.value === value)!;
+  const preset = pageParameter.presets.find(item => item.value === value);
+  if (!preset) {
+    const availablePageIds = new Set(pages.map(page => page.pageId));
+    const selectedPageIds = value.split(",").map(pageId => pageId.trim()).filter(Boolean);
+    const unknownPageIds = selectedPageIds.filter(pageId => !availablePageIds.has(pageId));
+    if (unknownPageIds.length > 0) {
+      throw new ConsoleError("PAGE_SELECTION_UNKNOWN", `${pageParameter.label} 包含不可测试页面: ${unknownPageIds.join(", ")}`);
+    }
+    return;
+  }
   const selected = pages.filter(page => (
     (!preset.filter.priorities?.length || preset.filter.priorities.includes(page.priority ?? ""))
     && (!preset.filter.tags?.length || preset.filter.tags.some(tag => page.tags?.includes(tag)))

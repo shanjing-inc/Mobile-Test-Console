@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   ACTIVE_TASK_STATUSES,
@@ -163,7 +164,7 @@ export class TaskResultService {
 
   async load(taskId: string, options: { refresh?: boolean } = {}): Promise<TaskResult> {
     const task = this.requireTerminalTask(taskId);
-    const retryTasks = task.retryOf ? [] : terminalRetryTasks(this.tasks.list(), task.id);
+    const retryTasks = task.retryOf ? [] : terminalRetryTasks(this.tasks.listRetryDescendants(task.id), task.id);
     if (retryTasks.length === 0) return this.loadSingle(task, options);
 
     const sourceFingerprint = taskResultFingerprint(task);
@@ -469,18 +470,57 @@ function matchPassedRetryRuns(
   retryOf: NonNullable<TestTask["retryOf"]>,
 ): Map<string, TaskResultRun> {
   const selectedIds = new Set(retryOf.caseRunIds ?? sourceRuns.map(run => run.caseRunId));
-  const candidates = sourceRuns.filter(run => selectedIds.has(run.caseRunId));
+  const directlySelected = sourceRuns.filter(run => selectedIds.has(run.caseRunId));
+  const candidates = directlySelected.length > 0
+    ? directlySelected
+    : retryScopeCandidates(sourceRuns, retryOf);
   const replacements = new Map<string, TaskResultRun>();
   const usedSourceIds = new Set<string>();
   for (const retryRun of passedRetryRuns) {
-    const sourceRun = candidates.find(run => !usedSourceIds.has(run.caseRunId) && run.caseRunId === retryRun.caseRunId)
-      ?? candidates.find(run => !usedSourceIds.has(run.caseRunId) && run.caseId && run.caseId === retryRun.caseId)
-      ?? candidates.find(run => !usedSourceIds.has(run.caseRunId) && run.targetPage && run.targetPage === retryRun.targetPage);
+    const available = candidates.filter(run => !usedSourceIds.has(run.caseRunId));
+    const sourceRun = available.find(run => run.caseRunId === retryRun.caseRunId)
+      ?? uniqueMatchingRun(available, run => matchesInvocation(run, retryRun))
+      ?? uniqueMatchingRun(available, run => Boolean(run.caseId) && run.caseId === retryRun.caseId
+        && Boolean(run.targetPage) && run.targetPage === retryRun.targetPage)
+      ?? uniqueMatchingRun(available, run => Boolean(run.caseId) && run.caseId === retryRun.caseId)
+      ?? uniqueMatchingRun(available, run => Boolean(run.targetPage) && run.targetPage === retryRun.targetPage);
     if (!sourceRun) continue;
     usedSourceIds.add(sourceRun.caseRunId);
     replacements.set(sourceRun.caseRunId, { ...retryRun, caseRunId: sourceRun.caseRunId });
   }
   return replacements;
+}
+
+function retryScopeCandidates(
+  sourceRuns: TaskResultRun[],
+  retryOf: NonNullable<TestTask["retryOf"]>,
+): TaskResultRun[] {
+  if (retryOf.scope === "task") return sourceRuns;
+  const caseIds = new Set(retryOf.caseIds ?? []);
+  const targetPages = new Set(retryOf.targetPages ?? []);
+  if (caseIds.size === 0 && targetPages.size === 0) return sourceRuns;
+  return sourceRuns.filter(run => (
+    (caseIds.size === 0 || caseIds.has(run.caseId))
+    && (targetPages.size === 0 || targetPages.has(run.targetPage))
+  ));
+}
+
+function matchesInvocation(source: TaskResultRun, retry: TaskResultRun): boolean {
+  if (!source.caseId || source.caseId !== retry.caseId
+    || !source.targetPage || source.targetPage !== retry.targetPage) return false;
+  const hasProfile = Boolean(retry.parameterProfileId);
+  const hasRouteParams = retry.routeParams !== undefined;
+  if (!hasProfile && !hasRouteParams) return false;
+  return (!hasProfile || source.parameterProfileId === retry.parameterProfileId)
+    && (!hasRouteParams || isDeepStrictEqual(source.routeParams, retry.routeParams));
+}
+
+function uniqueMatchingRun(
+  runs: TaskResultRun[],
+  predicate: (run: TaskResultRun) => boolean,
+): TaskResultRun | undefined {
+  const matches = runs.filter(predicate);
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 // 来源任务的全部终态重试按创建顺序累计合并，兄弟重试和多层重试都保留先前成功结果。

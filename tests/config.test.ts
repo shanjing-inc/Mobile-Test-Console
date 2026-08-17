@@ -506,6 +506,25 @@ describe("项目配置", () => {
     expect(resolveDevicePreparationCommand(config, config.devicePreparations[0], "install", createDevice())?.args)
       .toEqual(["install", "android:android-1"]);
   });
+
+  it("页面选择显式清空时返回参数错误", () => {
+    const test = {
+      ...createConfig().tests[0],
+      parameters: [{
+        id: "pages",
+        label: "页面范围",
+        type: "page-selection" as const,
+        source: "page-parameters" as const,
+        defaultValue: "all-pages",
+        presets: [{ value: "all-pages", label: "全部页面", description: "选择全部页面", filter: {} }],
+      }],
+    };
+
+    expect(() => validateParameters(test, { pages: "" })).toThrow("页面范围 的页面选择无效");
+    expect(validateParameters(test, {})).toEqual({ pages: "all-pages" });
+    expect(validateParameters(test, { pages: "pages/demo/index,page-detail" }))
+      .toEqual({ pages: "pages/demo/index,page-detail" });
+  });
 });
 
 function createConfig(): LoadedProjectConfig {

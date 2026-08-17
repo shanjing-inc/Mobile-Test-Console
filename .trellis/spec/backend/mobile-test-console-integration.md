@@ -333,16 +333,19 @@ POST /api/tasks/:taskId/retry
 - A retry creates a new task and run while preserving the source task and result.
 - The new task reuses the source test, parameters, and frozen run target.
 - The source task must be terminal.
+- `TaskManager.start` assigns `retryOf.attempt` from the complete persisted retry lineage immediately before enqueueing. API handlers may propose an attempt value, while the task manager remains authoritative so sibling requests receive monotonically increasing attempts.
 - An explicit case range contains unique `caseRunId` values from the source `TaskResult`, including passed cases.
-- MTC projects the selected runs into stable `caseRunIds`, `caseIds`, and `targetPages` fields.
+- MTC projects the selected runs into stable `caseRunIds`, `caseIds`, `targetPages`, and `caseRuns` fields. Each `caseRuns` item carries the direct source ID plus invocation identity such as `parameterProfileId` and `routeParams`.
 - `TestTask.retryOf` survives persistence and the Runner plan exposes the same value as `metadata.retry`.
 - Runner commands receive the optional retry context as environment variables: `MTC_RETRY_SCOPE`, `MTC_RETRY_ATTEMPT`, `MTC_RETRY_CASE_RUN_IDS`, `MTC_RETRY_CASE_IDS`, `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_SOURCE_TASK_ID`, and `MTC_RETRY_SOURCE_RUN_ID`. Command templates may use `{{retry.scope}}`, `{{retry.attempt}}`, `{{retry.caseRunIds}}`, `{{retry.caseIds}}`, `{{retry.targetPages}}`, `{{retry.sourceTaskId}}`, and `{{retry.sourceRunId}}`.
 - A project Runner must apply `MTC_RETRY_TARGET_PAGES` or `MTC_RETRY_CASE_IDS` to its page/case selector. MTC cannot infer project-specific navigation from a generic command.
 - Retry execution passes through storage capacity, device preparation, account profile, platform support, and target concurrency gates.
 - A Runner or project adapter may ignore `metadata.retry`; this produces a complete execution of the original test while retaining the requested range for audit.
 - The run monitor collapses retry tasks into their root source task. While any descendant retry has an active status, the root row and detail header expose `正在重试`, all retry actions remain disabled, and run-group mutations such as deletion or retention changes remain locked.
+- Retry lineage, scheduling locks, result merging, retention locks, deletion, and state persistence traverse the complete internal task collection. The public run list may cap recent rows, but it must include the ancestors of every visible retry and must never become the source of truth for persistence or internal operations.
 - `TaskManager.delete(rootTaskId)` traverses the retry lineage. It returns `TASK_ACTIVE` while any descendant is active; after every descendant reaches a terminal state, one delete removes the complete lineage and its project-owned artifacts.
-- Terminal retries merge into the root result in creation order. Each retry replaces only matching runs whose new status is `passed`; failed, cancelled, interrupted, malformed, or missing retry results preserve the existing item and its evidence. A batch retry may therefore update its passed items while retaining the previous content of failed items.
+- Terminal retries merge into the root result in creation order. Each retry replaces only matching runs whose new status is `passed`; failed, cancelled, interrupted, malformed, or missing retry results preserve the existing item and its evidence. Matching precedence is exact `caseRunId`, invocation identity (`caseId`, `targetPage`, `parameterProfileId`, and `routeParams`), unique `caseId + targetPage`, then a unique `caseId` or unique `targetPage`. Nested retries whose direct-source `caseRunId` is absent from the root use their stable `caseIds` and `targetPages` scope to find root candidates. Ambiguous or unmatched fallback keys preserve the source item. A batch retry may therefore update its passed items while retaining the previous content of failed items.
+- Retry creation prepares command overrides before mutating source retention or inserting tasks, then persists the source-retention change and new tasks together. A plan-construction failure leaves the source task unchanged.
 
 ### 4. Validation & Error Matrix
 
@@ -354,20 +357,27 @@ POST /api/tasks/:taskId/retry
 | Unknown case run | `RETRY_CASE_UNKNOWN`, HTTP 404 |
 | Duplicate case run IDs | `RETRY_CASE_DUPLICATE`, HTTP 400 |
 | Busy frozen target | `TARGET_BUSY`, HTTP 409 |
+| Retention change while a descendant retry is active | `TASK_ACTIVE`, HTTP 409; preserve the current retention flag |
 | Delete source while a descendant retry is active | `TASK_ACTIVE`, HTTP 409; preserve the complete retry lineage |
 | Retry item status differs from `passed`, or retry analysis is unavailable | Preserve the current source item and append a warning |
+| Retry fallback matches more than one source item | Preserve every ambiguous source item and append no replacement |
+| Nested retry direct-source IDs are absent from the root | Restrict candidates by the stable case/page scope, then apply ordinary identity matching |
+| Public run history exceeds its display limit | Persist the complete task collection and cap only `/api/snapshot` output |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: a passed page module is re-tested, the source row shows `正在重试`, and only that result item is replaced after completion.
 - Good: retry A passes and retry B fails; the final source result contains the new A item and the original B item.
+- Good: two runs share a page and case ID while using different parameter profiles; reversed retry output still replaces the matching invocation.
 - Base: a terminal retry restores deletion and retention controls on the source row.
 - Bad: the source row enables deletion while an active retry still belongs to its lineage.
 
 ### 6. Tests Required
 
-- Cover task persistence and Runner metadata round-trip.
+- Cover task persistence and Runner metadata round-trip, including more tasks than the public run-list limit.
+- Cover sibling attempt allocation, nested retry status refresh, source-retention rollback on plan failure, and lineage behavior beyond the public run-list limit.
 - Cover unknown and active tasks, passed and unknown cases, duplicate case IDs, terminal-state validation, and busy targets.
+- Cover duplicate `caseId` values across pages and duplicate page/case pairs across parameter profiles; assert that target page and invocation identity select the intended source item independent of result order.
 - Cover App device and mini-program target reconstruction from the source task.
 - Cover API request encoding and result-page actions for all failed cases and one arbitrary case.
 - Cover active descendant retries across direct and multi-attempt lineages. Assert the root ID is identified, `正在重试` is rendered, deletion is disabled, and controls recover at terminal status.
@@ -412,6 +422,19 @@ const runtime = task.target?.runtime;
 ```tsx
 const retrying = activeRetryRootTaskIds(snapshot.tasks).has(source.id);
 <button disabled={retrying} title={retrying ? "正在重试，完成后可删除" : "删除此运行记录"}>删除</button>
+```
+
+#### Wrong
+
+```ts
+await stateStore.save(taskManager.listVisible());
+```
+
+#### Correct
+
+```ts
+await stateStore.save(taskManager.list());
+snapshot.tasks = taskManager.listVisible();
 ```
 
 ## Scenario: Project Provider and Runner ownership
@@ -616,6 +639,13 @@ const root = config.taskResults
 ```
 
 ## Design Decisions
+
+### Explicit page selection validation
+
+- An omitted page-selection parameter uses its configured default. An explicitly empty string represents an empty selection and fails validation.
+- Explicit page IDs are frozen into the task request and validated against the current page-parameter catalog after target-platform filtering.
+- Page IDs are opaque catalog identifiers and may contain route separators such as `pages/demo/index`; validation rejects separators used by the serialized list and control characters, then catalog membership provides the authoritative allowlist.
+- Unknown or platform-incompatible explicit page IDs return `PAGE_SELECTION_UNKNOWN`. A preset with no matching pages returns `PAGE_SELECTION_EMPTY`.
 
 ### Single-case retry execution scope
 

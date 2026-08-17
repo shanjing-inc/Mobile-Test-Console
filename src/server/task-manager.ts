@@ -74,8 +74,41 @@ export class TaskManager {
   list(): TestTask[] {
     return [...this.tasks.values()]
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, MAX_TASKS)
       .map(task => structuredClone(task));
+  }
+
+  listVisible(): TestTask[] {
+    const recent = [...this.tasks.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, MAX_TASKS);
+    const visible = new Map(recent.map(task => [task.id, task]));
+    for (const task of recent) {
+      let current = task;
+      const visited = new Set<string>();
+      while (current.retryOf && !visited.has(current.id)) {
+        visited.add(current.id);
+        const parent = this.tasks.get(current.retryOf.taskId);
+        if (!parent) break;
+        visible.set(parent.id, parent);
+        current = parent;
+      }
+    }
+    return [...visible.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(task => structuredClone(task));
+  }
+
+  listRetryDescendants(taskId: string): TestTask[] {
+    return this.retryLineage(taskId)
+      .filter(task => task.id !== taskId)
+      .map(task => structuredClone(task));
+  }
+
+  nextRetryAttempt(taskId: string): number {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${taskId}`, 404);
+    const rootTaskId = this.retryRootTaskId(task);
+    return Math.max(0, ...this.retryLineage(rootTaskId).map(item => item.retryOf?.attempt ?? 0)) + 1;
   }
 
   get(taskId: string): TestTask | null {
@@ -102,6 +135,9 @@ export class TaskManager {
     const parameters = validateParameters(test, request.parameters ?? {});
     const targetKeys = [...new Set(request.targetKeys ?? [])];
     const deviceKeys = [...new Set(request.deviceKeys ?? [])];
+    const resolvedRetryOf = retryOf && this.tasks.has(retryOf.taskId)
+      ? { ...structuredClone(retryOf), attempt: this.nextRetryAttempt(retryOf.taskId) }
+      : retryOf;
     if (targetKeys.length > 0 && deviceKeys.length > 0) {
       throw new ConsoleError("TARGET_SELECTION_INVALID", "运行目标和设备不能同时选择");
     }
@@ -118,12 +154,12 @@ export class TaskManager {
           throw new ConsoleError("TARGET_BUSY", `${target.label} 与本次选择的其他运行目标共享执行环境`, 409);
         }
         selectedConcurrencyKeys.add(target.concurrencyKey);
-        const active = this.list().find(task => task.target?.concurrencyKey === target.concurrencyKey && ACTIVE_STATUSES.has(task.status));
+        const active = [...this.tasks.values()].find(task => task.target?.concurrencyKey === target.concurrencyKey && ACTIVE_STATUSES.has(task.status));
         if (active) throw new ConsoleError("TARGET_BUSY", `${target.label} 正在执行 ${active.testLabel}`, 409);
         return target;
       });
       const createdAt = new Date().toISOString();
-      const tasks = selectedTargets.map(target => this.createTask(test, target, parameters, createdAt, workspaceRoot, repairJobId, retryOf));
+      const tasks = selectedTargets.map(target => this.createTask(test, target, parameters, createdAt, workspaceRoot, repairJobId, resolvedRetryOf));
       await this.enqueueTasks(tasks, test, commandFactory);
       return tasks.map(task => structuredClone(task));
     }
@@ -138,13 +174,13 @@ export class TaskManager {
       if (!test.platforms.includes(device.platform)) {
         throw new ConsoleError("PLATFORM_UNSUPPORTED", `${test.label} 不支持 ${device.platform}`);
       }
-      const active = this.list().find(task => task.device.key === key && ACTIVE_STATUSES.has(task.status));
+      const active = [...this.tasks.values()].find(task => task.device.key === key && ACTIVE_STATUSES.has(task.status));
       if (active) throw new ConsoleError("DEVICE_BUSY", `${device.name} 正在执行 ${active.testLabel}`, 409);
       return device;
     });
 
     const createdAt = new Date().toISOString();
-    const tasks = selected.map(device => this.createTask(test, appRunTargetOf(device), parameters, createdAt, workspaceRoot, repairJobId, retryOf));
+    const tasks = selected.map(device => this.createTask(test, appRunTargetOf(device), parameters, createdAt, workspaceRoot, repairJobId, resolvedRetryOf));
     await this.enqueueTasks(tasks, test, commandFactory);
     return tasks.map(task => structuredClone(task));
   }
@@ -154,9 +190,18 @@ export class TaskManager {
     test: TestDefinition,
     commandFactory?: (task: TestTask) => ResolvedCommand | null,
   ): Promise<void> {
-    for (const task of tasks) {
+    const preparedOverrides = tasks.map(task => commandFactory?.(structuredClone(task)) ?? null);
+    const retrySourceTaskId = tasks[0]?.retryOf?.taskId;
+    if (retrySourceTaskId) {
+      const retrySource = this.tasks.get(retrySourceTaskId);
+      if (retrySource && !TERMINAL_STATUSES.has(retrySource.status)) {
+        throw new ConsoleError("TASK_NOT_RETRYABLE", "终态任务才支持重新测试", 409);
+      }
+      if (retrySource) retrySource.retained = true;
+    }
+    for (const [index, task] of tasks.entries()) {
       this.tasks.set(task.id, task);
-      const override = commandFactory?.(structuredClone(task));
+      const override = preparedOverrides[index];
       if (override) this.commandOverrides.set(task.id, override);
     }
     await this.persistNow();
@@ -226,11 +271,28 @@ export class TaskManager {
     return [...related.values()];
   }
 
+  private retryRootTaskId(task: TestTask): string {
+    let current = task;
+    const visited = new Set<string>();
+    while (current.retryOf && !visited.has(current.id)) {
+      visited.add(current.id);
+      const parent = this.tasks.get(current.retryOf.taskId);
+      if (!parent) return current.retryOf.taskId;
+      current = parent;
+    }
+    return current.id;
+  }
+
   async setRetained(taskId: string, retained: boolean): Promise<TestTask> {
     const task = this.tasks.get(taskId);
     if (!task) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${taskId}`, 404);
     if (!TERMINAL_STATUSES.has(task.status)) {
       throw new ConsoleError("TASK_ACTIVE", `活动任务暂不支持修改保留状态: ${taskId}`, 409);
+    }
+    const activeRetry = this.retryLineage(taskId)
+      .find(related => related.id !== taskId && ACTIVE_STATUSES.has(related.status));
+    if (activeRetry) {
+      throw new ConsoleError("TASK_ACTIVE", `重试链中存在活动任务，暂时不能修改保留状态: ${activeRetry.id}`, 409);
     }
     task.retained = retained;
     await this.persistNow();

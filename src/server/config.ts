@@ -661,7 +661,7 @@ export function validateParameters(
 
   const result: Record<string, string> = {};
   for (const parameter of test.parameters) {
-    const value = String(input[parameter.id] || parameter.defaultValue);
+    const value = String(Object.hasOwn(input, parameter.id) ? input[parameter.id] : parameter.defaultValue);
     if (parameter.type === "select" && !parameter.options.some(option => option.value === value)) {
       throw new ConsoleError("PARAMETER_INVALID", `${parameter.label} 的值无效: ${value}`);
     }
@@ -673,7 +673,7 @@ export function validateParameters(
     if (parameter.type === "page-selection") {
       const preset = parameter.presets.some(item => item.value === value);
       const pageIds = value.split(",").map(item => item.trim()).filter(Boolean);
-      if (!preset && (pageIds.length === 0 || pageIds.some(pageId => !/^[A-Za-z0-9._-]+$/.test(pageId)))) {
+      if (!preset && (pageIds.length === 0 || pageIds.some(pageId => /[\u0000-\u001F\u007F,]/.test(pageId)))) {
         throw new ConsoleError("PARAMETER_INVALID", `${parameter.label} 的页面选择无效: ${value}`);
       }
     }

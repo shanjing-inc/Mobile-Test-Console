@@ -315,9 +315,7 @@ export default function App() {
   const retryingRootTaskIds = useMemo(() => activeRetryRootTaskIds(snapshot?.tasks ?? []), [snapshot]);
   const focusedTask = focusedTaskId ? tasks.find(task => task.id === focusedTaskId) : undefined;
   const focusedRetryStatus = focusedTask
-    ? snapshot?.tasks
-      .filter(task => task.retryOf?.taskId === focusedTask.id)
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]?.status || ""
+    ? latestRetryStatus(snapshot?.tasks ?? [], focusedTask.id)
     : "";
   const focusedResultTaskId = focusedTask?.id || "";
   const focusedResultTaskStatus = focusedTask?.status || "";
@@ -1750,6 +1748,36 @@ export function activeRetryRootTaskIds(tasks: TestTask[]): Set<string> {
     rootIds.add(rootId);
   }
   return rootIds;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function latestRetryStatus(tasks: TestTask[], rootTaskId: string): TaskStatus | "" {
+  const descendants = tasks.filter(task => task.id !== rootTaskId && retryRootTaskId(task, tasks) === rootTaskId);
+  const active = descendants
+    .filter(task => ACTIVE_STATUSES.has(task.status))
+    .sort(compareRetryTasks)[0];
+  return active?.status ?? descendants.sort(compareRetryTasks)[0]?.status ?? "";
+}
+
+function compareRetryTasks(left: TestTask, right: TestTask): number {
+  return right.createdAt.localeCompare(left.createdAt)
+    || (right.retryOf?.attempt ?? 0) - (left.retryOf?.attempt ?? 0)
+    || right.id.localeCompare(left.id);
+}
+
+function retryRootTaskId(task: TestTask, tasks: TestTask[]): string {
+  const byId = new Map(tasks.map(item => [item.id, item]));
+  let rootId = task.id;
+  let current = task;
+  const visited = new Set<string>();
+  while (current.retryOf && !visited.has(current.id)) {
+    visited.add(current.id);
+    rootId = current.retryOf.taskId;
+    const parent = byId.get(rootId);
+    if (!parent) break;
+    current = parent;
+  }
+  return rootId;
 }
 
 // 删除请求成功后立即关闭对应详情，后续快照刷新失败时也不会保留失效记录。

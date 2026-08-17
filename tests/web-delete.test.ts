@@ -8,6 +8,7 @@ import {
   collapseRetryTasks,
   DeleteConfirmation,
   excludeDeletedTasks,
+  latestRetryStatus,
   reconcileFocusedTaskId,
   RunRow,
 } from "../src/web/App.js";
@@ -59,6 +60,8 @@ describe("运行记录删除交互", () => {
 
     expect([...activeRetryRootTaskIds([task, terminalRetry, activeRetry])]).toEqual([task.id]);
     expect(activeRetryRootTaskIds([task, terminalRetry])).toEqual(new Set());
+    expect(latestRetryStatus([task, terminalRetry, activeRetry], task.id)).toBe("running");
+    expect(latestRetryStatus([task, terminalRetry, { ...activeRetry, status: "passed" }], task.id)).toBe("passed");
   });
 
   it("终态行显示删除按钮，活动行保留停止按钮", () => {
