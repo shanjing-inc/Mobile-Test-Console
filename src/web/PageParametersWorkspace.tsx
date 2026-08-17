@@ -16,6 +16,7 @@ import {
   type PageScenarioAction,
   type PageScenarioAssertion,
   type MiniProgramRunTarget,
+  type ProjectTestEnvironment,
   type SavePageParameterProfileRequest,
 } from "../shared/contracts";
 import {
@@ -63,9 +64,10 @@ const originLabels: Record<PageParameterValueOrigin, string> = {
   manual: "手动编辑",
 };
 
-export function PageParametersWorkspace({ devices, targets = [], projectFamily = "app", adapter: adapterProp, onMessage }: {
+export function PageParametersWorkspace({ devices, targets = [], environments = [], projectFamily = "app", adapter: adapterProp, onMessage }: {
   devices: Device[];
   targets?: MiniProgramRunTarget[];
+  environments?: ProjectTestEnvironment[];
   projectFamily?: "app" | "mini-program";
   adapter?: PageParameterAdapterManifest;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
@@ -118,6 +120,11 @@ export function PageParametersWorkspace({ devices, targets = [], projectFamily =
   }, [onMessage]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const firstEnvironment = environments[0]?.id;
+    if (firstEnvironment && !environments.some(item => item.id === environment)) setEnvironment(firstEnvironment);
+  }, [environment, environments]);
 
   useEffect(() => {
     if (!activeRecording || !["starting", "recording"].includes(activeRecording.status)) return;
@@ -756,7 +763,7 @@ export function PageParametersWorkspace({ devices, targets = [], projectFamily =
           {projectFamily === "mini-program"
             ? <label className="field"><span>小程序目标</span><select value={targetKey} onChange={event => setTargetKey(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="">选择运行目标</option>{availableTargets.map(target => <option key={target.key} value={target.key}>{target.label} · {target.platform} · {target.appId}</option>)}</select></label>
             : <label className="field"><span>设备</span><select value={deviceKey} onChange={event => setDeviceKey(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="">选择设备</option>{connectedDevices.map(device => <option key={device.key} value={device.key}>{device.name} · {device.platform}</option>)}</select></label>}
-          <label className="field"><span>环境</span><select value={environment} onChange={event => setEnvironment(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="qa">QA</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
+          <label className="field"><span>环境</span><select value={environment} onChange={event => setEnvironment(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}>{(environments.length > 0 ? environments : [{ id: "qa", label: "QA" }, { id: "staging", label: "Staging" }, { id: "production", label: "Production" }]).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
           {activeRecording && ["starting", "recording"].includes(activeRecording.status)
             ? <button className="stop-button recording-command" type="button" onClick={() => void handleStop()} disabled={pending}><Square size={14} fill="currentColor" />停止</button>
             : <button className="primary-button recording-command" type="button" onClick={() => void handleStart()} disabled={pending || !selectedExecutionKey}><Radio size={15} />开始录制</button>}

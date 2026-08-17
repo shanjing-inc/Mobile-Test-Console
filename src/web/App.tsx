@@ -1028,6 +1028,7 @@ export default function App() {
           ? <PageParametersWorkspace
             devices={snapshot?.devices ?? []}
             targets={snapshot?.targets?.filter((target): target is Extract<RunTarget, { kind: "mini-program" }> => target.kind === "mini-program") ?? []}
+            environments={snapshot?.testing.environments ?? []}
             projectFamily={selectedProjectFamily}
             adapter={snapshot?.adapter?.pageParameters}
             onMessage={setMessage}

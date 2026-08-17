@@ -351,7 +351,7 @@ export class PageParameterService {
   private async callProvider<T>(action: "catalog" | "recording-start" | "recording-status" | "recording-stop" | "replay", extraArgs: string[] = []): Promise<T> {
     const command = resolvePageParameterProviderCommand(this.config, action);
     if (!command) throw new ConsoleError("PAGE_PARAMETERS_UNAVAILABLE", "项目未配置页面参数 provider", 404);
-    const result = await capture(command, extraArgs);
+    const result = await capture(command, extraArgs, action === "replay" ? 15 * 60_000 : 120_000);
     if (result.code !== 0) throw new ConsoleError("PAGE_PARAMETER_PROVIDER_FAILED", result.stderr || result.stdout || `provider 退出码 ${result.code}`, 502);
     try {
       return JSON.parse(result.stdout) as T;
@@ -432,13 +432,13 @@ function observationKey(item: PageParameterObservation): string {
   return JSON.stringify([item.capturedAt, item.pageId, item.bundle, item.values]);
 }
 
-function capture(command: ResolvedCommand, extraArgs: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function capture(command: ResolvedCommand, extraArgs: string[], timeout: number): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => {
     execFile(command.executable, [...command.args, ...extraArgs], {
       cwd: command.cwd,
       env: { ...process.env, ...command.env },
       encoding: "utf8",
-      timeout: 120_000,
+      timeout,
       maxBuffer: 16 * 1024 * 1024,
     }, (error, stdout, stderr) => {
       const code = typeof (error as NodeJS.ErrnoException & { code?: number })?.code === "number"
