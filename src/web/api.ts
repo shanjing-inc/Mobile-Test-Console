@@ -357,10 +357,10 @@ export function fetchPageParameters(): Promise<PageParametersResponse> {
   return request<PageParametersResponse>("/api/page-parameters");
 }
 
-export function startPageParameterRecording(deviceKey: string, environment: string): Promise<{ recording: PageParameterRecording }> {
+export function startPageParameterRecording(input: { deviceKey?: string; targetKey?: string; environment: string }): Promise<{ recording: PageParameterRecording }> {
   return request<{ recording: PageParameterRecording }>("/api/page-parameter-recordings", {
     method: "POST",
-    body: JSON.stringify({ deviceKey, environment }),
+    body: JSON.stringify(input),
   });
 }
 
@@ -372,10 +372,10 @@ export function stopPageParameterRecording(recordingId: string): Promise<{ recor
   return request<{ recording: PageParameterRecording }>(`/api/page-parameter-recordings/${encodeURIComponent(recordingId)}/stop`, { method: "POST" });
 }
 
-export function replayPageParameterProfile(pageId: string, profileId: string, deviceKey: string): Promise<{ replay: PageParameterReplay }> {
+export function replayPageParameterProfile(pageId: string, profileId: string, input: { deviceKey?: string; targetKey?: string }): Promise<{ replay: PageParameterReplay }> {
   return request<{ replay: PageParameterReplay }>(`/api/page-parameters/${encodeURIComponent(pageId)}/profiles/${encodeURIComponent(profileId)}/replay`, {
     method: "POST",
-    body: JSON.stringify({ deviceKey }),
+    body: JSON.stringify(input),
   });
 }
 

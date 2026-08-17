@@ -218,6 +218,8 @@ MTC 在项目概览展示产物占用、磁盘剩余空间、实际挂载点和�
 
 页面测试使用 `kind: "page"` 和 `page-selection` 参数。预设只包含通用筛选条件，页面 ID、优先级、标签、平台和测试范围由项目的页面目录 Provider 返回。流程测试使用 `kind: "flow"`，流程分组及其执行命令继续由项目配置和 Runner 解释。
 
+小程序页面参数工作台使用配置中的 `testing.targets[]` 作为执行对象。页面参数 Provider 的录制、状态、停止和回放命令接收 `targetKey`、`target.kind`、`target.platform`、`target.runtime`、`target.appId` 等目标参数；App 继续使用兼容的 `deviceKey`。MTC 会在请求中强制二选一，录制与回放结果保留目标引用，项目适配器据此拉起微信开发者工具并写入运行产物。
+
 命令使用 `executable + args` 启动。`lifecycle.startup` 在 HTTP 服务监听前执行一次，`lifecycle.shutdown` 在任务停止和服务关闭后执行一次；准备命令失败会终止服务启动。生命周期命令可使用 `{{projectRoot}}`、`{{configPath}}` 和 `{{process.pid}}`。设备测试命令支持 `{{device.id}}`、`{{device.platform}}`、`{{device.type}}`；运行目标命令支持 `{{target.key}}`、`{{target.platform}}`、`{{target.runtime}}`、`{{target.appId}}`。全部测试命令支持 `{{task.id}}`、`{{task.runId}}` 和 `{{params.<id>}}`，结果提供器额外支持 `{{results.artifactsRoot}}`。页面提交的测试 ID、目标和参数都必须在配置中声明。
 
 失败结果的用例诊断区提供“复制错误”操作。复制内容包含脱敏后的错误摘要、失败日志、页面、参数、缺失事件、失败接口、失败交互和截图引用，可直接用于人工诊断或交给外部编程工具处理。控制台启动过程不依赖 Codex。

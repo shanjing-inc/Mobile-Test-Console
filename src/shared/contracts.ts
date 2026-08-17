@@ -994,7 +994,10 @@ export interface PageParameterReplay {
   replayId: string;
   pageId: string;
   profileId: string;
-  platform: Platform;
+  platform: PageParameterPlatform;
+  targetKey?: string;
+  targetKind?: TargetKind;
+  targetPlatform?: string;
   environment: string;
   status: PageParameterReplayStatus;
   startedAt: string;
@@ -1006,9 +1009,16 @@ export interface PageParameterReplay {
 
 export interface PageParameterRecording {
   recordingId: string;
+  /** 小程序运行目标引用；App 录制继续使用 deviceKey/deviceId。 */
+  targetKey?: string;
+  targetKind?: TargetKind;
+  targetLabel?: string;
+  targetRuntime?: string;
+  targetAppId?: string;
+  targetPlatform?: string;
   deviceKey: string;
   deviceId: string;
-  platform: Platform;
+  platform: PageParameterPlatform;
   environment: string;
   status: PageParameterRecordingStatus;
   startedAt: string;
@@ -1031,7 +1041,8 @@ export interface PageParametersResponse {
 }
 
 export interface StartPageParameterRecordingRequest {
-  deviceKey: string;
+  deviceKey?: string;
+  targetKey?: string;
   environment: string;
 }
 

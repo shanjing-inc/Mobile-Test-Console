@@ -55,12 +55,18 @@ const installDevicePreparationSchema = z.object({
 });
 
 const startPageParameterRecordingSchema = z.object({
-  deviceKey: z.string().min(1),
+  deviceKey: z.string().min(1).optional(),
+  targetKey: z.string().min(1).optional(),
   environment: z.string().min(1),
+}).refine(value => Boolean(value.deviceKey) !== Boolean(value.targetKey), {
+  message: "设备和运行目标需要选择其中一个",
 });
 
 const replayPageParameterProfileSchema = z.object({
-  deviceKey: z.string().min(1),
+  deviceKey: z.string().min(1).optional(),
+  targetKey: z.string().min(1).optional(),
+}).refine(value => Boolean(value.deviceKey) !== Boolean(value.targetKey), {
+  message: "设备和运行目标需要选择其中一个",
 });
 
 const pageScenarioAssertionSchema = z.object({
@@ -433,11 +439,10 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   app.post<{ Body: StartPageParameterRecordingRequest }>("/api/page-parameter-recordings", async request => {
     const parsed = startPageParameterRecordingSchema.safeParse(request.body);
     if (!parsed.success) throw invalidRequest(parsed.error);
-    const discovery = await options.devices.discover();
-    const device = discovery.devices.find(item => item.key === parsed.data.deviceKey);
-    if (!device) throw new ConsoleError("DEVICE_UNKNOWN", `设备不存在: ${parsed.data.deviceKey}`, 404);
-    if (device.connectionState !== "available") throw new ConsoleError("DEVICE_UNAVAILABLE", `${device.name} 当前不可用`, 409);
-    return { recording: await pageParameters.startRecording(device, parsed.data.environment) };
+    const execution = parsed.data.targetKey
+      ? findConfiguredTarget(options.config, parsed.data.targetKey)
+      : await findAvailableDevice(options, parsed.data.deviceKey!);
+    return { recording: await pageParameters.startRecording(execution, parsed.data.environment) };
   });
 
   app.get<{ Params: { recordingId: string } }>("/api/page-parameter-recordings/:recordingId", async request => ({
@@ -448,16 +453,15 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     recording: await pageParameters.stopRecording(request.params.recordingId),
   }));
 
-  app.post<{ Params: { pageId: string; profileId: string }; Body: { deviceKey: string } }>(
+  app.post<{ Params: { pageId: string; profileId: string }; Body: { deviceKey?: string; targetKey?: string } }>(
     "/api/page-parameters/:pageId/profiles/:profileId/replay",
     async request => {
       const parsed = replayPageParameterProfileSchema.safeParse(request.body);
       if (!parsed.success) throw invalidRequest(parsed.error);
-      const discovery = await options.devices.discover();
-      const device = discovery.devices.find(item => item.key === parsed.data.deviceKey);
-      if (!device) throw new ConsoleError("DEVICE_UNKNOWN", `设备不存在: ${parsed.data.deviceKey}`, 404);
-      if (device.connectionState !== "available") throw new ConsoleError("DEVICE_UNAVAILABLE", `${device.name} 当前不可用`, 409);
-      return { replay: await pageParameters.replayProfile(request.params.pageId, request.params.profileId, device) };
+      const execution = parsed.data.targetKey
+        ? findConfiguredTarget(options.config, parsed.data.targetKey)
+        : await findAvailableDevice(options, parsed.data.deviceKey!);
+      return { replay: await pageParameters.replayProfile(request.params.pageId, request.params.profileId, execution) };
     },
   );
 
@@ -725,6 +729,12 @@ function configuredRunTargets(config: LoadedProjectConfig): RunTarget[] {
     concurrencyKey: target.concurrencyKey,
     ...(target.extensions ? { extensions: structuredClone(target.extensions) } : {}),
   }));
+}
+
+function findConfiguredTarget(config: LoadedProjectConfig, targetKey: string): Extract<RunTarget, { kind: "mini-program" }> {
+  const target = configuredRunTargets(config).find(item => item.key === targetKey);
+  if (!target) throw new ConsoleError("TARGET_UNKNOWN", `运行目标不存在: ${targetKey}`, 404);
+  return target as Extract<RunTarget, { kind: "mini-program" }>;
 }
 
 async function startTaskRequest(

@@ -323,6 +323,81 @@ describe("页面参数 API", () => {
       await app.close();
     }
   });
+
+  it("使用小程序运行目标录制和回放，不依赖 App 设备", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-page-parameters-"));
+    tempDirs.push(dir);
+    const providerPath = path.join(dir, "provider.cjs");
+    await fs.writeFile(providerPath, `
+      const action = process.argv[2];
+      const schemaVersion = "mobile-test-console.page-parameter-provider.v1";
+      const pages = [{ pageId: "home", label: "首页", bundle: "home", source: "taro", fields: [], warnings: [] }];
+      if (action === "catalog") console.log(JSON.stringify({ schemaVersion, pages }));
+      else if (action === "recording-start") console.log(JSON.stringify({ schemaVersion, status: "recording", observations: [] }));
+      else if (action === "recording-status") console.log(JSON.stringify({ schemaVersion, status: "recording", observations: [] }));
+      else if (action === "recording-stop") console.log(JSON.stringify({ schemaVersion, status: "stopped", observations: [] }));
+      else if (action === "replay") console.log(JSON.stringify({ schemaVersion, status: "passed", output: process.argv.slice(3).join(" ") }));
+      else process.exit(2);
+    `);
+    const config = createConfig(dir, providerPath);
+    config.testing = {
+      environments: [{ id: "qa", label: "QA", description: "" }],
+      capabilities: [],
+      targets: [{
+        key: "wechat-devtools",
+        label: "微信开发者工具",
+        kind: "mini-program",
+        platform: "wechat",
+        runtime: "wechat-devtools",
+        appId: "wx-test",
+        concurrencyKey: "wechat-test",
+      }],
+    };
+    const runner: CommandRunner = { async capture() { return { code: 1, stdout: "", stderr: "无 App 设备" }; } };
+    const devices = new DeviceDiscoveryService(runner, ["android"]);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({ config, devices, tasks });
+    try {
+      const invalidSelection = await app.inject({
+        method: "POST",
+        url: "/api/page-parameter-recordings",
+        payload: { targetKey: "wechat-devtools", deviceKey: "android:device-1", environment: "qa" },
+      });
+      expect(invalidSelection.statusCode).toBe(400);
+      const started = await app.inject({
+        method: "POST",
+        url: "/api/page-parameter-recordings",
+        payload: { targetKey: "wechat-devtools", environment: "qa" },
+      });
+      expect(started.statusCode).toBe(200);
+      expect(started.json().recording).toMatchObject({
+        targetKey: "wechat-devtools",
+        targetKind: "mini-program",
+        targetPlatform: "wechat",
+        targetRuntime: "wechat-devtools",
+        targetAppId: "wx-test",
+        deviceKey: "",
+      });
+      const recordingId = started.json().recording.recordingId as string;
+      await app.inject({ method: "POST", url: `/api/page-parameter-recordings/${recordingId}/stop` });
+      const saved = await app.inject({
+        method: "PUT",
+        url: "/api/page-parameters/home/profiles/default",
+        payload: { scenario: "home", platform: "all", environment: "qa", accountLabel: "", values: {} },
+      });
+      expect(saved.statusCode).toBe(200);
+      const replay = await app.inject({
+        method: "POST",
+        url: "/api/page-parameters/home/profiles/default/replay",
+        payload: { targetKey: "wechat-devtools" },
+      });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().replay).toMatchObject({ status: "passed", targetKey: "wechat-devtools", targetPlatform: "wechat" });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function createConfig(stateDir: string, providerPath: string): LoadedProjectConfig {

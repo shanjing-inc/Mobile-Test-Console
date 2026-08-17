@@ -15,6 +15,7 @@ import {
   type PageScenarioActionType,
   type PageScenarioTarget,
   type SavePageParameterProfileRequest,
+  type MiniProgramRunTarget,
 } from "../shared/contracts.js";
 import { resolvePageParameterProviderCommand, type LoadedProjectConfig, type ResolvedCommand } from "./config.js";
 import { ConsoleError } from "./errors.js";
@@ -73,15 +74,25 @@ export class PageParameterService {
     };
   }
 
-  async startRecording(device: Device, environment: string): Promise<PageParameterRecording> {
+  async startRecording(execution: Device | MiniProgramRunTarget, environment: string): Promise<PageParameterRecording> {
     const state = await this.store.load();
-    const active = state.recordings.find(item => item.deviceKey === device.key && ["starting", "recording"].includes(item.status));
-    if (active) throw new ConsoleError("PAGE_PARAMETER_RECORDING_ACTIVE", `${device.name} 已有录制会话`, 409);
+    const isTarget = isMiniProgramTarget(execution);
+    const executionKey = execution.key;
+    const active = state.recordings.find(item => (item.targetKey === executionKey || item.deviceKey === executionKey) && ["starting", "recording"].includes(item.status));
+    if (active) throw new ConsoleError("PAGE_PARAMETER_RECORDING_ACTIVE", `${isTarget ? execution.label : execution.name} 已有录制会话`, 409);
     const recording: PageParameterRecording = {
       recordingId: randomUUID(),
-      deviceKey: device.key,
-      deviceId: device.id,
-      platform: device.platform,
+      ...(isTarget ? {
+        targetKey: execution.key,
+        targetKind: execution.kind,
+        targetLabel: execution.label,
+        targetRuntime: execution.runtime,
+        targetAppId: execution.appId,
+        targetPlatform: execution.platform,
+      } : {}),
+      deviceKey: isTarget ? "" : execution.key,
+      deviceId: isTarget ? "" : execution.id,
+      platform: isTarget ? "all" : execution.platform,
       environment,
       status: "starting",
       startedAt: new Date().toISOString(),
@@ -132,14 +143,14 @@ export class PageParameterService {
     return recording;
   }
 
-  async replayProfile(pageId: string, profileId: string, device: Device): Promise<PageParameterReplay> {
+  async replayProfile(pageId: string, profileId: string, execution: Device | MiniProgramRunTarget): Promise<PageParameterReplay> {
     const state = await this.store.load();
     const profile = state.profiles.find(item => item.pageId === pageId && item.profileId === profileId);
     if (!profile) throw new ConsoleError("PAGE_PARAMETER_PROFILE_UNKNOWN", `参数画像不存在: ${profileId}`, 404);
-    if (profile.platform !== "all" && profile.platform !== device.platform) {
+    if (!isMiniProgramTarget(execution) && profile.platform !== "all" && profile.platform !== execution.platform) {
       throw new ConsoleError(
         "PAGE_PARAMETER_REPLAY_PLATFORM_MISMATCH",
-        `画像 ${profileId} 属于 ${profile.platform}，当前设备属于 ${device.platform}`,
+        `画像 ${profileId} 属于 ${profile.platform}，当前设备属于 ${execution.platform}`,
         409,
       );
     }
@@ -151,17 +162,22 @@ export class PageParameterService {
         "--page", pageId,
         "--profile-id", profileId,
         "--profiles", path.join(this.config.stateDir, "page-parameters.json"),
-        "--device", device.id,
-        "--platform", device.platform,
-        "--device-type", device.type,
         "--environment", profile.environment,
         "--run-id", replayId,
+        ...isMiniProgramTarget(execution)
+          ? targetProviderArgs(execution)
+          : ["--device", execution.id, "--platform", execution.platform, "--device-type", execution.type],
       ]);
       return {
         replayId,
         pageId,
         profileId,
-        platform: device.platform,
+        platform: isMiniProgramTarget(execution) ? "all" : execution.platform,
+        ...(isMiniProgramTarget(execution) ? {
+          targetKey: execution.key,
+          targetKind: execution.kind,
+          targetPlatform: execution.platform,
+        } : {}),
         environment: profile.environment,
         status: payload.status === "passed" ? "passed" : "failed",
         startedAt,
@@ -176,7 +192,12 @@ export class PageParameterService {
         replayId,
         pageId,
         profileId,
-        platform: device.platform,
+        platform: isMiniProgramTarget(execution) ? "all" : execution.platform,
+        ...(isMiniProgramTarget(execution) ? {
+          targetKey: execution.key,
+          targetKind: execution.kind,
+          targetPlatform: execution.platform,
+        } : {}),
         environment: profile.environment,
         status: "failed",
         startedAt,
@@ -311,9 +332,19 @@ export class PageParameterService {
   private callRecordingProvider(action: "recording-start" | "recording-status" | "recording-stop", recording: PageParameterRecording) {
     return this.callProvider<RecordingPayload>(action, [
       "--recording-id", recording.recordingId,
-      "--device", recording.deviceId,
-      "--platform", recording.platform,
       "--environment", recording.environment,
+      ...(recording.targetKey ? targetProviderArgs({
+        kind: "mini-program",
+        key: recording.targetKey,
+        label: recording.targetLabel ?? recording.targetKey,
+        platform: recording.targetPlatform ?? "",
+        runtime: recording.targetRuntime ?? "",
+        appId: recording.targetAppId ?? "",
+        concurrencyKey: recording.targetKey,
+      }) : [
+        "--device", recording.deviceId,
+        "--platform", recording.platform,
+      ]),
     ]);
   }
 
@@ -337,6 +368,22 @@ function targetSupportsAction(target: PageScenarioTarget, action: PageScenarioAc
     const actions = target.platformActions?.[currentPlatform] ?? target.actions;
     return actions.includes(action);
   });
+}
+
+function isMiniProgramTarget(execution: Device | MiniProgramRunTarget): execution is MiniProgramRunTarget {
+  return "kind" in execution && execution.kind === "mini-program";
+}
+
+function targetProviderArgs(target: MiniProgramRunTarget): string[] {
+  return [
+    "--target-key", target.key,
+    "--target-kind", target.kind,
+    "--target-label", target.label,
+    "--target-platform", target.platform,
+    "--target-runtime", target.runtime,
+    "--target-app-id", target.appId,
+    "--target-concurrency-key", target.concurrencyKey,
+  ];
 }
 
 // 允许录制到的空字符串作为存在的路由键，同时要求手工画像填写实际值。

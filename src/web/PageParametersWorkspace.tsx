@@ -15,6 +15,7 @@ import {
   type PageParametersResponse,
   type PageScenarioAction,
   type PageScenarioAssertion,
+  type MiniProgramRunTarget,
   type SavePageParameterProfileRequest,
 } from "../shared/contracts";
 import {
@@ -62,8 +63,10 @@ const originLabels: Record<PageParameterValueOrigin, string> = {
   manual: "手动编辑",
 };
 
-export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessage }: {
+export function PageParametersWorkspace({ devices, targets = [], projectFamily = "app", adapter: adapterProp, onMessage }: {
   devices: Device[];
+  targets?: MiniProgramRunTarget[];
+  projectFamily?: "app" | "mini-program";
   adapter?: PageParameterAdapterManifest;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
 }) {
@@ -72,6 +75,7 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
   const [pageQuery, setPageQuery] = useState("");
   const [pageFilter, setPageFilter] = useState<"all" | "parameters">("all");
   const [deviceKey, setDeviceKey] = useState("");
+  const [targetKey, setTargetKey] = useState("");
   const [environment, setEnvironment] = useState("qa");
   const [activeRecording, setActiveRecording] = useState<PageParameterRecording | null>(null);
   const [selectedObservationId, setSelectedObservationId] = useState("");
@@ -142,7 +146,10 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
   const page = data?.pages.find(item => item.pageId === selectedPageId) || null;
   const historyProfiles = useMemo(() => sortPageParameterProfiles(page?.profiles ?? []), [page?.profiles]);
   const connectedDevices = useMemo(() => devices.filter(device => device.connectionState === "available"), [devices]);
+  const availableTargets = useMemo(() => targets, [targets]);
   const selectedTestDevice = useMemo(() => resolveSelectedPageTestDevice(devices, deviceKey), [deviceKey, devices]);
+  const selectedTarget = useMemo(() => availableTargets.find(target => target.key === targetKey), [availableTargets, targetKey]);
+  const selectedExecutionKey = projectFamily === "mini-program" ? targetKey : deviceKey;
   const defaultHistoryProfile = useMemo(
     () => resolveDefaultPageParameterProfile(page?.profiles ?? [], selectedTestDevice?.platform, environment),
     [environment, page?.profiles, selectedTestDevice?.platform],
@@ -477,10 +484,13 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
   };
 
   const handleStart = async () => {
-    if (!deviceKey) return onMessage({ kind: "error", text: "请选择录制设备" });
+    if (!selectedExecutionKey) return onMessage({ kind: "error", text: projectFamily === "mini-program" ? "请选择小程序运行目标" : "请选择录制设备" });
     setPending(true);
     try {
-      const response = await startPageParameterRecording(deviceKey, environment);
+      const response = await startPageParameterRecording({
+        environment,
+        ...(projectFamily === "mini-program" ? { targetKey: selectedExecutionKey } : { deviceKey: selectedExecutionKey }),
+      });
       setActiveRecording(response.recording);
       setSelectedObservationId("");
       setConfirmedObservationIds(new Set());
@@ -551,7 +561,7 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
 
   const handleTestCurrentPage = async () => {
     if (!page) return;
-    if (!selectedTestDevice) return onMessage({ kind: "error", text: "请选择一台可用设备测试页面" });
+    if (!selectedTestDevice && !selectedTarget) return onMessage({ kind: "error", text: projectFamily === "mini-program" ? "请选择一个运行目标测试页面" : "请选择一台可用设备测试页面" });
     const selectedProfile = testProfileChoice === CURRENT_TEST_PROFILE
       ? undefined
       : page.profiles.find(profile => profile.profileId === testProfileChoice);
@@ -560,7 +570,7 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
       : undefined;
     const effectiveProfile = selectedProfile ?? fallbackProfile;
     const effectivePlatform = effectiveProfile?.platform ?? profilePlatform;
-    if (effectivePlatform !== "all" && effectivePlatform !== selectedTestDevice.platform) {
+    if (selectedTestDevice && effectivePlatform !== "all" && effectivePlatform !== selectedTestDevice.platform) {
       return onMessage({ kind: "error", text: `参数画像平台为 ${pagePlatformLabel(effectivePlatform)}，当前设备为 ${selectedTestDevice.platform}，请切换设备或画像平台` });
     }
     const testProfileId = effectiveProfile?.profileId ?? profileId;
@@ -584,7 +594,9 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
         setTestProfileChoice(fallbackProfile.profileId);
         onMessage({ kind: "info", text: `当前路由参数为空，已使用${fallbackProfile.isDefault ? "默认" : "最近"}历史画像 ${fallbackProfile.profileId}` });
       }
-      const response = await replayPageParameterProfile(page.pageId, testProfileId, selectedTestDevice.key);
+      const response = await replayPageParameterProfile(page.pageId, testProfileId, projectFamily === "mini-program"
+        ? { targetKey: selectedTarget!.key }
+        : { deviceKey: selectedTestDevice!.key });
       if (requestId !== replayRequestIdRef.current || replayContextRef.current !== replayContext) return;
       setReplayResult(response.replay);
       onMessage({
@@ -650,6 +662,29 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
       ? connectedDevices.find(item => item.key === deviceKey) ?? connectedDevices[0]
       : connectedDevices.find(item => item.key === deviceKey && item.platform === profile.platform)
         ?? connectedDevices.find(item => item.platform === profile.platform);
+    if (projectFamily === "mini-program" && selectedTarget) {
+      const replayContext = `${targetPage.pageId}:${profile.profileId}:${selectedTarget.key}`;
+      const requestId = replayRequestIdRef.current + 1;
+      replayRequestIdRef.current = requestId;
+      replayContextRef.current = replayContext;
+      setReplayingProfileId(profile.profileId);
+      setReplayResult(null);
+      try {
+        const response = await replayPageParameterProfile(targetPage.pageId, profile.profileId, { targetKey: selectedTarget.key });
+        if (requestId !== replayRequestIdRef.current || replayContextRef.current !== replayContext) return;
+        setReplayResult(response.replay);
+        onMessage({
+          kind: response.replay.status === "passed" ? "info" : "error",
+          text: response.replay.status === "passed" ? `${targetPage.label} 单页面回放通过` : `${targetPage.label} 单页面回放失败`,
+        });
+      } catch (error) {
+        if (requestId !== replayRequestIdRef.current || replayContextRef.current !== replayContext) return;
+        onMessage({ kind: "error", text: messageOf(error, "单页面回放失败") });
+      } finally {
+        if (requestId === replayRequestIdRef.current) setReplayingProfileId("");
+      }
+      return;
+    }
     if (!device) return onMessage({ kind: "error", text: profile.platform === "all" ? "请选择一台可用设备进行回放" : `请选择一台可用的 ${profile.platform} 设备进行回放` });
     const replayContext = `${targetPage.pageId}:${profile.profileId}`;
     const requestId = replayRequestIdRef.current + 1;
@@ -658,7 +693,7 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
     setReplayingProfileId(profile.profileId);
     setReplayResult(null);
     try {
-      const response = await replayPageParameterProfile(targetPage.pageId, profile.profileId, device.key);
+      const response = await replayPageParameterProfile(targetPage.pageId, profile.profileId, { deviceKey: device.key });
       if (requestId !== replayRequestIdRef.current || replayContextRef.current !== replayContext) return;
       setReplayResult(response.replay);
       onMessage({
@@ -718,15 +753,17 @@ export function PageParametersWorkspace({ devices, adapter: adapterProp, onMessa
       <section className="section-panel recording-panel">
         <div className="section-heading"><div><p className="eyebrow">RECORD & TEST</p><h2>录制与测试</h2></div>{activeRecording && <span className={`recording-state ${activeRecording.status}`}><CircleDot size={11} />{activeRecording.status === "recording" ? "录制中" : activeRecording.status}</span>}</div>
         <div className="recording-controls">
-          <label className="field"><span>设备</span><select value={deviceKey} onChange={event => setDeviceKey(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="">选择设备</option>{connectedDevices.map(device => <option key={device.key} value={device.key}>{device.name} · {device.platform}</option>)}</select></label>
+          {projectFamily === "mini-program"
+            ? <label className="field"><span>小程序目标</span><select value={targetKey} onChange={event => setTargetKey(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="">选择运行目标</option>{availableTargets.map(target => <option key={target.key} value={target.key}>{target.label} · {target.platform} · {target.appId}</option>)}</select></label>
+            : <label className="field"><span>设备</span><select value={deviceKey} onChange={event => setDeviceKey(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="">选择设备</option>{connectedDevices.map(device => <option key={device.key} value={device.key}>{device.name} · {device.platform}</option>)}</select></label>}
           <label className="field"><span>环境</span><select value={environment} onChange={event => setEnvironment(event.target.value)} disabled={Boolean(activeRecording && activeRecording.status === "recording")}><option value="qa">QA</option><option value="staging">Staging</option><option value="production">Production</option></select></label>
           {activeRecording && ["starting", "recording"].includes(activeRecording.status)
             ? <button className="stop-button recording-command" type="button" onClick={() => void handleStop()} disabled={pending}><Square size={14} fill="currentColor" />停止</button>
-            : <button className="primary-button recording-command" type="button" onClick={() => void handleStart()} disabled={pending || !deviceKey}><Radio size={15} />开始录制</button>}
-          {page && <button className="primary-button recording-command page-test-command" type="button" onClick={() => void handleTestCurrentPage()} disabled={pending || Boolean(replayingProfileId) || !selectedTestDevice || !activeTestProfileId || !scenario}>{replayingProfileId === activeTestProfileId ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{replayingProfileId === activeTestProfileId ? "测试中" : "测试当前页面"}</button>}
+            : <button className="primary-button recording-command" type="button" onClick={() => void handleStart()} disabled={pending || !selectedExecutionKey}><Radio size={15} />开始录制</button>}
+          {page && <button className="primary-button recording-command page-test-command" type="button" onClick={() => void handleTestCurrentPage()} disabled={pending || Boolean(replayingProfileId) || (!selectedTestDevice && !selectedTarget) || !activeTestProfileId || !scenario}>{replayingProfileId === activeTestProfileId ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}{replayingProfileId === activeTestProfileId ? "测试中" : "测试当前页面"}</button>}
         </div>
         {page && <div className="page-test-block result-block">
-          <div className="scenario-editor-heading"><div><strong>测试结果</strong><small>{page.label} · 参数画像在这里选择，设备使用上方共享设备</small></div><span className="count-label">{actions.length} 动作 · {assertions.length + actionAssertionCount} 断言</span></div>
+          <div className="scenario-editor-heading"><div><strong>测试结果</strong><small>{page.label} · 参数画像在这里选择，{projectFamily === "mini-program" ? "运行目标" : "设备"}使用上方共享选择</small></div><span className="count-label">{actions.length} 动作 · {assertions.length + actionAssertionCount} 断言</span></div>
           <div className="page-test-controls">
         <label className="field"><span>测试参数</span><select aria-label="测试参数画像" value={testProfileChoice} onChange={event => selectTestProfile(event.target.value)}><option value={CURRENT_TEST_PROFILE}>当前编辑参数 · {profileId || "未命名"}{!hasUsablePageParameterValues(values) && defaultHistoryProfile ? `（空值时使用 ${defaultHistoryProfile.profileId}）` : ""}</option>{historyProfiles.map(profile => <option key={profile.profileId} value={profile.profileId}>{profile.profileId}{profile.isDefault ? " · 默认" : ""} · {profile.scenario} · {pagePlatformLabel(profile.platform)}</option>)}</select></label>
           </div>

@@ -1025,7 +1025,13 @@ export default function App() {
           </div>
         </div>
         </> : workspaceView === "page-parameters"
-          ? <PageParametersWorkspace devices={snapshot?.devices ?? []} adapter={snapshot?.adapter?.pageParameters} onMessage={setMessage} />
+          ? <PageParametersWorkspace
+            devices={snapshot?.devices ?? []}
+            targets={snapshot?.targets?.filter((target): target is Extract<RunTarget, { kind: "mini-program" }> => target.kind === "mini-program") ?? []}
+            projectFamily={selectedProjectFamily}
+            adapter={snapshot?.adapter?.pageParameters}
+            onMessage={setMessage}
+          />
           : workspaceView === "business-scripts"
             ? <BusinessScriptsWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />
             : <AccountProfilesWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />}
