@@ -638,6 +638,82 @@ const root = config.taskResults
   : task.workspaceRoot || config.project.root;
 ```
 
+## Scenario: User-facing test entry metadata
+
+### 1. Scope / Trigger
+
+- Trigger: an integrated project adds operator-facing classification or usage guidance to `tests[]`.
+- The project config owns its test names, types, descriptions, dependencies, and recommended execution cadence. MTC validates, projects, persists, and displays that metadata.
+
+### 2. Signatures
+
+```ts
+interface TestDefinition {
+  label: string;
+  testType?: string;
+  description: string;
+  kind?: "general" | "page" | "flow";
+}
+
+interface PublicTestDefinition {
+  label: string;
+  testType: string;
+  description: string;
+  kind: "general" | "page" | "flow";
+}
+```
+
+### 3. Contracts
+
+- `testType` is optional config metadata with an empty-string default.
+- `kind` remains the scheduling category. `testType` is the operator-facing classification.
+- `toPublicTests()` normalizes every public test to a string `testType`.
+- Project catalog onboarding persists the normalized field in `ProjectTestEntryCheck`; historical records receive the same empty-string default.
+- The test selector formats typed entries as `<testType> · <label>`. The selected-entry summary and project catalog render the type only when it has content.
+- Descriptions remain project-owned text and include coverage, key dependencies, and recommended cadence when those details guide test selection.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| `testType` is a string | Preserve and expose the configured value |
+| `testType` is omitted | Normalize to `""` and preserve the existing label/description layout |
+| `testType` has another JSON type | Reject the project config through `CONFIG_INVALID` |
+| A persisted catalog entry predates `testType` | Load it with `testType: ""` |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a mini-program test declares `testType: "Service compatibility"` and a description covering the backend dependency and merge cadence.
+- Base: an existing App test omits `testType`; its selector label and description keep their prior presentation.
+- Bad: a project repurposes `kind` as display copy and changes scheduling behavior while editing operator guidance.
+
+### 6. Tests Required
+
+- Parse a configured `testType` and assert it survives `toPublicTests()`.
+- Parse a legacy config and assert the normalized public field is `""`.
+- Load a historical catalog entry without `testType` and assert its normalized field is `""`.
+- Render typed and legacy selector labels, selected-entry summaries, and catalog entry details.
+- Run schema generation/check, type-check, lint, and the full platform test suite after changing this contract.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+tests: [{ label: "Compatibility", kind: "Service compatibility" }]
+```
+
+#### Correct
+
+```js
+tests: [{
+  label: "Compatibility",
+  testType: "Service compatibility",
+  kind: "page",
+  description: "Uses an isolated database and a real backend; run before merge.",
+}]
+```
+
 ## Design Decisions
 
 ### Explicit page selection validation

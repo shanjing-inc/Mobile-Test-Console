@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 describe("项目目录与接入验证", () => {
-  it("兼容缺少接入明细数组的历史项目目录记录", async () => {
+  it("兼容缺少接入明细数组和测试类型的历史项目目录记录", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-catalog-legacy-"));
     tempDirs.push(root);
     const catalogPath = path.join(root, "catalog.json");
@@ -34,7 +34,21 @@ describe("项目目录与接入验证", () => {
         updatedAt: checkedAt,
         onboarding: [
           { id: "project", status: "verified", summary: "项目目录已登记", issues: [], checkedAt },
-          { id: "template", status: "verified", summary: "配置已加载，声明 1 个测试入口", issues: [], checkedAt },
+          {
+            id: "template",
+            status: "verified",
+            summary: "配置已加载，声明 1 个测试入口",
+            issues: [],
+            checkedAt,
+            testEntries: [{
+              id: "smoke",
+              label: "Smoke",
+              description: "核心流程",
+              runnerId: "legacy-command-runner",
+              platforms: ["android"],
+              parameterLabels: [],
+            }],
+          },
           { id: "devices", status: "verified", summary: "设备可用", issues: [], checkedAt },
           { id: "capabilities", status: "verified", summary: "能力可用", issues: [], checkedAt },
         ],
@@ -46,7 +60,7 @@ describe("项目目录与接入验证", () => {
       id,
       tools: [],
       capabilities: [],
-      testEntries: [],
+      testEntries: id === "template" ? [expect.objectContaining({ id: "smoke", testType: "" })] : [],
     })));
   });
 
@@ -89,6 +103,7 @@ describe("项目目录与接入验证", () => {
       testEntries: [{
         id: "smoke",
         label: "Smoke",
+        testType: "端到端测试",
         description: "",
         runnerId: "legacy-command-runner",
         platforms: ["android"],
@@ -552,6 +567,7 @@ async function writeConfig(root: string, id: string, name: string, provider = fa
     tests: [{
       id: "smoke",
       label: "Smoke",
+      testType: "端到端测试",
       platforms: ["android"],
       commands: { default: { executable: "node", args: ["--version"] } },
     }],

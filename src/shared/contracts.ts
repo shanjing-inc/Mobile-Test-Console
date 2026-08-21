@@ -241,6 +241,7 @@ export interface ProjectTestingManifest {
 export interface PublicTestDefinition {
   id: string;
   label: string;
+  testType: string;
   description: string;
   kind: TestKind;
   runnerId: string;
@@ -520,6 +521,7 @@ export interface ProjectCapabilityCheck {
 export interface ProjectTestEntryCheck {
   id: string;
   label: string;
+  testType: string;
   description: string;
   runnerId: string;
   platforms: Platform[];

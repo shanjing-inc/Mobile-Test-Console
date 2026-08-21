@@ -223,6 +223,7 @@ describe("项目目录工作区", () => {
       {
         id: "lynx-suite",
         label: "Lynx 页面套件",
+        testType: "页面回归",
         description: "按优先级或页面范围执行三端 Lynx 确定性测试。",
         runnerId: "sample-lynx-app-runner",
         platforms: ["android", "ios", "harmony"],
@@ -231,6 +232,7 @@ describe("项目目录工作区", () => {
       {
         id: "platform-oneclick",
         label: "平台 One-click",
+        testType: "",
         description: "构建、安装并执行当前设备的平台基础自动化测试。",
         runnerId: "sample-platform-oneclick-runner",
         platforms: ["android", "ios", "harmony"],
@@ -257,6 +259,8 @@ describe("项目目录工作区", () => {
 
     expect(markup).toContain("测试入口清单");
     expect(markup).toContain("Lynx 页面套件");
+    expect(markup).toContain("页面回归");
+    expect(markup).toContain("project-test-entry-check-type");
     expect(markup).toContain("lynx-suite");
     expect(markup).toContain("sample-lynx-app-runner");
     expect(markup).toContain("Android · iOS · HarmonyOS");
@@ -289,6 +293,7 @@ describe("项目目录工作区", () => {
     templateStep.testEntries = [{
       id: "saas-smoke",
       label: "Smoke 测试",
+      testType: "",
       description: "",
       runnerId: "saas-mini-program-runner",
       platforms: [],

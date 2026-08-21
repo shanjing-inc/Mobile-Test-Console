@@ -714,6 +714,7 @@ function ProjectTestEntryChecks({ testEntries }: { testEntries: ProjectTestEntry
         <div className="project-test-entry-check-main">
           <strong>{test.label}</strong>
           <code>{test.id}</code>
+          {test.testType && <span className="project-test-entry-check-type">{test.testType}</span>}
           <p>{test.description || "该测试入口暂未填写用途说明。"}</p>
           <div className="project-test-entry-check-meta">
             <span><strong>{test.targetKeys?.length ? "运行目标" : "平台"}</strong>{test.targetKeys?.length ? test.targetKeys.join(" · ") : test.platforms.map(platform => platformLabels[platform]).join(" · ")}</span>

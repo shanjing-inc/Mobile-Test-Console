@@ -62,6 +62,7 @@ const onboardingStepSchema = z.object({
   testEntries: z.array(z.object({
     id: z.string(),
     label: z.string(),
+    testType: z.string().default(""),
     description: z.string(),
     runnerId: z.string(),
     platforms: z.array(z.enum(PLATFORMS)),
@@ -825,6 +826,7 @@ function createTestEntryChecks(tests: ReturnType<typeof toPublicTests>): Project
   return tests.map(test => ({
     id: test.id,
     label: test.label,
+    testType: test.testType,
     description: test.description,
     runnerId: test.runnerId,
     platforms: [...test.platforms],

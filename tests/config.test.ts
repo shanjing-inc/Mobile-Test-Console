@@ -102,7 +102,7 @@ describe("项目配置", () => {
         provider: { executable: "node", args: ["result.cjs"] }
       },
       tests: [{
-        id: "pages", label: "页面测试", kind: "page", runnerId: "demo-runner",
+        id: "pages", label: "页面测试", testType: "页面结构巡检", kind: "page", runnerId: "demo-runner",
         providerId: "demo-provider", requiredCapabilities: ["page.execute"], platforms: ["android"],
         parameters: [{ id: "pages", label: "页面", type: "page-selection", source: "page-parameters", defaultValue: "all", presets: [{ value: "all", label: "全部", filter: {} }] }]
       }]
@@ -115,6 +115,7 @@ describe("项目配置", () => {
       result: { schemaVersion: "test-analysis.run.v1", artifactsRoot: path.join(dir, "qa/results") },
     });
     expect(toPublicTests(config.tests)[0]).toMatchObject({
+      testType: "页面结构巡检",
       kind: "page",
       providerId: "demo-provider",
       requiredCapabilities: ["page.execute"],
@@ -211,8 +212,12 @@ describe("项目配置", () => {
       scheme: "Demo",
     });
     expect(config.tests[0].description).toBe("");
+    expect(config.tests[0].testType).toBe("");
     expect(config.tests[0].runnerId).toBe("legacy-command-runner");
-    expect(toPublicTests(config.tests)[0].runnerId).toBe("legacy-command-runner");
+    expect(toPublicTests(config.tests)[0]).toMatchObject({
+      testType: "",
+      runnerId: "legacy-command-runner",
+    });
     const suiteParameter = config.tests[0].parameters[0];
     expect(suiteParameter.type).toBe("select");
     if (suiteParameter.type !== "select") throw new Error("测试套件参数类型错误");

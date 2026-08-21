@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Device, MiniProgramRunTarget, PublicTestDefinition, TestTask } from "../src/shared/contracts.js";
-import { DeviceRow, reconcileSelectedKeysForTest, TargetRow } from "../src/web/App.js";
+import { DeviceRow, reconcileSelectedKeysForTest, TargetRow, TestEntryDescription, testEntryOptionLabel } from "../src/web/App.js";
 import { installDevicePreparation, startDevice } from "../src/web/api.js";
 
 afterEach(() => {
@@ -10,6 +10,25 @@ afterEach(() => {
 });
 
 describe("网页 iOS 模拟器启动", () => {
+  it("测试入口展示配置提供的类型和说明", () => {
+    const html = renderToStaticMarkup(React.createElement(TestEntryDescription, {
+      testType: "核心链路 Smoke",
+      text: "验证登录和组织入口；适合合并前。",
+    }));
+    const legacyHtml = renderToStaticMarkup(React.createElement(TestEntryDescription, {
+      testType: "",
+      text: "旧配置说明",
+    }));
+
+    expect(testEntryOptionLabel({ label: "Smoke 测试", testType: "核心链路 Smoke" })).toBe("核心链路 Smoke · Smoke 测试");
+    expect(testEntryOptionLabel({ label: "Smoke 测试", testType: "" })).toBe("Smoke 测试");
+    expect(html).toContain("test-type-label");
+    expect(html).toContain("核心链路 Smoke");
+    expect(html).toContain("验证登录和组织入口；适合合并前。");
+    expect(legacyHtml).not.toContain("test-type-label");
+    expect(legacyHtml).toContain("旧配置说明");
+  });
+
   it("可启动设备展示启动按钮并禁用测试选择", () => {
     const html = renderToStaticMarkup(React.createElement(DeviceRow, {
       device: createSimulator({ controlState: "startable", connectionState: "offline", detail: "可启动" }),
@@ -156,6 +175,7 @@ describe("网页 iOS 模拟器启动", () => {
     const nextTest: PublicTestDefinition = {
       id: "smoke",
       label: "Smoke 测试",
+      testType: "",
       description: "",
       kind: "general",
       runnerId: "wechat-runner",
@@ -177,6 +197,7 @@ describe("网页 iOS 模拟器启动", () => {
     const nextTest: PublicTestDefinition = {
       id: "android-smoke",
       label: "Android Smoke 测试",
+      testType: "",
       description: "",
       kind: "general",
       runnerId: "app-runner",

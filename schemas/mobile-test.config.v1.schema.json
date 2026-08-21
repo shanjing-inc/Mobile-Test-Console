@@ -1032,6 +1032,10 @@
             "type": "string",
             "minLength": 1
           },
+          "testType": {
+            "type": "string",
+            "default": ""
+          },
           "description": {
             "type": "string",
             "default": ""

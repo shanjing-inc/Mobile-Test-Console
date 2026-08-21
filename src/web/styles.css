@@ -135,7 +135,8 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .field select { width: 100%; min-height: 38px; padding: 0 11px; color: var(--ink); background: white; border: 1px solid var(--line); border-radius: 6px; outline: none; }
 .field input { width: 100%; min-height: 38px; padding: 0 11px; color: var(--ink); background: white; border: 1px solid var(--line); border-radius: 6px; outline: none; }
 .field select:focus, .field input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px var(--teal-soft); }
-.test-description { display: flex; align-items: center; min-height: 38px; padding: 0 12px; color: var(--muted); background: var(--surface-muted); border-left: 3px solid #bfe5e2; font-size: 12px; line-height: 1.5; }
+.test-description { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 12px; color: var(--muted); background: var(--surface-muted); border-left: 3px solid #bfe5e2; font-size: 12px; line-height: 1.5; }
+.test-type-label, .project-test-entry-check-type { display: inline-flex; flex: 0 0 auto; align-items: center; padding: 2px 6px; color: var(--teal); background: var(--teal-soft); border-radius: 3px; font-size: 10px; font-weight: 750; line-height: 1.4; }
 .page-selection-wrapper { grid-column: 1 / -1; }
 .page-selection-field { display: grid; gap: 10px; padding: 12px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 7px; }
 .page-selection-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -775,6 +776,7 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .project-test-entry-check-main { min-width: 0; display: grid; gap: 3px; }
 .project-test-entry-check-main > strong { min-width: 0; flex: initial; color: var(--ink); font-size: 10px; }
 .project-test-entry-check-main > code { color: var(--teal); font: 9px/1.4 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
+.project-test-entry-check-type { width: fit-content; }
 .project-test-entry-check-main > p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .project-test-entry-check-meta { display: grid; gap: 3px; margin-top: 3px; padding-top: 6px; border-top: 1px solid var(--line); }
 .project-test-entry-check-meta span { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 6px; min-width: 0; color: var(--muted); font-size: 9px; line-height: 1.4; }

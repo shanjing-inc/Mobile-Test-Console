@@ -951,10 +951,13 @@ export default function App() {
             <section className="section-panel test-panel">
               <div className="section-heading"><div><p className="eyebrow">TEST PLAN</p><h2>{selectedProjectFamily === "mini-program" ? "启动测试套件" : "启动测试"}</h2></div><span className="selection-label">已选 {selectedKeys.length} {selectedProjectFamily === "mini-program" ? "个目标" : "台"}</span></div>
               <div className="form-grid">
-                <label className="field"><span>测试入口</span><select value={selectedTest?.id || ""} onChange={event => handleSelectTest(event.target.value)} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{test.label}</option>)}</select></label>
-                <div className="test-description">{selectedTestMissingCapabilities.length > 0
-                  ? `测试能力未就绪：${selectedTestMissingCapabilities.join("、")}，请在项目概览完成接入验证。`
-                  : selectedTest?.description || (selectedProjectFamily === "mini-program" ? "选择测试套件和运行目标后启动。" : "选择已声明的测试入口和设备后启动。")}</div>
+                <label className="field"><span>测试入口</span><select value={selectedTest?.id || ""} onChange={event => handleSelectTest(event.target.value)} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{testEntryOptionLabel(test)}</option>)}</select></label>
+                <TestEntryDescription
+                  testType={selectedTest?.testType ?? ""}
+                  text={selectedTestMissingCapabilities.length > 0
+                    ? `测试能力未就绪：${selectedTestMissingCapabilities.join("、")}，请在项目概览完成接入验证。`
+                    : selectedTest?.description || (selectedProjectFamily === "mini-program" ? "选择测试套件和运行目标后启动。" : "选择已声明的测试入口和设备后启动。")}
+                />
                 {selectedTest?.parameters.map(parameter => {
                   if (parameter.type === "page-selection") {
                     return <div className="field page-selection-wrapper" key={parameter.id}>
@@ -1812,6 +1815,18 @@ export function reconcileSelectedKeysForTest(
     ? new Set(test.targetKeys ?? [])
     : new Set(devices.filter(device => test.platforms.includes(device.platform)).map(device => device.key));
   return previous.filter(key => allowedKeys.has(key));
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function testEntryOptionLabel(test: Pick<PublicTestDefinition, "label" | "testType">): string {
+  return test.testType ? `${test.testType} · ${test.label}` : test.label;
+}
+
+export function TestEntryDescription({ testType, text }: { testType: string; text: string }) {
+  return <div className="test-description">
+    {testType && <span className="test-type-label">{testType}</span>}
+    <span>{text}</span>
+  </div>;
 }
 
 export function DeleteConfirmation({ task, pending, retrying = false, onCancel, onConfirm }: { task: Pick<TestTask, "testLabel" | "device" | "target">; pending: boolean; retrying?: boolean; onCancel: () => void; onConfirm: () => void }) {

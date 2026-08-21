@@ -237,6 +237,7 @@ const testParameterSchema = z.discriminatedUnion("type", [
 const testSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
   label: z.string().min(1),
+  testType: z.string().default(""),
   description: z.string().default(""),
   kind: z.enum(["general", "page", "flow"]).default("general"),
   runnerId: z.string().regex(RUNNER_ID_PATTERN).default(LEGACY_COMMAND_RUNNER_ID),
@@ -443,7 +444,8 @@ export type ProjectConfigInput = z.input<typeof configSchema>;
 
 export type CommandDefinition = z.infer<typeof commandSchema>;
 type ParsedTestDefinition = z.infer<typeof testSchema>;
-export type TestDefinition = Omit<ParsedTestDefinition, "runnerId" | "kind" | "requiredCapabilities" | "targetKeys"> & {
+export type TestDefinition = Omit<ParsedTestDefinition, "testType" | "runnerId" | "kind" | "requiredCapabilities" | "targetKeys"> & {
+  testType?: string;
   runnerId?: string;
   kind?: ParsedTestDefinition["kind"];
   requiredCapabilities?: string[];
@@ -638,6 +640,7 @@ export function toPublicTests(tests: TestDefinition[]): PublicTestDefinition[] {
   return tests.map(test => ({
     id: test.id,
     label: test.label,
+    testType: test.testType ?? "",
     description: test.description,
     kind: test.kind ?? "general",
     runnerId: test.runnerId ?? LEGACY_COMMAND_RUNNER_ID,
