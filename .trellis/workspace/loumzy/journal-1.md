@@ -375,3 +375,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: 运行详情失败用例筛选
+
+**Date**: 2026-08-22
+**Task**: 运行详情失败用例筛选
+**Branch**: `main`
+
+### Summary
+
+运行详情概览支持点击失败统计筛选失败测试条目，并可恢复查看全部条目；补充空状态、选中状态和结果界面回归断言。已通过 typecheck、lint 与全量测试。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7ffe76c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
