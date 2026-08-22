@@ -29,8 +29,8 @@ const { values } = parseArgs({
   options: {
     config: { type: "string", short: "c" },
     "project-catalog": { type: "string" },
-    host: { type: "string", default: "127.0.0.1" },
-    port: { type: "string", default: "4310" },
+    host: { type: "string" },
+    port: { type: "string" },
     open: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -39,12 +39,6 @@ const { values } = parseArgs({
 if (values.help) {
   process.stdout.write(`用法：mobile-test-console [--config <path>] [--project-catalog <path>] [--host 127.0.0.1] [--port 4310] [--open]\n`);
   process.exit(0);
-}
-
-const port = Number(values.port);
-if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-  process.stderr.write(`端口无效: ${values.port}\n`);
-  process.exit(2);
 }
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +51,13 @@ const startupProject = await resolveStartupProject({
   platformRoot,
 });
 const config = startupProject.config;
+const host = String(values.host || process.env.MTC_CONSOLE_HOST || config.console?.host || "127.0.0.1");
+const portInput = values.port || process.env.MTC_CONSOLE_PORT || String(config.console?.port || 4310);
+const port = Number(portInput);
+if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+  process.stderr.write(`端口无效: ${portInput}\n`);
+  process.exit(2);
+}
 const runner = new SystemCommandRunner();
 const directoryPicker = new DirectoryPicker(runner);
 const projectCatalog = new ProjectCatalogService(projectCatalogStore, runner);
@@ -112,7 +113,6 @@ const app = await createApp({
   },
   staticDir,
 });
-const host = String(values.host);
 let address: string;
 try {
   address = await app.listen({ host, port });
@@ -124,7 +124,8 @@ try {
   }
   throw error;
 }
-const webAddress = productionBuild ? address : `http://${host}:4311`;
+const webPort = Number(process.env.MTC_CONSOLE_WEB_PORT || config.console?.webPort || port + 1);
+const webAddress = productionBuild ? address : `http://${host}:${webPort}`;
 process.stdout.write(`Mobile Test Console 已启动: ${webAddress}\n`);
 if (!productionBuild) process.stdout.write(`API: ${address}\n`);
 if (startupProject.diagnostic) process.stderr.write(`[startup] ${startupProject.diagnostic}\n`);

@@ -47,6 +47,17 @@ describe("开发服务端口检查", () => {
     }));
 
     await expect(isConsoleRunning(fetchMock)).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:4310/api/health", expect.any(Object));
+  });
+
+  it("健康检查使用配置后的端口和地址", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    await expect(isConsoleRunning(fetchMock, 4500, "0.0.0.0")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:4500/api/health", expect.any(Object));
   });
 
   it("异常响应或连接失败时拒绝复用端口", async () => {

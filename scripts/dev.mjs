@@ -13,6 +13,7 @@ const catalogIndex = forwarded.indexOf("--project-catalog");
 const projectCatalog = catalogIndex >= 0
   ? forwarded[catalogIndex + 1]
   : process.env.MTC_PROJECT_CATALOG;
+let consoleOptions = await loadConsoleOptions(config);
 
 const switchFile = path.join(os.tmpdir(), `mtc-dev-switch-${process.pid}.json`);
 
@@ -69,6 +70,9 @@ async function runCurrentProject() {
       ...process.env,
       ...(config ? { MTC_CONFIG: config } : {}),
       ...(projectCatalog ? { MTC_PROJECT_CATALOG: projectCatalog } : {}),
+      MTC_CONSOLE_HOST: consoleOptions.host,
+      MTC_CONSOLE_PORT: String(consoleOptions.port),
+      MTC_CONSOLE_WEB_PORT: String(consoleOptions.webPort),
       MTC_LIFECYCLE_MANAGED: "1",
       MTC_DEV_SWITCH_FILE: switchFile,
     },
@@ -108,20 +112,46 @@ async function restartForProject() {
     process.exit(1);
   }
   config = nextConfig;
+  consoleOptions = await loadConsoleOptions(config);
   // concurrently 已发出停止信号，端口释放需要等待子进程完全退出。
-  await waitForPortsAvailable([4310, 4311]);
+  await waitForPortsAvailable([consoleOptions.port, consoleOptions.webPort], { host: consoleOptions.host });
   await runCurrentProject();
 }
 
 async function ensurePortsAvailable() {
   try {
-    await assertPortsAvailable([4310, 4311]);
+    await assertPortsAvailable([consoleOptions.port, consoleOptions.webPort], { host: consoleOptions.host });
   } catch (error) {
-    if (await isConsoleRunning()) {
-      process.stdout.write("Mobile Test Console 已在运行: http://127.0.0.1:4311/\n");
+    if (await isConsoleRunning(globalThis.fetch, consoleOptions.port, consoleOptions.host)) {
+      process.stdout.write(`Mobile Test Console 已在运行: http://${consoleOptions.host}:${consoleOptions.webPort}/\n`);
       process.exit(0);
     }
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(2);
   }
+}
+
+function loadConsoleOptions(configPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pnpm", ["exec", "tsx", "src/server/console-options-cli.ts", ...(configPath ? ["--config", configPath] : [])], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("exit", code => {
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `读取控制台端口配置失败: ${code}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (error) {
+        reject(new Error(`读取控制台端口配置失败: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    });
+  });
 }

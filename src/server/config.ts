@@ -37,6 +37,17 @@ const lifecycleSchema = z.object({
   shutdown: commandSchema.optional(),
 }).default({});
 
+const consoleSchema = z.object({
+  host: z.string().min(1).default("127.0.0.1"),
+  port: z.number().int().min(1).max(65_535).default(4310),
+  webPort: z.number().int().min(1).max(65_535).optional(),
+}).default({}).refine(value => value.webPort !== undefined || value.port < 65_535, {
+  message: "console.port 为 65535 时必须显式配置有效的 console.webPort",
+}).transform(value => ({
+  ...value,
+  webPort: value.webPort ?? value.port + 1,
+}));
+
 const taskDeletionSchema = z.object({
   cleanup: commandSchema.optional(),
 }).default({});
@@ -263,6 +274,7 @@ export const configSchema = z.object({
     integrationType: z.enum(PROJECT_INTEGRATION_TYPES).default("app"),
   }),
   stateDir: z.string().optional(),
+  console: consoleSchema,
   deviceProviders: z.array(z.enum(PLATFORMS)).default([...PLATFORMS]),
   testing: testingSchema,
   lifecycle: lifecycleSchema,
@@ -471,6 +483,11 @@ export interface LoadedProjectConfig {
     integrationType?: ProjectIntegrationType;
   };
   stateDir: string;
+  console?: {
+    host: string;
+    port: number;
+    webPort: number;
+  };
   deviceProviders: Platform[];
   testing?: ProjectTestingManifest;
   lifecycle: {

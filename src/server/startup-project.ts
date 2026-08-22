@@ -48,6 +48,7 @@ function createPlatformConfig(platformRoot: string): LoadedProjectConfig {
       integrationType: "app",
     },
     stateDir: path.join(os.homedir(), ".mobile-test-console", "platform"),
+    console: { host: "127.0.0.1", port: 4310, webPort: 4311 },
     deviceProviders: [],
     testing: { environments: [], capabilities: [] },
     lifecycle: {},
