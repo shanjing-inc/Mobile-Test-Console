@@ -21,6 +21,7 @@ import { ProjectCatalogService, ProjectCatalogStore } from "./project-catalog.js
 import { DirectoryPicker } from "./directory-picker.js";
 import { isConfiguredProject, resolveProjectCatalogPath, resolveStartupProject } from "./startup-project.js";
 import { ArtifactRetentionService, ArtifactRetentionStore } from "./artifact-retention.js";
+import { loadMtcConfig } from "./mtc-config.js";
 
 applyDeviceToolEnv();
 
@@ -31,13 +32,14 @@ const { values } = parseArgs({
     "project-catalog": { type: "string" },
     host: { type: "string" },
     port: { type: "string" },
+    "mtc-config": { type: "string" },
     open: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
 });
 
 if (values.help) {
-  process.stdout.write(`用法：mobile-test-console [--config <path>] [--project-catalog <path>] [--host 127.0.0.1] [--port 4310] [--open]\n`);
+  process.stdout.write(`用法：mobile-test-console [--config <path>] [--mtc-config <path>] [--project-catalog <path>] [--host 127.0.0.1] [--port 4310] [--open]\n`);
   process.exit(0);
 }
 
@@ -45,14 +47,16 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const productionBuild = path.basename(path.dirname(currentDir)) === "dist";
 const platformRoot = path.resolve(currentDir, "../..");
 const projectCatalogPath = resolveProjectCatalogPath(values["project-catalog"]);
+const mtcConfigPath = String(values["mtc-config"] || process.env.MTC_CONFIG_FILE || "").trim();
+const mtcConfig = await loadMtcConfig(mtcConfigPath || undefined, { optional: !mtcConfigPath });
 const projectCatalogStore = new ProjectCatalogStore(projectCatalogPath);
 const startupProject = await resolveStartupProject({
   configPath: String(values.config || process.env.MTC_CONFIG || "").trim(),
   platformRoot,
 });
 const config = startupProject.config;
-const host = String(values.host || process.env.MTC_CONSOLE_HOST || config.console?.host || "127.0.0.1");
-const portInput = values.port || process.env.MTC_CONSOLE_PORT || String(config.console?.port || 4310);
+const host = String(values.host || process.env.MTC_CONSOLE_HOST || mtcConfig.host);
+const portInput = values.port || process.env.MTC_CONSOLE_PORT || String(mtcConfig.port);
 const port = Number(portInput);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   process.stderr.write(`端口无效: ${portInput}\n`);
@@ -124,7 +128,11 @@ try {
   }
   throw error;
 }
-const webPort = Number(process.env.MTC_CONSOLE_WEB_PORT || config.console?.webPort || port + 1);
+const webPort = Number(process.env.MTC_CONSOLE_WEB_PORT || mtcConfig.webPort || port + 1);
+if (!Number.isInteger(webPort) || webPort < 1 || webPort > 65_535 || webPort === port) {
+  process.stderr.write(`页面端口无效: ${webPort}\n`);
+  process.exit(2);
+}
 const webAddress = productionBuild ? address : `http://${host}:${webPort}`;
 process.stdout.write(`Mobile Test Console 已启动: ${webAddress}\n`);
 if (!productionBuild) process.stdout.write(`API: ${address}\n`);

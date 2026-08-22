@@ -36,6 +36,18 @@ pnpm dev
 
 Open [http://127.0.0.1:4311](http://127.0.0.1:4311).
 
+MTC startup ports are configured separately in the repository root `mtc.config.cjs`:
+
+```js
+module.exports = {
+  host: "127.0.0.1",
+  port: 4500,
+  webPort: 4501,
+};
+```
+
+On Windows, edit this file when a port conflict occurs and run `pnpm dev` again. Use `pnpm dev -- --mtc-config <path>` for another MTC config file. CLI `--host` and `--port` override the config values. When `webPort` is omitted, it defaults to `port + 1`.
+
 Start the bundled local demo after building the project:
 
 ```bash

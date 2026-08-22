@@ -6,10 +6,6 @@ module.exports = {
     root: "..",
     integrationType: "app",
   },
-  console: {
-    port: 4310,
-    webPort: 4311,
-  },
   adapter: {
     workspaces: [],
     pageParameters: {

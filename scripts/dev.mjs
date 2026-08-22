@@ -9,11 +9,20 @@ import { assertPortsAvailable, isConsoleRunning, waitForPortsAvailable } from ".
 const forwarded = process.argv.slice(2).filter(argument => argument !== "--");
 const configIndex = forwarded.indexOf("--config");
 let config = configIndex >= 0 ? forwarded[configIndex + 1] : process.env.MTC_CONFIG;
+const mtcConfigIndex = forwarded.indexOf("--mtc-config");
+const mtcConfigExplicit = mtcConfigIndex >= 0 || Boolean(process.env.MTC_CONFIG_FILE);
+const mtcConfigPath = mtcConfigIndex >= 0
+  ? forwarded[mtcConfigIndex + 1]
+  : process.env.MTC_CONFIG_FILE || "mtc.config.cjs";
 const catalogIndex = forwarded.indexOf("--project-catalog");
 const projectCatalog = catalogIndex >= 0
   ? forwarded[catalogIndex + 1]
   : process.env.MTC_PROJECT_CATALOG;
-let consoleOptions = await loadConsoleOptions(config);
+const hostIndex = forwarded.indexOf("--host");
+const hostOverride = hostIndex >= 0 ? forwarded[hostIndex + 1] : undefined;
+const portIndex = forwarded.indexOf("--port");
+const portOverride = portIndex >= 0 ? forwarded[portIndex + 1] : undefined;
+let consoleOptions = applyCliOverrides(await loadMtcOptions(mtcConfigPath));
 
 const switchFile = path.join(os.tmpdir(), `mtc-dev-switch-${process.pid}.json`);
 
@@ -70,6 +79,7 @@ async function runCurrentProject() {
       ...process.env,
       ...(config ? { MTC_CONFIG: config } : {}),
       ...(projectCatalog ? { MTC_PROJECT_CATALOG: projectCatalog } : {}),
+      MTC_CONFIG_FILE: mtcConfigPath,
       MTC_CONSOLE_HOST: consoleOptions.host,
       MTC_CONSOLE_PORT: String(consoleOptions.port),
       MTC_CONSOLE_WEB_PORT: String(consoleOptions.webPort),
@@ -112,7 +122,6 @@ async function restartForProject() {
     process.exit(1);
   }
   config = nextConfig;
-  consoleOptions = await loadConsoleOptions(config);
   // concurrently 已发出停止信号，端口释放需要等待子进程完全退出。
   await waitForPortsAvailable([consoleOptions.port, consoleOptions.webPort], { host: consoleOptions.host });
   await runCurrentProject();
@@ -131,9 +140,9 @@ async function ensurePortsAvailable() {
   }
 }
 
-function loadConsoleOptions(configPath) {
+function loadMtcOptions(configPath) {
   return new Promise((resolve, reject) => {
-    const child = spawn("pnpm", ["exec", "tsx", "src/server/console-options-cli.ts", ...(configPath ? ["--config", configPath] : [])], {
+    const child = spawn("pnpm", ["exec", "tsx", "src/server/mtc-options-cli.ts", "--config", configPath, ...(!mtcConfigExplicit ? ["--optional"] : [])], {
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
     });
@@ -144,14 +153,22 @@ function loadConsoleOptions(configPath) {
     child.once("error", reject);
     child.once("exit", code => {
       if (code !== 0) {
-        reject(new Error(stderr.trim() || `读取控制台端口配置失败: ${code}`));
+        reject(new Error(stderr.trim() || `读取 MTC 启动配置失败: ${code}`));
         return;
       }
       try {
         resolve(JSON.parse(stdout));
       } catch (error) {
-        reject(new Error(`读取控制台端口配置失败: ${error instanceof Error ? error.message : String(error)}`));
+        reject(new Error(`读取 MTC 启动配置失败: ${error instanceof Error ? error.message : String(error)}`));
       }
     });
   });
+}
+
+function applyCliOverrides(options) {
+  const port = portOverride === undefined ? options.port : Number(portOverride);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`端口无效: ${portOverride}`);
+  }
+  return { ...options, ...(hostOverride ? { host: hostOverride } : {}), port };
 }

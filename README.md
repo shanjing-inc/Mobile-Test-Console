@@ -60,21 +60,17 @@ pnpm start -- --config examples/demo.config.cjs --port 4312
 
 服务默认只监听 `127.0.0.1`。可以通过 `--host`、`--port` 和 `--open` 调整启动行为。
 
-在项目仓库的 `mobile-test.config.cjs` 配置文件中可以固定控制台端口，开发模式会分别使用 API 端口和页面端口：
+在仓库根目录的 `mtc.config.cjs` 配置文件中可以固定 MTC 的 API 端口和页面端口：
 
 ```js
 module.exports = {
-  schemaVersion: "mobile-test-console.config.v1",
-  console: {
-    host: "127.0.0.1",
-    port: 4500,
-    webPort: 4501,
-  },
-  // 其余项目配置...
+  host: "127.0.0.1",
+  port: 4500,
+  webPort: 4501,
 };
 ```
 
-命令行传入的 `--host`、`--port` 会覆盖配置文件中的对应值。`webPort` 省略时自动使用 `port + 1`。
+Windows 上遇到端口冲突时编辑这个文件并重新执行 `pnpm dev`。也可以通过 `pnpm dev -- --mtc-config <path>` 指定其他 MTC 配置文件；命令行传入的 `--host`、`--port` 会覆盖配置文件中的对应值。`webPort` 省略时自动使用 `port + 1`。
 
 ## App 与小程序接入引导
 

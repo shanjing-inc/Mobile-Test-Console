@@ -29,36 +29,6 @@ afterEach(async () => {
 });
 
 describe("项目配置", () => {
-  it("读取控制台端口并在 webPort 缺省时使用下一个端口", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-console-port-"));
-    tempDirs.push(dir);
-    const configPath = path.join(dir, "mobile-test.config.cjs");
-    await fs.writeFile(configPath, `module.exports = {
-      schemaVersion: "mobile-test-console.config.v1",
-      project: { id: "console-port", name: "Console Port", root: "." },
-      console: { host: "0.0.0.0", port: 4500 },
-      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node" } } }]
-    };`);
-
-    await expect(loadProjectConfig(configPath)).resolves.toMatchObject({
-      console: { host: "0.0.0.0", port: 4500, webPort: 4501 },
-    });
-  });
-
-  it("拒绝无法派生页面端口的配置", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-console-port-invalid-"));
-    tempDirs.push(dir);
-    const configPath = path.join(dir, "mobile-test.config.cjs");
-    await fs.writeFile(configPath, `module.exports = {
-      schemaVersion: "mobile-test-console.config.v1",
-      project: { id: "console-port-invalid", name: "Console Port Invalid", root: "." },
-      console: { port: 65535 },
-      tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node" } } }]
-    };`);
-
-    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-  });
-
   it("加载小程序运行目标并解析 target 命令模板", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-target-"));
     tempDirs.push(dir);
