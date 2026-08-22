@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-08-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~443 | Active |
+| `journal-1.md` | ~476 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-08-22 | 确认配置文件手动设置端口 | `3852fbf` | `main` |
 | 13 | 2026-08-22 | 支持配置自定义开发端口 | `95d8c85` | `main` |
 | 12 | 2026-08-22 | 运行详情失败用例筛选 | `7ffe76c` | `main` |
 | 11 | 2026-08-13 | 复测沿用原运行记录 | `d88233a6b4be0d79dcbec36541a9054e7eea41e3` | `main` |

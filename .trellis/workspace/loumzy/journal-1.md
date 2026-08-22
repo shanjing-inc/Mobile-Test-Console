@@ -441,3 +441,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 确认配置文件手动设置端口
+
+**Date**: 2026-08-22
+**Task**: 确认配置文件手动设置端口
+**Branch**: `main`
+
+### Summary
+
+确认项目使用 mobile-test.config.cjs 作为端口配置文件，补充 README 明确配置位置与 console.host、console.port、console.webPort 用法；复验 typecheck、lint、schema:check 及 348 项测试。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3852fbf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
