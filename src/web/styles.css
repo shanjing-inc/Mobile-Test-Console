@@ -228,6 +228,11 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .analysis-content > * { min-width: 0; }
 .analysis-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); }
 .analysis-metric { min-width: 0; min-height: 66px; display: flex; flex-direction: column; justify-content: center; padding: 10px 13px; border-right: 1px solid var(--line); }
+.analysis-metric button { appearance: none; font: inherit; text-align: left; }
+.analysis-metric[aria-pressed="true"] { background: var(--red-soft); box-shadow: inset 0 -3px 0 var(--red); }
+.analysis-summary > button.analysis-metric { align-items: flex-start; color: inherit; background: transparent; border-top: 0; border-bottom: 0; border-left: 0; cursor: pointer; }
+.analysis-summary > button.analysis-metric:hover { background: var(--surface-muted); }
+.analysis-summary > button.analysis-metric[aria-pressed="true"] { background: var(--red-soft); }
 .analysis-metric:last-child { border-right: 0; }
 .analysis-metric span { color: var(--muted); font-size: 11px; }
 .analysis-metric strong { margin-top: 5px; font-size: 20px; }
@@ -300,6 +305,7 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .analysis-run-toolbar button { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; color: var(--teal); background: white; border: 1px solid var(--line); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .analysis-run-toolbar button:hover { background: var(--surface-muted); border-color: #8ccbc6; }
 .analysis-run-toolbar button:disabled { cursor: wait; opacity: .55; }
+.analysis-filter-empty { margin: 0; border-bottom: 0; }
 .run-retry-button { min-height: 30px; align-self: center; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; color: var(--teal); background: white; border: 1px solid var(--line); font-size: 10px; font-weight: 700; white-space: nowrap; }
 .run-retry-button:hover { background: var(--surface-muted); border-color: #8ccbc6; }
 .run-retry-button:disabled { cursor: wait; opacity: .55; }

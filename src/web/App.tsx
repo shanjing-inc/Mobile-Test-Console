@@ -1292,9 +1292,11 @@ export function ResultPanel({
 }) {
   const [selectedRunKey, setSelectedRunKey] = useState(initialSelectedRunKey);
   const [overviewImagesVisible, setOverviewImagesVisible] = useState(initialOverviewImagesVisible);
+  const [overviewFilter, setOverviewFilter] = useState<"all" | "failed">("all");
   useEffect(() => {
     setSelectedRunKey("");
     setOverviewImagesVisible(true);
+    setOverviewFilter("all");
   }, [taskId]);
   if (state.loading) return <EmptyState icon={<LoaderCircle className="spin" size={20} />} text="正在分析测试结果" />;
   if (state.error) return <div className="result-empty"><AlertCircle size={18} /><strong>分析结果暂不可用</strong><span>{state.error}</span></div>;
@@ -1320,6 +1322,11 @@ export function ResultPanel({
   return <OverviewResult
     taskId={taskId}
     result={result}
+    filter={overviewFilter}
+    onFilterChange={(nextFilter) => {
+      setOverviewFilter(nextFilter);
+      setSelectedRunKey("");
+    }}
     selectedRunKey={selectedRunKey}
     onSelectRun={setSelectedRunKey}
     imagesVisible={overviewImagesVisible}
@@ -1343,6 +1350,8 @@ export function ResultPanel({
 function OverviewResult({
   taskId,
   result,
+  filter,
+  onFilterChange,
   selectedRunKey,
   onSelectRun,
   imagesVisible,
@@ -1363,6 +1372,8 @@ function OverviewResult({
 }: {
   taskId: string;
   result: TaskResult;
+  filter: "all" | "failed";
+  onFilterChange: (filter: "all" | "failed") => void;
   selectedRunKey: string;
   onSelectRun: (runKey: string) => void;
   imagesVisible: boolean;
@@ -1381,14 +1392,16 @@ function OverviewResult({
   onOpenRepair?: (job: RepairJob) => void;
   adapter?: ConsoleSnapshot["adapter"];
 }) {
+  const visibleRuns = filter === "failed" ? result.runs.filter(run => run.status === "failed") : result.runs;
   const screenshots = result.runs.reduce((total, run) => total + run.screenshots.length, 0);
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
-  const failedCaseRunIds = result.runs.filter(run => run.status === "failed").map(run => run.caseRunId);
+  const visibleScreenshots = visibleRuns.reduce((total, run) => total + run.screenshots.length, 0);
+  const failedCaseRunIds = visibleRuns.filter(run => run.status === "failed").map(run => run.caseRunId);
   return <div className="analysis-content">
     <div className="analysis-summary">
       <AnalysisMetric label="用例" value={result.total} />
       <AnalysisMetric label="通过" value={result.passed} tone="passed" />
-      <AnalysisMetric label="失败" value={result.failed} tone="failed" />
+      <AnalysisMetric label="失败" value={result.failed} tone="failed" onClick={() => onFilterChange("failed")} active={filter === "failed"} />
       <AnalysisMetric label="截图" value={screenshots} />
       <AnalysisMetric label="接口" value={apiCalls} />
     </div>
@@ -1401,8 +1414,9 @@ function OverviewResult({
     </div>}
     {result.warnings.length > 0 && <div className="result-warning"><AlertCircle size={14} /><span>{result.warnings.join("；")}</span></div>}
     <div className="analysis-run-toolbar">
-      <div><ImageIcon size={15} /><strong>测试条目</strong><span>{result.runs.length} 条 · {screenshots} 张截图</span></div>
+      <div><ImageIcon size={15} /><strong>测试条目</strong><span>{filter === "failed" ? `失败筛选 · ${visibleRuns.length} 条` : `${visibleRuns.length} 条`} · {visibleScreenshots} 张截图</span></div>
       <div className="analysis-run-toolbar-actions">
+        {filter === "failed" && <button type="button" onClick={() => onFilterChange("all")}><List size={13} />查看全部</button>}
         {failedCaseRunIds.length > 0 && onRetryTask && <button type="button" onClick={() => onRetryTask(failedCaseRunIds)} disabled={retryPending && retryingCaseRunId === "__batch__"}><RotateCcw size={13} />重试全部失败用例</button>}
         {screenshots > 0 && <button
           type="button"
@@ -1413,7 +1427,9 @@ function OverviewResult({
       </div>
     </div>
     <div className="analysis-run-list" id="analysis-run-list">
-      {result.runs.map(run => {
+      {visibleRuns.length === 0
+        ? <div className="result-empty analysis-filter-empty"><XCircle size={18} /><strong>没有失败测试条目</strong><span>当前运行没有可查看的失败页面</span></div>
+        : visibleRuns.map(run => {
         const runKey = taskResultRunKey(run);
         const selected = runKey === selectedRunKey;
         return <div className={`analysis-run-entry ${selected ? "selected" : ""}`} key={runKey}>
@@ -1451,7 +1467,7 @@ function OverviewResult({
             onCopy={onCopy}
           />}
         </div>;
-      })}
+        })}
     </div>
   </div>;
 }
@@ -1551,7 +1567,10 @@ function ResultScope({ run, onClear }: { run: TaskResultRun; onClear: () => void
   return <div className="result-scope"><span>当前用例：<strong>{run.caseId || run.targetPage || run.runId}</strong></span><button type="button" onClick={onClear}><List size={13} />查看全部用例</button></div>;
 }
 
-function AnalysisMetric({ label, value, tone = "" }: { label: string; value: number; tone?: string }) {
+function AnalysisMetric({ label, value, tone = "", onClick, active = false }: { label: string; value: number; tone?: string; onClick?: () => void; active?: boolean }) {
+  if (onClick) {
+    return <button type="button" className={`analysis-metric ${tone} ${active ? "active" : ""}`} onClick={onClick} aria-pressed={active}><span>{label}</span><strong>{value}</strong></button>;
+  }
   return <div className={`analysis-metric ${tone}`}><span>{label}</span><strong>{value}</strong></div>;
 }
 

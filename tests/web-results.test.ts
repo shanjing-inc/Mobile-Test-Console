@@ -17,6 +17,8 @@ describe("QA 结果分析界面", () => {
     expect(markup).toContain('aria-label="查看 case-one 失败详情"');
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain("测试条目");
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).toContain("失败");
     expect(markup).toContain("隐藏图片");
     expect(markup).toContain('aria-controls="analysis-run-list"');
     expect(markup).toContain('/api/tasks/task-one/artifacts/artifact-one');
