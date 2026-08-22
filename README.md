@@ -60,7 +60,7 @@ pnpm start -- --config examples/demo.config.cjs --port 4312
 
 服务默认只监听 `127.0.0.1`。可以通过 `--host`、`--port` 和 `--open` 调整启动行为。
 
-也可以在项目配置文件中固定控制台端口，开发模式会分别使用 API 端口和页面端口：
+在项目仓库的 `mobile-test.config.cjs` 配置文件中可以固定控制台端口，开发模式会分别使用 API 端口和页面端口：
 
 ```js
 module.exports = {
