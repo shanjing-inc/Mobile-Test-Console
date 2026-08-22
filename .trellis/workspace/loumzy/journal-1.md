@@ -474,3 +474,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: 拆分 MTC 启动端口配置
+
+**Date**: 2026-08-22
+**Task**: 拆分 MTC 启动端口配置
+**Branch**: `main`
+
+### Summary
+
+新增 mtc.config.cjs 独立配置 MTC host、API 端口和页面端口；开发启动器、服务端 CLI、Vite 环境变量和端口检查统一使用该配置，项目切换保持端口稳定；移除项目配置 console 字段并更新文档、示例、Schema 与测试。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d78a585` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

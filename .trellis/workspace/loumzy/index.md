@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-08-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~476 | Active |
+| `journal-1.md` | ~509 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-08-22 | 拆分 MTC 启动端口配置 | `d78a585` | `main` |
 | 14 | 2026-08-22 | 确认配置文件手动设置端口 | `3852fbf` | `main` |
 | 13 | 2026-08-22 | 支持配置自定义开发端口 | `95d8c85` | `main` |
 | 12 | 2026-08-22 | 运行详情失败用例筛选 | `7ffe76c` | `main` |
