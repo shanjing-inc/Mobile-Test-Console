@@ -408,3 +408,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 支持配置自定义开发端口
+
+**Date**: 2026-08-22
+**Task**: 支持配置自定义开发端口
+**Branch**: `main`
+
+### Summary
+
+为项目配置增加 console.host、console.port、console.webPort，贯通生产 CLI、开发启动器、Vite 代理、端口检查与文档示例；补充配置、端口健康检查测试，并通过 typecheck、lint、test、schema:check、build。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `95d8c85` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

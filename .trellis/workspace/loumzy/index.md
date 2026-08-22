@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-08-22
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~410 | Active |
+| `journal-1.md` | ~443 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-08-22 | 支持配置自定义开发端口 | `95d8c85` | `main` |
 | 12 | 2026-08-22 | 运行详情失败用例筛选 | `7ffe76c` | `main` |
 | 11 | 2026-08-13 | 复测沿用原运行记录 | `d88233a6b4be0d79dcbec36541a9054e7eea41e3` | `main` |
 | 10 | 2026-08-13 | 修复单页面复测范围 | `681973f` | `main` |
