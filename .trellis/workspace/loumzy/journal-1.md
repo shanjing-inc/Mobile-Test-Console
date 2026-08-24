@@ -540,3 +540,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: 支持运行状态列表折叠
+
+**Date**: 2026-08-24
+**Task**: 支持运行状态列表折叠
+**Branch**: `main`
+
+### Summary
+
+为运行状态列表增加默认展开的整体折叠控制，提供 aria-expanded/aria-controls、旋转箭头视觉反馈和布局回归测试；pnpm lint、pnpm typecheck、pnpm test 全部通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6c7644c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

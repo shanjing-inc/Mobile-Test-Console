@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-08-24
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~542 | Active |
+| `journal-1.md` | ~575 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-08-24 | 支持运行状态列表折叠 | `6c7644c` | `main` |
 | 16 | 2026-08-24 | 优化小程序项目初始化与新手接入引导 | `198bff5` | `main` |
 | 15 | 2026-08-22 | 拆分 MTC 启动端口配置 | `d78a585` | `main` |
 | 14 | 2026-08-22 | 确认配置文件手动设置端口 | `3852fbf` | `main` |
