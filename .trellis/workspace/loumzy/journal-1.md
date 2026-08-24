@@ -507,3 +507,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 优化小程序项目初始化与新手接入引导
+
+**Date**: 2026-08-24
+**Task**: 优化小程序项目初始化与新手接入引导
+**Branch**: `main`
+
+### Summary
+
+按小白视角重构项目接入向导，补充 healthCheck 完整配置与生成脚本，支持按 App 或小程序类型初始化项目；完成 390px 视觉复查，lint、354 项测试与生产构建通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `198bff5` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
