@@ -573,3 +573,36 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: 默认展示最近五条运行记录
+
+**Date**: 2026-08-24
+**Task**: 默认展示最近五条运行记录
+**Branch**: `main`
+
+### Summary
+
+运行状态列表默认渲染最近 5 条，超出记录通过查看更多展开或收起；新增可访问状态和回归断言，pnpm lint、pnpm typecheck、pnpm test 全部通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `119e6fc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
