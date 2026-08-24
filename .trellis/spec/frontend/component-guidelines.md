@@ -129,6 +129,48 @@ The browser submits case-run identifiers only. Result parsing, failed-status val
 
 The run monitor collapses a retry chain to its root source row. The execution layer keeps each retry as an independent task/run for cancellation, artifacts, and audit. While a descendant retry is active, the source row and detail header display `正在重试`; retry, deletion, and retention controls remain disabled. Terminal retry results merge into the source detail in creation order, with passed items replacing their matching source items and unsuccessful items preserving the previous evidence. Deleting the source row after all retries finish removes the complete retry lineage.
 
+### Project onboarding progressive disclosure
+
+**Problem**: Rendering every failed check, configuration term, and remediation action at once makes first-time project onboarding difficult to follow.
+
+**Contract**: `ProjectCatalogCard` derives the current task from the first unverified `PROJECT_EXECUTION_PREREQUISITE_STEP_IDS` entry. The current-task panel exposes one primary action and opens only that step. Raw tool output, issue strings, capability identifiers, and Provider details stay inside a nested `查看检查详情` disclosure.
+
+```tsx
+const nextStep = executionPrerequisites.find(step => step.status !== "verified");
+
+{nextStep && <ProjectOnboardingNextAction step={nextStep} />}
+{project.onboarding.map(step => (
+  <details key={step.id} open={step.id === nextStep?.id}>
+    {/* User goal and expected outcome stay visible here. */}
+    <ProjectStepTechnicalDetails step={step} />
+  </details>
+))}
+```
+
+Action labels describe the user's task (`生成基础配置`, `重新检查运行环境`, `生成能力骨架`). Existing preview/apply and verification callbacks remain the write boundary. When every prerequisite is verified, the primary action switches to `运行第一条测试` and navigates through the existing workspace access model.
+
+App, Lynx App, and mini-program projects share the same step structure. Project-family branches provide environment wording, guide paths, and setup actions. At `max-width: 640px`, the current-task controls occupy their own row and primary completion actions fill the available width.
+
+For a mini-program environment step that is still waiting or blocked, the expanded step includes an inline `healthCheck` tutorial before the raw tool details. The tutorial is a complete copyable path for a first-time integrator: it names `mobile-test.config.cjs`, shows the `testing.targets[].healthCheck` object, provides the referenced `qa/mtc/health-check.cjs` script, explains exit-code behavior, identifies supported target placeholders, and points back to `重新检查运行环境`. The generated initialization plan writes the same config field and script path so manual and generated onboarding stay aligned.
+
+```tsx
+{miniProgram && step.id === "devices" && step.status !== "verified" && (
+  <MiniProgramHealthCheckGuide onMessage={onMessage} />
+)}
+```
+
+The copy action includes both snippets in one clipboard payload and reports success or failure through the workspace message channel. Code blocks use wrapping and bounded overflow so placeholder strings and local paths cannot expand the document width.
+
+**Required regression checks**:
+
+- The first unverified step supplies the current-task label and primary action.
+- Technical tool and capability details remain present in the DOM under `查看检查详情`.
+- A fully verified active project exposes `运行第一条测试`; the action opens the tests workspace.
+- Mini-program and Lynx App cards render their family-specific environment and guide wording.
+- A mini-program target without `healthCheck` renders the configuration object, script path, environment key, exit-code explanation, and an accessible copy action.
+- Mini-program initialization writes `qa/mtc/health-check.cjs` and references it from `testing.targets[].healthCheck`.
+- A `390px` viewport has equal document `scrollWidth` and `clientWidth`.
+
 ---
 
 ## Accessibility

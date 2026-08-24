@@ -833,6 +833,29 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .project-onboarding-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .project-onboarding-heading h3 { margin-top: 3px; font-size: 15px; }
 .project-onboarding-section .project-step-list { margin: 0; }
+.project-onboarding-next-action { min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px; color: var(--ink); background: var(--teal-soft); border: 1px solid #b9dcd8; }
+.project-onboarding-next-number { width: 28px; height: 28px; display: grid; place-items: center; color: white; background: var(--teal); border-radius: 50%; font-size: 11px; font-weight: 800; }
+.project-onboarding-next-action > div:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.project-onboarding-next-action > div:nth-child(2) > span { color: var(--teal); font-size: 9px; font-weight: 800; }
+.project-onboarding-next-action strong { font-size: 12px; }
+.project-onboarding-next-action p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.project-onboarding-next-controls { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.project-onboarding-next-controls .text-button { min-height: 28px; padding: 0 4px; color: var(--teal); font-size: 10px; white-space: nowrap; }
+.project-health-check-guide { min-width: 0; display: grid; gap: 8px; padding: 12px; background: white; border: 1px solid var(--line); border-left: 3px solid var(--teal); }
+.project-health-check-guide-heading { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.project-health-check-guide-heading > div { min-width: 0; display: grid; gap: 3px; }
+.project-health-check-guide-heading strong { color: var(--ink); font-size: 11px; }
+.project-health-check-guide-heading span { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.project-health-check-guide ol { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.project-health-check-guide li code, .project-health-check-guide p code { color: var(--teal); font: 9px/1.45 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; }
+.project-health-check-code-title { margin-top: 2px; color: var(--ink); font-size: 9px; }
+.project-health-check-guide pre { min-width: 0; max-height: 220px; overflow: auto; margin: 0; padding: 10px; color: #d8e6e4; background: #172528; border: 1px solid #31464a; font: 9px/1.55 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.project-health-check-guide > p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.project-step-technical-details { border-top: 1px solid var(--line); }
+.project-step-technical-details > summary { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700; }
+.project-step-technical-details[open] > summary svg { transform: rotate(180deg); }
+.project-step-technical-details > div { display: grid; gap: 8px; padding: 0 0 8px; }
+.project-first-test-action { margin-left: auto; white-space: nowrap; }
 .project-card-note { margin: 13px 20px 0; padding: 9px 11px; color: var(--muted); background: var(--surface-muted); border: 1px solid var(--line); font-size: 10px; line-height: 1.45; }
 .project-storage-panel { min-width: 0; padding: 18px 20px; }
 .project-storage-panel.inactive { color: var(--muted); }
@@ -1028,6 +1051,10 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
   .artifact-cleanup-dialog { max-height: calc(100dvh - 24px); }
   .artifact-cleanup-selection-summary { align-items: flex-start; flex-direction: column; gap: 4px; }
   .project-onboarding-section, .project-detail-loading, .project-detail-error { margin-left: 14px; margin-right: 14px; }
+  .project-onboarding-next-action { grid-template-columns: 30px minmax(0, 1fr); align-items: start; }
+  .project-onboarding-next-controls { grid-column: 1 / -1; justify-content: space-between; }
+  .project-execution-ready { align-items: flex-start; flex-direction: column; }
+  .project-first-test-action { width: 100%; margin-left: 0; justify-content: center; }
   .onboarding-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .onboarding-metrics > div { border-bottom: 1px solid var(--line); }
   .onboarding-metrics > div:nth-child(2) { border-right: 0; }

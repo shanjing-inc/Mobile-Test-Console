@@ -151,14 +151,18 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("项目接入中心");
     expect(markup).toContain("当前运行项目");
     expect(markup).toContain("Lynx App");
-    expect(markup).toContain("验证接入");
-    expect(markup).toContain("项目目录");
-    expect(markup).toContain("接入配置");
-    expect(markup).toContain("设备环境");
+    expect(markup).toContain("重新检查");
+    expect(markup).toContain("完成接入，运行第一条测试");
+    expect(markup).toContain("当前要做");
+    expect(markup).toContain("准备测试配置");
+    expect(markup).toContain("生成基础配置");
+    expect(markup).toContain("查看接入指南");
+    expect(markup).toContain("确认项目位置");
+    expect(markup).toContain("检查运行环境");
     expect(markup).toContain("Android Platform Tools");
-    expect(markup).toContain("配置引导");
+    expect(markup).toContain("查看检查详情");
     expect(markup).toContain("ANDROID_ADB_PATH");
-    expect(markup).toContain("项目能力");
+    expect(markup).toContain("配置项目能力");
     expect(markup).toContain("能力清单");
     expect(markup).toContain("QA 包准备");
     expect(markup).toContain("qa.bundle.prepare");
@@ -167,7 +171,7 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("账号预检");
     expect(markup).toContain("页面参数解析");
     expect(markup).toContain("结果分析");
-    expect(markup).toContain("预览初始化配置");
+    expect(markup).toContain("完成后，可以开始检查运行环境。");
   });
 
   it("添加项目使用独立页面并隐藏当前项目工作区", () => {
@@ -195,6 +199,30 @@ describe("项目目录工作区", () => {
     expect(markup).not.toContain("当前运行项目");
     expect(markup).not.toContain("项目接入状态");
     expect(markup).not.toContain("Demo Lynx");
+  });
+
+  it("小程序添加项目页面使用小程序初始化流程", () => {
+    const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
+      catalog,
+      loading: false,
+      onRegister: vi.fn(),
+      onSelectDirectory: vi.fn(),
+      onSelectConfig: vi.fn(),
+      onVerify: vi.fn(),
+      onActivate: vi.fn(),
+      onPreviewInitialization: vi.fn(),
+      onApplyInitialization: vi.fn(),
+      onPreviewSetup: vi.fn(),
+      onApplySetup: vi.fn(),
+      runtimeProjectId: "demo-lynx",
+      family: "mini-program",
+      addingProject: true,
+      onCloseAdd: vi.fn(),
+      onMessage: vi.fn(),
+    }));
+
+    expect(markup).toContain("添加项目");
+    expect(markup).not.toContain("project-register-platforms");
   });
 
   it("添加模式下侧栏突出添加入口并取消项目选中态", () => {
@@ -308,9 +336,40 @@ describe("项目目录工作区", () => {
       runtimeProjectId: "demo-lynx", onCloseAdd: vi.fn(), onMessage: vi.fn(),
     }));
     expect(markup).toContain("运行环境");
-    expect(markup).toContain("项目声明运行目标");
+    expect(markup).toContain("运行第一条测试");
+    expect(markup).toContain("小程序运行环境");
     expect(markup).toContain("微信开发者工具");
-    expect(markup).toContain("小程序测试通过项目 Runner 调度");
+    expect(markup).toContain("saas-mini-program-runner");
+    expect(markup).toContain("复制小程序接入指南路径");
+  });
+
+  it("小程序运行环境缺少 healthCheck 时展示完整配置方法", () => {
+    const miniCatalog = structuredClone(catalog);
+    miniCatalog.projects[0] = {
+      ...miniCatalog.projects[0],
+      integrationType: "mini-program",
+      platforms: [],
+      onboarding: miniCatalog.projects[0].onboarding.map(step => step.id === "devices" ? {
+        ...step,
+        status: "blocked",
+        summary: "1 个运行环境需要处理",
+        issues: ["小程序开发者工具：运行目标缺少 healthCheck"],
+        tools: [{ id: "wechat-devtools", label: "小程序开发者工具", executable: "", status: "blocked", path: "", version: "wechat-devtools", detail: "运行目标缺少 healthCheck", guidance: ["为 testing.targets[].healthCheck 配置可重复执行的环境检查命令。"] }],
+      } : step),
+    };
+    const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
+      catalog: miniCatalog,
+      loading: false,
+      onRegister: vi.fn(), onSelectDirectory: vi.fn(), onSelectConfig: vi.fn(), onVerify: vi.fn(), onActivate: vi.fn(),
+      onPreviewInitialization: vi.fn(), onApplyInitialization: vi.fn(), onPreviewSetup: vi.fn(), onApplySetup: vi.fn(),
+      runtimeProjectId: "demo-lynx", onCloseAdd: vi.fn(), onMessage: vi.fn(),
+    }));
+
+    expect(markup).toContain("如何配置 healthCheck");
+    expect(markup).toContain("退出码 0 表示可用");
+    expect(markup).toContain("qa/mtc/health-check.cjs");
+    expect(markup).toContain("MTC_MINI_PROGRAM_DEVTOOLS_PATH");
+    expect(markup).toContain('aria-label="复制 healthCheck 配置示例"');
   });
 
   it("当前运行项目提供删除入口和页面内确认弹窗", () => {

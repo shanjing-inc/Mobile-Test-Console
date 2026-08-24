@@ -714,6 +714,78 @@ tests: [{
 }]
 ```
 
+## Scenario: Project-family-aware initialization
+
+### 1. Scope / Trigger
+
+- Trigger: a user opens the project-registration page from the App or mini-program sidebar tab and selects a directory without an MTC configuration.
+- The selected `ProjectFamily` determines the generated configuration and registration result.
+
+### 2. Signatures
+
+```ts
+interface PreviewProjectInitializationRequest {
+  projectDirectory: string;
+  platforms: Platform[];
+  family: "app" | "mini-program";
+}
+
+interface ApplyProjectInitializationRequest extends PreviewProjectInitializationRequest {
+  planId: string;
+}
+
+POST /api/projects/setup/preview
+POST /api/projects/setup/apply
+```
+
+### 3. Contracts
+
+- The browser passes the active sidebar family into both preview and apply requests; the saved setup context preserves the same family.
+- App initialization requires one or more device platforms and produces the existing `lynx-app` configuration, device providers, and device-based Smoke test.
+- Mini-program initialization sends `platforms: []`, hides App platform controls, produces `integrationType: "mini-program"`, and declares a config-owned mini-program run target plus a target-keyed Smoke test.
+- The generated mini-program target uses placeholder tool and App-ID values that the integrated project replaces before runtime verification.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| `family` is absent or unknown | HTTP 400 request validation error |
+| App request has an empty `platforms` array | HTTP 400 request validation error |
+| Mini-program request has one or more platforms | HTTP 400 request validation error |
+| A preview plan is applied with a different family or changed files | `PROJECT_SETUP_PLAN_STALE` |
+| Generated paths already exist | Preview remains non-applicable and reports the conflicting paths |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the mini-program tab initializes a project with `deviceProviders: []`, a `mini-program-devtools` target, and a test that references its `targetKeys`.
+- Base: the App tab initializes an Android project and retains the Lynx App configuration skeleton.
+- Bad: UI state uses the mini-program tab while the apply request omits `family`; the server rejects the request before plan generation.
+
+### 6. Tests Required
+
+- Service test previews and applies each family, then loads the generated configuration and asserts the integration type and execution surface.
+- HTTP API test supplies `family: "app"` for the existing App initialization route.
+- Web component test renders mini-program registration with the App platform fieldset absent.
+- Run lint, type-check, the full test suite, and production build after changing this request contract.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+onPreviewInitialization({ projectDirectory, platforms });
+```
+
+#### Correct
+
+```ts
+onPreviewInitialization({
+  projectDirectory,
+  platforms: family === "mini-program" ? [] : platforms,
+  family,
+});
+```
+
 ## Design Decisions
 
 ### Explicit page selection validation

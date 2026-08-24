@@ -140,7 +140,7 @@ describe("HTTP API", () => {
       const initializationPreview = await app.inject({
         method: "POST",
         url: "/api/projects/setup/preview",
-        payload: { projectDirectory: initializationRoot, platforms: ["android"] },
+        payload: { projectDirectory: initializationRoot, platforms: ["android"], family: "app" },
       });
       expect(initializationPreview.statusCode).toBe(200);
       expect(initializationPreview.json()).toMatchObject({ step: "config", canApply: true });
@@ -152,6 +152,7 @@ describe("HTTP API", () => {
         payload: {
           projectDirectory: initializationRoot,
           platforms: ["android"],
+          family: "app",
           planId: initializationPreview.json().planId,
         },
       });

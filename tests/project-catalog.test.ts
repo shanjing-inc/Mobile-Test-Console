@@ -314,7 +314,7 @@ describe("项目目录与接入验证", () => {
     await fs.mkdir(projectRoot);
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
 
-    const plan = await service.previewInitialization({ projectDirectory: projectRoot, platforms: ["android"] });
+    const plan = await service.previewInitialization({ projectDirectory: projectRoot, platforms: ["android"], family: "app" });
     expect(plan).toMatchObject({
       step: "config",
       projectId: "new-lynx-app",
@@ -330,6 +330,7 @@ describe("项目目录与接入验证", () => {
     const applied = await service.applyInitialization({
       projectDirectory: projectRoot,
       platforms: ["android"],
+      family: "app",
       planId: plan.planId,
     });
     expect(applied.results).toHaveLength(3);
@@ -341,16 +342,58 @@ describe("项目目录与接入验证", () => {
     expect(step(applied.catalog, "new-lynx-app", "template")).toMatchObject({ status: "verified" });
   });
 
+  it("小程序初始化生成小程序配置与运行目标", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-program-initialize-"));
+    tempDirs.push(root);
+    const projectRoot = path.join(root, "new-mini-program");
+    await fs.mkdir(projectRoot);
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+
+    const plan = await service.previewInitialization({
+      projectDirectory: projectRoot,
+      platforms: [],
+      family: "mini-program",
+    });
+
+    expect(plan.summary).toContain("小程序测试接入");
+    const applied = await service.applyInitialization({
+      projectDirectory: projectRoot,
+      platforms: [],
+      family: "mini-program",
+      planId: plan.planId,
+    });
+    const config = await loadProjectConfig(path.join(projectRoot, "mobile-test.config.cjs"));
+
+    expect(config.project.integrationType).toBe("mini-program");
+    expect(config.deviceProviders).toEqual([]);
+    expect(config.testing?.targets).toEqual([expect.objectContaining({
+      key: "mini-program-devtools",
+      kind: "mini-program",
+      platform: "wechat",
+      healthCheck: expect.objectContaining({
+        executable: "node",
+        args: ["qa/mtc/health-check.cjs", "--runtime", "{{target.runtime}}", "--app-id", "{{target.appId}}"],
+      }),
+    })]);
+    expect(config.tests[0]).toMatchObject({ targetKeys: ["mini-program-devtools"], platforms: [] });
+    expect(applied.catalog.projects).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "new-mini-program", integrationType: "mini-program", platforms: [] }),
+    ]));
+    await expect(fs.readFile(path.join(projectRoot, "qa", "mtc", "health-check.cjs"), "utf8"))
+      .resolves.toContain("MTC_MINI_PROGRAM_DEVTOOLS_PATH");
+  });
+
   it("文件状态变化后拒绝旧初始化计划", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-stale-plan-"));
     tempDirs.push(root);
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
-    const plan = await service.previewInitialization({ projectDirectory: root, platforms: ["android"] });
+    const plan = await service.previewInitialization({ projectDirectory: root, platforms: ["android"], family: "app" });
     await fs.writeFile(path.join(root, "mobile-test.config.cjs"), "module.exports = {};\n");
 
     await expect(service.applyInitialization({
       projectDirectory: root,
       platforms: ["android"],
+      family: "app",
       planId: plan.planId,
     })).rejects.toMatchObject({ code: "PROJECT_SETUP_PLAN_STALE" });
   });

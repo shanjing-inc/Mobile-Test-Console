@@ -17,6 +17,7 @@ import {
   type ProjectActivationResponse,
   type ProjectCapabilityCheck,
   type ProjectConfigSelection,
+  type ProjectFamily,
   type ProjectOnboardingStep,
   type ProjectSetupAction,
   type ProjectSetupActionResult,
@@ -562,17 +563,23 @@ export class ProjectCatalogService {
 
   private async buildInitializationPlan(input: PreviewProjectInitializationRequest): Promise<BuiltSetupPlan> {
     const root = await requireDirectory(input.projectDirectory, "PROJECT_DIRECTORY_REQUIRED", "请选择有效的项目目录");
-    const platforms = [...new Set(input.platforms)].filter(platform => PLATFORMS.includes(platform));
+    const platforms = input.family === "app"
+      ? [...new Set(input.platforms)].filter(platform => PLATFORMS.includes(platform))
+      : [];
     const existingEntry = [...this.projects.values()].find(entry => entry.root === root);
     const projectId = existingEntry?.id ?? inferProjectId(root);
     const projectName = existingEntry?.name ?? (path.basename(root) || "Lynx App");
     const configPath = existingEntry?.configPath ?? path.join(root, CONFIG_FILE_NAME);
     const configProjectRoot = path.relative(path.dirname(configPath), root).split(path.sep).join("/") || ".";
     const smokePath = path.join(root, "qa", "mtc", "lynx-smoke.cjs");
+    const healthCheckPath = path.join(root, "qa", "mtc", "health-check.cjs");
     const guidePath = path.join(root, "qa", "mtc", "README.md");
-    const conflicts = await existingPaths([configPath, smokePath, guidePath]);
+    const generatedPaths = input.family === "mini-program"
+      ? [configPath, healthCheckPath, smokePath, guidePath]
+      : [configPath, smokePath, guidePath];
+    const conflicts = await existingPaths(generatedPaths);
     const idConflict = [...this.projects.values()].some(entry => entry.id === projectId && entry.root !== root);
-    const blockingReason = platforms.length === 0
+    const blockingReason = input.family === "app" && platforms.length === 0
       ? "至少选择一个目标平台"
       : idConflict
         ? `项目 ID 已登记: ${projectId}`
@@ -580,15 +587,18 @@ export class ProjectCatalogService {
           ? `以下文件已存在：${conflicts.join("、")}`
           : "";
     const actions: InternalSetupAction[] = [
-      fileAction("write-config", "创建 MTC 项目配置", configPath, buildInitialConfig(projectId, projectName, configProjectRoot, platforms)),
-      fileAction("write-smoke", "创建 Smoke 命令骨架", smokePath, buildSmokeScript()),
-      fileAction("write-guide", "创建接入说明", guidePath, buildSetupGuide()),
+      fileAction("write-config", "创建 MTC 项目配置", configPath, buildInitialConfig(projectId, projectName, configProjectRoot, platforms, input.family)),
+      ...(input.family === "mini-program"
+        ? [fileAction("write-health-check", "创建运行环境检查脚本", healthCheckPath, buildMiniProgramHealthCheckScript())]
+        : []),
+      fileAction("write-smoke", "创建 Smoke 命令骨架", smokePath, buildSmokeScript(input.family)),
+      fileAction("write-guide", "创建接入说明", guidePath, buildSetupGuide(input.family)),
     ];
     return finalizeSetupPlan({
       step: "config",
       projectId,
       projectDirectory: root,
-      summary: `初始化 ${projectName} 的 Lynx App 测试接入`,
+      summary: `初始化 ${projectName} 的${input.family === "mini-program" ? "小程序" : "Lynx App"}测试接入`,
       actions,
       canApply: blockingReason.length === 0,
       blockingReason,
@@ -1186,7 +1196,56 @@ async function buildDeviceSetupPlan(
   });
 }
 
-function buildInitialConfig(projectId: string, projectName: string, projectRoot: string, platforms: Platform[]): string {
+function buildInitialConfig(
+  projectId: string,
+  projectName: string,
+  projectRoot: string,
+  platforms: Platform[],
+  family: ProjectFamily,
+): string {
+  if (family === "mini-program") {
+    return `module.exports = {
+  schemaVersion: "mobile-test-console.config.v1",
+  project: {
+    id: ${JSON.stringify(projectId)},
+    name: ${JSON.stringify(projectName)},
+    root: ${JSON.stringify(projectRoot)},
+    integrationType: "mini-program",
+  },
+  stateDir: "./.mtc-state",
+  adapter: { workspaces: [] },
+  deviceProviders: [],
+  testing: {
+    targets: [{
+      key: "mini-program-devtools",
+      label: "小程序开发者工具",
+      kind: "mini-program",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-replace-me",
+      concurrencyKey: ${JSON.stringify(`${projectId}-mini-program`)},
+      healthCheck: {
+        executable: "node",
+        args: ["qa/mtc/health-check.cjs", "--runtime", "{{target.runtime}}", "--app-id", "{{target.appId}}"],
+      },
+    }],
+  },
+  tests: [{
+    id: "mini-program-smoke",
+    label: "小程序 Smoke",
+    description: "验证小程序运行目标接入链路。",
+    targetKeys: ["mini-program-devtools"],
+    commands: {
+      default: {
+        executable: "node",
+        args: ["qa/mtc/lynx-smoke.cjs", "--target", "{{target.key}}", "--app-id", "{{target.appId}}", "--run-id", "{{task.runId}}"],
+      },
+    },
+  }],
+};
+`;
+  }
+
   return `module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
@@ -1214,15 +1273,62 @@ function buildInitialConfig(projectId: string, projectName: string, projectRoot:
 `;
 }
 
-function buildSmokeScript(): string {
-  return `const args = process.argv.slice(2);
+function buildMiniProgramHealthCheckScript(): string {
+  return `const fs = require("node:fs");
 
-console.log("[MTC] Lynx Smoke 骨架已执行", args.join(" "));
-console.log("请在 qa/mtc/lynx-smoke.cjs 中接入项目的构建、安装和页面验证命令。");
+const args = process.argv.slice(2);
+const valueOf = name => {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : "";
+};
+const runtime = valueOf("--runtime");
+const appId = valueOf("--app-id");
+const devtoolsPath = process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH || "";
+
+if (!appId || appId === "wx-replace-me") {
+  console.error("请在 mobile-test.config.cjs 中填写小程序 App ID。");
+  process.exit(1);
+}
+if (!devtoolsPath) {
+  console.error("请设置 MTC_MINI_PROGRAM_DEVTOOLS_PATH，指向小程序开发者工具 CLI。");
+  process.exit(1);
+}
+if (!fs.existsSync(devtoolsPath)) {
+  console.error(\`小程序开发者工具 CLI 不存在: \${devtoolsPath}\`);
+  process.exit(1);
+}
+
+console.log(\`运行环境可用: runtime=\${runtime} appId=\${appId} cli=\${devtoolsPath}\`);
 `;
 }
 
-function buildSetupGuide(): string {
+function buildSmokeScript(family: ProjectFamily): string {
+  const label = family === "mini-program" ? "小程序 Smoke" : "Lynx Smoke";
+  const guidance = family === "mini-program"
+    ? "请在 qa/mtc/lynx-smoke.cjs 中接入小程序开发者工具和页面验证命令。"
+    : "请在 qa/mtc/lynx-smoke.cjs 中接入项目的构建、安装和页面验证命令。";
+  return `const args = process.argv.slice(2);
+
+console.log(${JSON.stringify(`[MTC] ${label}骨架已执行`)}, args.join(" "));
+console.log(${JSON.stringify(guidance)});
+`;
+}
+
+function buildSetupGuide(family: ProjectFamily): string {
+  if (family === "mini-program") {
+    return `# Mobile Test Console 小程序接入
+
+1. 在 \`mobile-test.config.cjs\` 中确认项目 ID、运行目标、App ID 和 Smoke 命令。
+2. 将 \`mini-program-devtools\` 替换为项目实际使用的小程序开发者工具和运行时。
+3. 设置 \`MTC_MINI_PROGRAM_DEVTOOLS_PATH\`，指向开发者工具 CLI；也可以按项目实际环境修改 \`qa/mtc/health-check.cjs\`。
+4. health check 以退出码 0 表示环境可用，其他退出码表示需要处理；标准输出和错误输出会展示在项目概览中。
+5. 在 MTC 项目概览中执行“重新检查”，确认项目声明的运行环境。
+6. 在 \`qa/mtc/lynx-smoke.cjs\` 中接入开发者工具拉起和页面验证命令。
+7. 通过“生成能力骨架”创建 Project Provider 与 Runner 骨架。
+8. 在配置中声明项目工作区，完成验证后进入“执行测试”。
+`;
+  }
+
   return `# Mobile Test Console 接入
 
 1. 在 \`mobile-test.config.cjs\` 中确认项目 ID、目标平台和 Smoke 命令。

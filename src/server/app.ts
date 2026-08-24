@@ -181,14 +181,24 @@ const registerProjectSchema = z.object({
   configFile: z.string().trim().min(1).default("mobile-test.config.cjs"),
 });
 
-const previewProjectInitializationSchema = z.object({
-  projectDirectory: z.string().trim().min(1),
-  platforms: z.array(z.enum(PLATFORMS)).min(1),
-});
+const projectInitializationSchema = z.discriminatedUnion("family", [
+  z.object({
+    projectDirectory: z.string().trim().min(1),
+    platforms: z.array(z.enum(PLATFORMS)).min(1),
+    family: z.literal("app"),
+  }),
+  z.object({
+    projectDirectory: z.string().trim().min(1),
+    platforms: z.array(z.enum(PLATFORMS)).length(0),
+    family: z.literal("mini-program"),
+  }),
+]);
 
-const applyProjectInitializationSchema = previewProjectInitializationSchema.extend({
+const previewProjectInitializationSchema = projectInitializationSchema;
+
+const applyProjectInitializationSchema = projectInitializationSchema.and(z.object({
   planId: z.string().min(1),
-});
+}));
 
 const previewProjectSetupSchema = z.object({
   step: z.enum(["devices", "capabilities"]),

@@ -218,6 +218,38 @@ module.exports = {
 };
 ```
 
+`healthCheck` 是 MTC 在开放测试入口前执行的环境检查命令。命令从项目根目录启动，退出码 `0` 表示环境可用，其他退出码表示需要处理；标准输出或错误输出会展示在“运行环境 → 查看检查详情”中。`args` 支持 `{{target.key}}`、`{{target.platform}}`、`{{target.runtime}}` 和 `{{target.appId}}` 占位符。
+
+可以在项目中创建 `qa/mtc/health-check.cjs`：
+
+```js
+const fs = require("node:fs");
+
+const cli = process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH;
+if (!cli || !fs.existsSync(cli)) {
+  console.error("请设置 MTC_MINI_PROGRAM_DEVTOOLS_PATH，指向小程序开发者工具 CLI");
+  process.exit(1);
+}
+
+console.log(`小程序运行环境可用: ${cli}`);
+process.exit(0);
+```
+
+再将运行目标中的检查命令指向该文件：
+
+```js
+healthCheck: {
+  executable: "node",
+  args: [
+    "qa/mtc/health-check.cjs",
+    "--runtime", "{{target.runtime}}",
+    "--app-id", "{{target.appId}}",
+  ],
+},
+```
+
+项目可按实际情况检查 Node、包管理器、开发者工具 CLI、端口或登录状态。检查脚本应保持只读、可重复执行，并输出用户可以直接处理的失败原因。
+
 `testing` 是项目测试能力的声明入口：项目在这里列出运行环境和 Provider 能力；每个 `tests[]` 通过 `kind`、`providerId` 与 `requiredCapabilities` 声明自己的执行依赖；`taskResults.schemaVersion` 和 `artifactsRoot` 声明结果结构与存放位置。`artifactRetention` 独立声明产物根目录、保留策略和项目清理适配器，Project Provider 项目可以直接使用该字段。MTC 会把配置声明与运行时 Provider manifest 对照，缺少能力的测试保持不可执行。
 
 ### 测试产物治理

@@ -597,6 +597,7 @@ export interface ProjectSetupPlan {
 export interface PreviewProjectInitializationRequest {
   projectDirectory: string;
   platforms: Platform[];
+  family: ProjectFamily;
 }
 
 export interface ApplyProjectInitializationRequest extends PreviewProjectInitializationRequest {

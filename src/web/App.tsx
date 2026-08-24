@@ -879,9 +879,11 @@ export default function App() {
               onApplySetup={handleApplyProjectSetup}
               selectedProjectId={selectedCatalogProjectId}
               runtimeProjectId={snapshot?.project.id ?? ""}
+              family={selectedProjectFamily}
               addingProject={addingCatalogProject}
               onCloseAdd={handleCloseAddCatalogProject}
               onMessage={setMessage}
+              onOpenTests={() => setWorkspaceView("tests")}
             />
           : workspaceView === "tests" ? <>
         <section className="metrics-strip" aria-label="运行概览">

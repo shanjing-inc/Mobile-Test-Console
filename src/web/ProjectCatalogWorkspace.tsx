@@ -2,6 +2,7 @@ import {
   AlertCircle,
   CheckCircle2,
   ChevronDown,
+  ClipboardCopy,
   FolderPlus,
   FolderOpen,
   FileText,
@@ -29,7 +30,9 @@ import type {
   ProjectCatalogDetailResponse,
   ProjectCatalogResponse,
   ProjectConfigSelection,
+  ProjectFamily,
   ProjectIntegrationType,
+  ProjectOnboardingStep,
   ProjectOnboardingStepStatus,
   ProjectTestEntryCheck,
   ProjectToolCheck,
@@ -54,25 +57,57 @@ const integrationLabels: Record<ProjectIntegrationType, string> = {
 };
 
 const stepLabels = {
-  project: "项目目录",
-  template: "接入配置",
-  devices: "设备环境",
-  capabilities: "项目能力",
+  project: "确认项目位置",
+  template: "准备测试配置",
+  devices: "检查运行环境",
+  capabilities: "配置项目能力",
 } as const;
 
 const stepDescriptions = {
-  project: "确认 MTC 能访问项目根目录，并把项目配置纳入登记目录。",
-  template: "读取 mobile-test.config.cjs，确认项目 ID、目录、类型、平台和测试入口。",
-  devices: "根据项目声明的平台检查 adb、Xcode、hdc 等本机工具链，并确认存在已连接、已授权的可测试设备。",
-  capabilities: "检查项目 Provider 是否声明构建、安装、页面参数和结果分析等能力。",
+  project: "让 MTC 记住项目目录，后续检测和测试都会在这里执行。",
+  template: "创建项目的测试清单，告诉 MTC 要运行什么测试以及使用哪些环境。",
+  devices: "确认本机已经具备运行测试所需的软件、设备或小程序开发工具。",
+  capabilities: "接入后，MTC 可以在测试前自动完成构建、安装和账号准备，并在测试后整理结果。",
 } as const;
 
 const stepNextActions = {
-  project: "选择可访问的项目目录。",
-  template: "在项目目录中准备 mobile-test.config.cjs，然后重新验证接入。",
-  devices: "按检测结果安装工具或配置本机路径，再连接设备、完成授权并重新验证。",
-  capabilities: "补齐项目 Provider 能力声明，并重新验证项目能力。",
+  project: "选择包含项目代码的目录。",
+  template: "生成基础配置，再按项目实际情况填写测试命令。",
+  devices: "根据检查结果准备缺少的软件或连接测试设备，然后重新检查。",
+  capabilities: "生成能力骨架，再逐项替换为项目自己的构建和测试逻辑。",
 } as const;
+
+const stepBenefits = {
+  project: "完成后，MTC 可以读取这个项目的测试设置。",
+  template: "完成后，可以开始检查运行环境。",
+  devices: "完成后，MTC 可以调度测试运行。",
+  capabilities: "完成后，可以自动处理更多项目准备工作。",
+} as const;
+
+const miniProgramHealthCheckConfig = `testing: {
+  targets: [{
+    // ...运行目标其他字段
+    healthCheck: {
+      executable: "node",
+      args: [
+        "qa/mtc/health-check.cjs",
+        "--runtime", "{{target.runtime}}",
+        "--app-id", "{{target.appId}}"
+      ]
+    }
+  }]
+}`;
+
+const miniProgramHealthCheckScript = `const fs = require("node:fs");
+
+const cli = process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH;
+if (!cli || !fs.existsSync(cli)) {
+  console.error("请配置可用的开发者工具 CLI 路径");
+  process.exit(1);
+}
+
+console.log("小程序运行环境可用");
+process.exit(0);`;
 
 const statusLabels: Record<ProjectOnboardingStepStatus, string> = {
   pending: "待开始",
@@ -85,6 +120,7 @@ type SetupContext = {
   kind: "initialization";
   projectDirectory: string;
   platforms: Platform[];
+  family: ProjectFamily;
 } | {
   kind: "setup";
   projectId: string;
@@ -105,9 +141,11 @@ export function ProjectCatalogWorkspace({
   onApplySetup,
   selectedProjectId: controlledSelectedProjectId,
   runtimeProjectId = "",
+  family = "app",
   addingProject = false,
   onCloseAdd,
   onMessage,
+  onOpenTests,
 }: {
   catalog: ProjectCatalogResponse | null;
   loading: boolean;
@@ -122,9 +160,11 @@ export function ProjectCatalogWorkspace({
   onApplySetup: (projectId: string, request: ApplyProjectSetupRequest) => Promise<ProjectSetupApplyResponse | null>;
   selectedProjectId?: string;
   runtimeProjectId?: string;
+  family?: ProjectFamily;
   addingProject?: boolean;
   onCloseAdd: (projectId?: string) => void;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
+  onOpenTests?: () => void;
 }) {
   const [pendingProjectId, setPendingProjectId] = useState("");
   const [selectingSource, setSelectingSource] = useState<"directory" | "config" | "">("");
@@ -256,13 +296,13 @@ export function ProjectCatalogWorkspace({
     }
   };
 
-  const previewInitialization = async (projectDirectory = form.projectDirectory, platforms = initializationPlatforms) => {
+  const previewInitialization = async (projectDirectory = form.projectDirectory, platforms = family === "mini-program" ? [] : initializationPlatforms) => {
     setSetupPending(true);
     try {
-      const plan = await onPreviewInitialization({ projectDirectory, platforms });
+      const plan = await onPreviewInitialization({ projectDirectory, platforms, family });
       if (!plan) return;
       setSetupPlan(plan);
-      setSetupContext({ kind: "initialization", projectDirectory, platforms });
+      setSetupContext({ kind: "initialization", projectDirectory, platforms, family });
     } finally {
       setSetupPending(false);
     }
@@ -288,6 +328,7 @@ export function ProjectCatalogWorkspace({
         ? await onApplyInitialization({
           projectDirectory: setupContext.projectDirectory,
           platforms: setupContext.platforms,
+          family: setupContext.family,
           planId: setupPlan.planId,
         })
         : await onApplySetup(setupContext.projectId, {
@@ -376,7 +417,7 @@ export function ProjectCatalogWorkspace({
         <label className="field project-register-wide"><span>项目目录</span><input value={form.projectDirectory} placeholder="选择配置文件或打开项目目录" readOnly aria-readonly="true" /><small className="field-description">选择配置文件后，项目根目录按配置中的 project.root 自动填入。</small></label>
         <label className="field"><span>配置文件</span><input value={form.configFile} placeholder="选择 mobile-test.config.cjs" readOnly aria-readonly="true" /><small className="field-description">MTC 会从配置读取项目 ID、名称、类型和目标平台。</small></label>
       </div>
-      {initializationRequired && <fieldset className="project-register-platforms">
+      {initializationRequired && family === "app" && <fieldset className="project-register-platforms">
         <legend>目标平台</legend>
         <div className="project-register-platform-options">
           {(["android", "ios", "harmony"] as const).map(platform => <label key={platform}>
@@ -395,7 +436,7 @@ export function ProjectCatalogWorkspace({
       <div className="project-register-actions">
         <span className="action-hint"><Wrench size={14} />{initializationRequired ? "预览计划后确认创建，取消不会写入文件" : "选择配置后自动解析并显示接入步骤"}</span>
         {initializationRequired
-          ? <button className="primary-button" type="button" onClick={() => void previewInitialization()} disabled={setupPending || !form.projectDirectory.trim() || initializationPlatforms.length === 0}>
+          ? <button className="primary-button" type="button" onClick={() => void previewInitialization()} disabled={setupPending || !form.projectDirectory.trim() || (family === "app" && initializationPlatforms.length === 0)}>
             <FileText size={15} />预览初始化计划
           </button>
           : <button className="primary-button" type="button" onClick={() => void submit()} disabled={Boolean(selectingSource) || !form.projectDirectory.trim() || !form.configFile.trim()}>
@@ -420,6 +461,7 @@ export function ProjectCatalogWorkspace({
           onPreviewInitialization={() => void previewInitialization(selectedProject.root, selectedProject.platforms)}
           onPreviewSetup={step => void previewSetup(selectedProject.id, step)}
           onMessage={onMessage}
+          onOpenTests={onOpenTests}
         />}
         {selectedProject && <ProjectStoragePanel
           runtimeActive={selectedProject.id === runtimeProjectId}
@@ -636,6 +678,7 @@ function ProjectCatalogCard({
   onPreviewInitialization,
   onPreviewSetup,
   onMessage,
+  onOpenTests,
 }: {
   project: ProjectCatalogEntry;
   runtimeActive: boolean;
@@ -649,12 +692,18 @@ function ProjectCatalogCard({
   onPreviewInitialization: () => void;
   onPreviewSetup: (step: ApplyProjectSetupRequest["step"]) => void;
   onMessage: (message: { kind: "error" | "info"; text: string }) => void;
+  onOpenTests?: () => void;
 }) {
   const executionPrerequisites = project.onboarding.filter(step => (
     PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.some(id => id === step.id)
   ));
   const executionPrerequisiteVerifiedCount = executionPrerequisites.filter(step => step.status === "verified").length;
   const miniProgram = project.integrationType === "mini-program";
+  const nextStep = executionPrerequisites.find(step => step.status !== "verified");
+  const guidePath = miniProgram ? "README.md" : "docs/lynx-app-onboarding.md";
+  const copyGuidePath = () => void navigator.clipboard.writeText(guidePath)
+    .then(() => onMessage({ kind: "info", text: "已复制接入指南路径" }))
+    .catch(() => onMessage({ kind: "error", text: "复制接入指南路径失败" }));
   return <section className={`section-panel project-card ${runtimeActive ? "active" : ""}`}>
     <div className="project-card-header">
       <div className="project-card-title">
@@ -665,43 +714,137 @@ function ProjectCatalogCard({
         {runtimeActive && <span className="project-active-label">当前运行项目</span>}
         {!runtimeActive && <button className="secondary-button" type="button" onClick={onActivate} disabled={verifying}><Power size={14} />切换运行项目</button>}
         <button className="secondary-button" type="button" onClick={onVerify} disabled={verifying}>
-          <RefreshCw size={14} className={verifying ? "spin" : ""} />验证接入
+          <RefreshCw size={14} className={verifying ? "spin" : ""} />重新检查
         </button>
       </div>
     </div>
-    <div className="project-card-meta"><span>{project.root}</span><span>{detail?.executionReady ? "运行前检查已通过" : `${executionPrerequisiteVerifiedCount}/${executionPrerequisites.length} 项运行前检查通过`}</span><span>{miniProgram ? "项目声明运行目标" : project.platforms.map(platform => platformLabels[platform]).join(" · ")}</span></div>
+    <div className="project-card-meta"><span>{project.root}</span><span>{detail?.executionReady ? "已经可以运行测试" : `${executionPrerequisiteVerifiedCount}/${executionPrerequisites.length} 步已完成`}</span><span>{miniProgram ? "小程序运行环境" : project.platforms.map(platform => platformLabels[platform]).join(" · ")}</span></div>
     {detailLoading && <div className="project-detail-loading"><LoaderCircle className="spin" size={17} />正在读取项目支持的测试</div>}
     {detailError && <div className="project-detail-error"><AlertCircle size={16} />{detailError}</div>}
     {!detailLoading && <section className="project-onboarding-section">
-      <div className="project-onboarding-heading"><div><p className="eyebrow">ONBOARDING STATUS</p><h3>项目接入状态</h3></div><span className="count-label">{detail?.executionReady ? "可以执行测试" : `${executionPrerequisiteVerifiedCount}/${executionPrerequisites.length} 项运行前检查通过`}</span></div>
-      {detail?.executionReady && <div className="project-execution-ready"><CheckCircle2 size={15} /><span>项目接入已完成，顶部项目工作区现已可用。</span></div>}
+      <div className="project-onboarding-heading"><div><p className="eyebrow">GET STARTED</p><h3>完成接入，运行第一条测试</h3></div><span className="count-label">{detail?.executionReady ? "已准备好测试" : `${executionPrerequisiteVerifiedCount}/${executionPrerequisites.length} 步已完成`}</span></div>
+      {nextStep
+        ? <ProjectOnboardingNextAction
+            step={nextStep}
+            miniProgram={miniProgram}
+            setupPending={setupPending}
+            onVerify={onVerify}
+            onPreviewInitialization={onPreviewInitialization}
+            onPreviewSetup={onPreviewSetup}
+            onCopyGuide={copyGuidePath}
+          />
+        : <div className="project-execution-ready"><CheckCircle2 size={15} /><span>{runtimeActive ? "接入已完成。现在运行第一条测试，确认整个链路正常。" : "接入已完成。切换为当前运行项目后，即可运行第一条测试。"}</span>{runtimeActive && <button className="primary-button project-first-test-action" type="button" onClick={onOpenTests}><Terminal size={14} />运行第一条测试</button>}</div>}
       <div className="project-step-list">
-        {project.onboarding.map(step => <details className={`project-step ${step.status}`} key={step.id} open={step.status === "waiting" || step.status === "blocked"}>
+        {project.onboarding.map(step => <details className={`project-step ${step.status}`} key={step.id} open={step.id === nextStep?.id}>
           <summary className="project-step-summary">
             <span className="project-step-marker">{step.status === "verified" ? <CheckCircle2 size={15} /> : step.status === "blocked" ? <AlertCircle size={15} /> : <span />}</span>
             <span className="project-step-content"><strong>{miniProgram && step.id === "devices" ? "运行环境" : stepLabels[step.id]}</strong><small>{step.summary}</small></span>
             <span className="project-step-status">{statusLabels[step.status]}<ChevronDown size={14} className="project-step-chevron" /></span>
           </summary>
           <div className="project-step-detail">
-            <p>{miniProgram && step.id === "devices" ? "执行项目声明的 healthCheck，验证 Node、包管理器和小程序开发工具运行条件。" : stepDescriptions[step.id]}</p>
-            <div><strong>完成后</strong><span>{step.id === "project" ? "项目目录状态变为已验证。" : "MTC 会自动复检该步骤，并根据最新项目状态开放对应工作区。"}</span></div>
-            <div><strong>下一步</strong><span>{miniProgram && step.id === "devices" ? "按 healthCheck 输出完善运行环境，再重新验证。" : stepNextActions[step.id]}</span></div>
+            <p>{miniProgram && step.id === "devices" ? "确认 Node、包管理器和小程序开发工具已准备好，让测试可以稳定运行。" : stepDescriptions[step.id]}</p>
+            <div><strong>完成后</strong><span>{stepBenefits[step.id]}</span></div>
+            <div><strong>下一步</strong><span>{miniProgram && step.id === "devices" ? "根据下方检查结果准备运行环境，再重新检查。" : stepNextActions[step.id]}</span></div>
             {step.id === "template" && <ProjectTestEntryChecks testEntries={step.testEntries ?? []} />}
-            {step.id === "devices" && <ProjectToolChecks tools={step.tools ?? []} />}
-            {step.id === "capabilities" && <ProjectCapabilityChecks capabilities={step.capabilities ?? []} />}
-            {step.issues.length > 0 && <div className="project-step-issues"><strong>需要处理</strong>{step.issues.map(issue => <code key={issue}>{issue}</code>)}</div>}
-            {step.status !== "verified" && step.id === "template" && <button className="secondary-button project-step-action" type="button" onClick={onPreviewInitialization} disabled={setupPending}><FileText size={14} />预览初始化配置</button>}
-            {step.status !== "verified" && step.id === "devices" && !miniProgram && <button className="secondary-button project-step-action" type="button" onClick={() => onPreviewSetup("devices")} disabled={setupPending}><Terminal size={14} />修复设备环境</button>}
-            {step.status !== "verified" && step.id === "capabilities" && <button className="secondary-button project-step-action" type="button" onClick={() => onPreviewSetup("capabilities")} disabled={setupPending}><Wrench size={14} />生成能力模板</button>}
+            {miniProgram && step.id === "devices" && step.status !== "verified" && <MiniProgramHealthCheckGuide onMessage={onMessage} />}
+            {step.id !== nextStep?.id && <ProjectStepAction step={step} miniProgram={miniProgram} setupPending={setupPending} onVerify={onVerify} onPreviewInitialization={onPreviewInitialization} onPreviewSetup={onPreviewSetup} />}
+            <ProjectStepTechnicalDetails step={step} />
           </div>
         </details>)}
       </div>
     </section>}
-    {miniProgram && <p className="project-card-note">小程序测试通过项目 Runner 调度，结果统一进入 Result Bundle。</p>}
-    {!miniProgram && <button className="text-button project-doc-hint" type="button" onClick={() => void navigator.clipboard.writeText("examples/lynx-app-starter").then(() => onMessage({ kind: "info", text: "已复制 Lynx App Starter 路径" })).catch(() => onMessage({ kind: "error", text: "复制 Starter 路径失败" }))}>
-      参考 Lynx App Starter：examples/lynx-app-starter
-    </button>}
+    <button className="text-button project-doc-hint" type="button" onClick={copyGuidePath}>
+      {miniProgram ? "复制小程序接入指南路径" : "复制 Lynx App 接入指南路径"}
+    </button>
   </section>;
+}
+
+function MiniProgramHealthCheckGuide({ onMessage }: { onMessage: (message: { kind: "error" | "info"; text: string }) => void }) {
+  const copyExample = () => void navigator.clipboard.writeText(`${miniProgramHealthCheckConfig}\n\n// qa/mtc/health-check.cjs\n${miniProgramHealthCheckScript}`)
+    .then(() => onMessage({ kind: "info", text: "已复制 healthCheck 配置示例" }))
+    .catch(() => onMessage({ kind: "error", text: "复制 healthCheck 配置示例失败" }));
+  return <section className="project-health-check-guide">
+    <div className="project-health-check-guide-heading">
+      <div><strong>如何配置 healthCheck</strong><span>它是一条可重复执行的环境检查命令：退出码 0 表示可用，其他退出码表示需要处理。</span></div>
+      <button className="icon-button" type="button" onClick={copyExample} title="复制 healthCheck 配置示例" aria-label="复制 healthCheck 配置示例"><ClipboardCopy size={14} /></button>
+    </div>
+    <ol>
+      <li>在 <code>mobile-test.config.cjs</code> 的运行目标中加入以下配置。</li>
+      <li>创建 <code>qa/mtc/health-check.cjs</code>，检查项目实际依赖的开发者工具。</li>
+      <li>在项目概览点击“重新检查运行环境”，检查输出会显示在下方详情中。</li>
+    </ol>
+    <strong className="project-health-check-code-title">mobile-test.config.cjs</strong>
+    <pre>{miniProgramHealthCheckConfig}</pre>
+    <strong className="project-health-check-code-title">qa/mtc/health-check.cjs</strong>
+    <pre>{miniProgramHealthCheckScript}</pre>
+    <p>示例通过 <code>MTC_MINI_PROGRAM_DEVTOOLS_PATH</code> 读取 CLI 路径。项目也可以检查 Node、包管理器、端口、登录状态或其他运行条件。</p>
+  </section>;
+}
+
+function ProjectOnboardingNextAction({
+  step,
+  miniProgram,
+  setupPending,
+  onVerify,
+  onPreviewInitialization,
+  onPreviewSetup,
+  onCopyGuide,
+}: {
+  step: ProjectOnboardingStep;
+  miniProgram: boolean;
+  setupPending: boolean;
+  onVerify: () => void;
+  onPreviewInitialization: () => void;
+  onPreviewSetup: (step: ApplyProjectSetupRequest["step"]) => void;
+  onCopyGuide: () => void;
+}) {
+  return <div className="project-onboarding-next-action">
+    <span className="project-onboarding-next-number">{PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.indexOf(step.id) + 1}</span>
+    <div><span>当前要做</span><strong>{stepLabels[step.id]}</strong><p>{stepNextActions[step.id]}</p></div>
+    <div className="project-onboarding-next-controls">
+      <ProjectStepAction step={step} miniProgram={miniProgram} setupPending={setupPending} onVerify={onVerify} onPreviewInitialization={onPreviewInitialization} onPreviewSetup={onPreviewSetup} primary />
+      <button className="text-button" type="button" onClick={onCopyGuide}><FileText size={13} />查看接入指南</button>
+    </div>
+  </div>;
+}
+
+function ProjectStepAction({
+  step,
+  miniProgram,
+  setupPending,
+  onVerify,
+  onPreviewInitialization,
+  onPreviewSetup,
+  primary = false,
+}: {
+  step: ProjectOnboardingStep;
+  miniProgram: boolean;
+  setupPending: boolean;
+  onVerify: () => void;
+  onPreviewInitialization: () => void;
+  onPreviewSetup: (step: ApplyProjectSetupRequest["step"]) => void;
+  primary?: boolean;
+}) {
+  if (step.status === "verified") return null;
+  const className = primary ? "primary-button" : "secondary-button project-step-action";
+  if (step.id === "template") return <button className={className} type="button" onClick={onPreviewInitialization} disabled={setupPending}><FileText size={14} />生成基础配置</button>;
+  if (step.id === "devices" && !miniProgram) return <button className={className} type="button" onClick={() => onPreviewSetup("devices")} disabled={setupPending}><Terminal size={14} />{primary ? "检查并修复环境" : "修复设备环境"}</button>;
+  if (step.id === "devices") return <button className={className} type="button" onClick={onVerify} disabled={setupPending}><RefreshCw size={14} />重新检查运行环境</button>;
+  if (step.id === "capabilities") return <button className={className} type="button" onClick={() => onPreviewSetup("capabilities")} disabled={setupPending}><Wrench size={14} />生成能力骨架</button>;
+  return <button className={className} type="button" onClick={onVerify} disabled={setupPending}><RefreshCw size={14} />重新检查</button>;
+}
+
+function ProjectStepTechnicalDetails({ step }: { step: ProjectOnboardingStep }) {
+  const hasTechnicalDetails = step.issues.length > 0 || (step.tools?.length ?? 0) > 0 || (step.capabilities?.length ?? 0) > 0;
+  if (!hasTechnicalDetails) return null;
+  return <details className="project-step-technical-details">
+    <summary>查看检查详情<ChevronDown size={14} /></summary>
+    <div>
+      {step.id === "devices" && <ProjectToolChecks tools={step.tools ?? []} />}
+      {step.id === "capabilities" && <ProjectCapabilityChecks capabilities={step.capabilities ?? []} />}
+      {step.issues.length > 0 && <div className="project-step-issues"><strong>需要处理</strong>{step.issues.map(issue => <code key={issue}>{issue}</code>)}</div>}
+    </div>
+  </details>;
 }
 
 function ProjectTestEntryChecks({ testEntries }: { testEntries: ProjectTestEntryCheck[] }) {
