@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { TaskResult } from "../src/shared/contracts.js";
 import { ResultPanel } from "../src/web/App.js";
 import { fetchSnapshot, fetchTaskResult, retryTask, taskArtifactUrl } from "../src/web/api.js";
-import { diagnoseTaskResultRun, isFailedApiCall } from "../src/web/result-analysis.js";
+import { diagnoseTaskResultRun, isFailedApiCall, suiteTestSummary } from "../src/web/result-analysis.js";
 
 describe("QA 结果分析界面", () => {
   it("概览展示用例、截图和接口统计", () => {
@@ -225,6 +225,79 @@ describe("QA 结果分析界面", () => {
     expect(isFailedApiCall({ result: "", status: 500 })).toBe(true);
     expect(isFailedApiCall({ result: "success", status: 200 })).toBe(false);
   });
+
+  it("Suite 概览展示测试文件与测试点统计并隐藏页面专属信息", () => {
+    const markup = renderToStaticMarkup(createElement(ResultPanel, {
+      taskId: "task-suite",
+      tab: "overview",
+      state: { taskId: "task-suite", loading: false, result: suiteResult, error: "" },
+      onRetryTask: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+
+    expect(markup).toContain("1 个套件 · 2 个测试点");
+    expect(markup).toContain("config/graphql-endpoint · GraphQL 端点配置");
+    expect(markup).toContain("tests/unit/config/graphql-endpoint.test.ts");
+    expect(markup).toContain("2 个测试点 · 1 通过 · 1 失败 · 0 跳过 · 16ms");
+    expect(markup).toContain("重新测试");
+    expect(markup).not.toContain("? → ?");
+    expect(markup).not.toContain("未记录设备");
+    expect(markup).not.toContain("0 接口 · 0 截图 · 0 动作");
+  });
+
+  it("Suite 详情展示逐测试点状态、名称和耗时", () => {
+    const markup = renderToStaticMarkup(createElement(ResultPanel, {
+      taskId: "task-suite",
+      tab: "overview",
+      state: { taskId: "task-suite", loading: false, result: suiteResult, error: "" },
+      initialSelectedRunKey: "run-suite:config/graphql-endpoint · GraphQL 端点配置",
+      onRetryTask: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+
+    expect(markup).toContain("测试套件详情");
+    expect(markup).toContain("接受 HTTPS 地址");
+    expect(markup).toContain("拒绝非法协议");
+    expect(markup).toContain("5ms");
+    expect(markup).toContain("11ms");
+    expect(markup).toContain("复制错误");
+    expect(markup).not.toContain("页面打开");
+    expect(markup).not.toContain("页面参数");
+    expect(markup).not.toContain("查看接口");
+  });
+
+  it("Suite 统计与失败诊断使用单元测试语义", () => {
+    expect(suiteTestSummary(suiteResult.runs[0])).toEqual({
+      durationMs: 16,
+      failed: 1,
+      passed: 1,
+      skipped: 0,
+      tests: expect.any(Array),
+      total: 2,
+    });
+    expect(diagnoseTaskResultRun(suiteResult.runs[0]).map(item => item.label)).toEqual([
+      "单元测试失败",
+    ]);
+  });
+
+  it("空结果保持通用结果统计语义", () => {
+    const markup = renderToStaticMarkup(createElement(ResultPanel, {
+      taskId: "task-empty",
+      tab: "overview",
+      state: {
+        taskId: "task-empty",
+        loading: false,
+        result: { ...suiteResult, taskId: "task-empty", total: 0, caseRunCount: 0, passed: 0, failed: 0, runs: [] },
+        error: "",
+      },
+      onRetryTask: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+
+    expect(markup).toContain("暂无分析结果");
+    expect(markup).not.toContain("测试套件");
+    expect(markup).not.toContain("测试点");
+  });
 });
 
 function renderResult(tab: "overview" | "screenshots" | "api" | "evidence", initialSelectedRunKey = "", taskResult = result) {
@@ -294,5 +367,60 @@ const result: TaskResult = {
     }],
     evidenceFiles: ["case-one/runtime-events.jsonl"],
     failureLogExcerpt: "接口断言失败",
+  }],
+};
+
+const suiteResult: TaskResult = {
+  schemaVersion: "mobile-test-console.task-result.v1",
+  generatedAt: "2026-08-24T06:00:00.000Z",
+  taskId: "task-suite",
+  runId: "run-suite",
+  total: 1,
+  caseRunCount: 1,
+  passed: 0,
+  failed: 1,
+  warnings: [],
+  runs: [{
+    runId: "run-suite",
+    caseRunId: "run-suite",
+    caseRunCount: 1,
+    caseId: "config/graphql-endpoint · GraphQL 端点配置",
+    executionKind: "suite",
+    targetPage: "tests/unit/config/graphql-endpoint.test.ts",
+    launchPage: "",
+    assertions: [
+      {
+        durationMs: 5,
+        errorSummary: "",
+        fullName: "GraphQL 端点配置 接受 HTTPS 地址",
+        name: "接受 HTTPS 地址",
+        status: "passed",
+      },
+      {
+        durationMs: 11,
+        errorSummary: "期望 https，实际 http",
+        fullName: "GraphQL 端点配置 拒绝非法协议",
+        name: "拒绝非法协议",
+        status: "failed",
+      },
+    ],
+    passBasis: [
+      { kind: "unit", passed: true, description: "接受 HTTPS 地址" },
+      { kind: "unit", passed: false, description: "拒绝非法协议" },
+    ],
+    scenario: "单元测试套件 · GraphQL 端点配置",
+    fixture: "",
+    platform: "wechat",
+    device: "",
+    status: "failed",
+    errorSummary: "拒绝非法协议\n期望 https，实际 http",
+    requiredEvents: [],
+    missingEvents: [],
+    runtimeEventCount: 0,
+    uiActionCount: 0,
+    apiCalls: [],
+    screenshots: [],
+    evidenceFiles: [],
+    failureLogExcerpt: "",
   }],
 };

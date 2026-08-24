@@ -638,6 +638,68 @@ const root = config.taskResults
   : task.workspaceRoot || config.project.root;
 ```
 
+## Scenario: Suite Result Bundle presentation
+
+### 1. Scope / Trigger
+
+- 触发：Result Bundle 的 case metadata 含 `executionKind: "suite"`。
+- 适用：Unit 测试套件列表、统计、测试点详情和失败诊断。
+
+### 2. Signatures
+
+```ts
+isSuiteResultRun(run): boolean
+suiteTestSummary(run): {
+  total: number; passed: number; failed: number; skipped: number;
+  durationMs: number; tests: SuiteTestPoint[];
+}
+```
+
+### 3. Contracts
+
+- Suite 列表展示 `caseId`、源文件、测试点总数、通过/失败/跳过数量和总耗时。
+- Suite 分支隐藏页面跳转、设备、接口、截图和动作摘要；普通 Page/Scenario 分支保持现有字段。
+- 测试点从 `run.assertions` 读取 `name`、`fullName`、`status`、`durationMs` 和 `errorSummary`。
+- 工具栏在纯 Suite 运行中同时显示套件数和测试点数；空结果保持通用空态。
+- Suite 失败保留复制错误、单套件重试和批量失败重试入口。
+
+### 4. Validation & Error Matrix
+
+| 条件 | 处理 |
+| --- | --- |
+| 所有结果为 Suite | 使用 Suite 专用统计和详情 |
+| 结果为空 | 使用通用空结果展示，不推断为 Suite |
+| Suite 含跳过测试点 | 单独统计并显示“跳过”状态 |
+| 测试点状态缺失 | 显示“未知”，保留测试点名称 |
+| 390px 视口 | 标题可换行，操作按钮和标签栏不产生横向溢出 |
+
+### 5. Good / Base / Bad Cases
+
+- Good：展开 Suite 后按行查看中文测试点名称、状态、耗时和失败摘要。
+- Base：通过 Suite 显示完成统计，失败 Suite 显示复制错误入口。
+- Bad：在 Suite 卡片显示 `? → ?`、`未记录设备` 或将测试点平铺成页面用例。
+
+### 6. Tests Required
+
+- `tests/web-results.test.ts` 覆盖 Suite SSR、统计、详情、失败诊断和空结果。
+- `tests/web-layout.test.ts` 覆盖 390px 标签栏与操作区域布局。
+- 执行 `pnpm lint`、`pnpm typecheck` 和完整 `pnpm test`。
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<small>{run.executionKind} · {run.launchPage || "?"} → {run.actualFinalPage || "?"}</small>
+```
+
+#### Correct
+
+```tsx
+<small>单元测试套件 · {run.targetPage || "未记录源文件"}</small>
+<span>{summary.total} 个测试点 · {summary.failed} 失败 · {formatDurationMs(summary.durationMs)}</span>
+```
+
 ## Scenario: User-facing test entry metadata
 
 ### 1. Scope / Trigger

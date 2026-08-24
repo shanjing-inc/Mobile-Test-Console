@@ -52,4 +52,13 @@ describe("控制台视口布局", () => {
     expect(mobileStyles).toContain(".analysis-run-summary.with-preview { grid-template-columns: minmax(0, 1fr) auto auto 18px;");
     expect(mobileStyles).toContain(".analysis-run-preview { height: 330px;");
   });
+
+  it("详情标签栏在窄屏固定刷新入口并允许标签横向浏览", () => {
+    const tabsRule = rule(".detail-tabs");
+    expect(tabsRule).toContain("position: relative");
+
+    const refreshRule = rule(".detail-tabs .detail-refresh");
+    expect(refreshRule).toContain("position: absolute");
+    expect(refreshRule).toContain("right: 0");
+  });
 });

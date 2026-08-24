@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"约束结果条目、重试入口、响应式布局与截图展示"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"约束 Result Bundle、TaskResultRun 与手动重试契约"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"约束 Result Bundle 到前端投影的跨层数据边界"}

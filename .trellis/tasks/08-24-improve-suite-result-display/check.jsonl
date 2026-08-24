@@ -1,0 +1,3 @@
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"核对结果界面、重试和响应式回归要求"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"核对前端质量门禁"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"核对 Result Bundle 与重试兼容性"}

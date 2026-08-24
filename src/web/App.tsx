@@ -77,7 +77,7 @@ import {
   workspaceDisabledReason,
   type WorkspaceView,
 } from "./project-workspaces";
-import { diagnoseTaskResultRun, isFailedApiCall, taskResultRunKey } from "./result-analysis";
+import { diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey } from "./result-analysis";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
 const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
@@ -1399,13 +1399,32 @@ function OverviewResult({
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
   const visibleScreenshots = visibleRuns.reduce((total, run) => total + run.screenshots.length, 0);
   const failedCaseRunIds = visibleRuns.filter(run => run.status === "failed").map(run => run.caseRunId);
+  const suiteOnly = result.runs.length > 0 && result.runs.every(isSuiteResultRun);
+  const suiteTotals = result.runs.reduce((totals, run) => {
+    const summary = suiteTestSummary(run);
+    return {
+      total: totals.total + summary.total,
+      passed: totals.passed + summary.passed,
+      failed: totals.failed + summary.failed,
+      skipped: totals.skipped + summary.skipped,
+    };
+  }, { total: 0, passed: 0, failed: 0, skipped: 0 });
+  const visibleSuiteTests = visibleRuns.reduce((total, run) => total + suiteTestSummary(run).total, 0);
   return <div className="analysis-content">
     <div className="analysis-summary">
-      <AnalysisMetric label="用例" value={result.total} />
-      <AnalysisMetric label="通过" value={result.passed} tone="passed" />
-      <AnalysisMetric label="失败" value={result.failed} tone="failed" onClick={() => onFilterChange("failed")} active={filter === "failed"} />
-      <AnalysisMetric label="截图" value={screenshots} />
-      <AnalysisMetric label="接口" value={apiCalls} />
+      {suiteOnly ? <>
+        <AnalysisMetric label="套件" value={result.total} />
+        <AnalysisMetric label="测试点" value={suiteTotals.total} />
+        <AnalysisMetric label="通过" value={suiteTotals.passed} tone="passed" />
+        <AnalysisMetric label="失败" value={suiteTotals.failed} tone="failed" onClick={() => onFilterChange("failed")} active={filter === "failed"} />
+        <AnalysisMetric label="跳过" value={suiteTotals.skipped} />
+      </> : <>
+        <AnalysisMetric label="用例" value={result.total} />
+        <AnalysisMetric label="通过" value={result.passed} tone="passed" />
+        <AnalysisMetric label="失败" value={result.failed} tone="failed" onClick={() => onFilterChange("failed")} active={filter === "failed"} />
+        <AnalysisMetric label="截图" value={screenshots} />
+        <AnalysisMetric label="接口" value={apiCalls} />
+      </>}
     </div>
     {(result.preconditions?.length ?? 0) > 0 && <div className="result-preconditions">
       {result.preconditions!.map(item => <div className={`result-precondition ${item.status}`} key={item.id}>
@@ -1416,7 +1435,9 @@ function OverviewResult({
     </div>}
     {result.warnings.length > 0 && <div className="result-warning"><AlertCircle size={14} /><span>{result.warnings.join("；")}</span></div>}
     <div className="analysis-run-toolbar">
-      <div><ImageIcon size={15} /><strong>测试条目</strong><span>{filter === "failed" ? `失败筛选 · ${visibleRuns.length} 条` : `${visibleRuns.length} 条`} · {visibleScreenshots} 张截图</span></div>
+      {suiteOnly
+        ? <div><List size={15} /><strong>测试套件</strong><span>{filter === "failed" ? `失败筛选 · ${visibleRuns.length} 个套件` : `${visibleRuns.length} 个套件`} · {visibleSuiteTests} 个测试点</span></div>
+        : <div><ImageIcon size={15} /><strong>测试条目</strong><span>{filter === "failed" ? `失败筛选 · ${visibleRuns.length} 条` : `${visibleRuns.length} 条`} · {visibleScreenshots} 张截图</span></div>}
       <div className="analysis-run-toolbar-actions">
         {filter === "failed" && <button type="button" onClick={() => onFilterChange("all")}><List size={13} />查看全部</button>}
         {failedCaseRunIds.length > 0 && onRetryTask && <button type="button" onClick={() => onRetryTask(failedCaseRunIds)} disabled={retryPending && retryingCaseRunId === "__batch__"}><RotateCcw size={13} />重试全部失败用例</button>}
@@ -1430,25 +1451,33 @@ function OverviewResult({
     </div>
     <div className="analysis-run-list" id="analysis-run-list">
       {visibleRuns.length === 0
-        ? <div className="result-empty analysis-filter-empty"><XCircle size={18} /><strong>没有失败测试条目</strong><span>当前运行没有可查看的失败页面</span></div>
+        ? <div className="result-empty analysis-filter-empty"><XCircle size={18} /><strong>没有失败测试条目</strong><span>{suiteOnly ? "当前运行没有失败的测试套件" : "当前运行没有可查看的失败页面"}</span></div>
         : visibleRuns.map(run => {
         const runKey = taskResultRunKey(run);
         const selected = runKey === selectedRunKey;
+        const suite = isSuiteResultRun(run);
+        const suiteSummary = suiteTestSummary(run);
         return <div className={`analysis-run-entry ${selected ? "selected" : ""}`} key={runKey}>
-          <div className={`analysis-run-summary ${imagesVisible && run.screenshots.length > 0 ? "with-preview" : ""}`}>
+          <div className={`analysis-run-summary ${suite ? "suite" : ""} ${imagesVisible && run.screenshots.length > 0 ? "with-preview" : ""}`}>
             <button
               type="button"
               className="analysis-run-row"
               aria-expanded={selected}
-              aria-label={`查看 ${run.caseId || run.targetPage || run.runId} ${run.status === "passed" ? "通过" : "失败"}详情`}
+              aria-label={`查看 ${run.caseId || run.targetPage || run.runId} ${resultStatusLabel(run.status)}详情`}
               onClick={() => onSelectRun(selected ? "" : runKey)}
             >
-              <span className={`analysis-status ${run.status}`}>{run.status === "passed" ? "通过" : "失败"}</span>
+              <span className={`analysis-status ${run.status}`}>{resultStatusLabel(run.status)}</span>
               <span className="analysis-run-main">
                 <strong>{run.caseId || run.targetPage || run.runId}</strong>
-                <small>{run.executionKind || "scenario"} · {run.launchPage || "?"} → {run.actualFinalPage || "?"} / {run.expectedFinalPage || run.targetPage || "?"}</small>
-                <span className="analysis-run-meta"><span>{run.platform || "-"} · {run.device || "未记录设备"}</span><span>{run.apiCalls.length} 接口 · {run.screenshots.length} 截图 · {run.uiActionCount} 动作</span></span>
-                <span className="analysis-result-text">{run.errorSummary || (run.missingEvents.length ? `缺少 ${run.missingEvents.join("、")}` : run.passBasis?.map(item => item.description).join("；") || "证据采集完成")}</span>
+                {suite ? <>
+                  <small>单元测试套件 · {run.targetPage || "未记录源文件"}</small>
+                  <span className="analysis-run-meta"><span>{suiteSummary.total} 个测试点 · {suiteSummary.passed} 通过 · {suiteSummary.failed} 失败 · {suiteSummary.skipped} 跳过 · {formatDurationMs(suiteSummary.durationMs)}</span></span>
+                  <span className="analysis-result-text">{run.errorSummary || `全部 ${suiteSummary.total} 个测试点已完成`}</span>
+                </> : <>
+                  <small>{run.executionKind || "scenario"} · {run.launchPage || "?"} → {run.actualFinalPage || "?"} / {run.expectedFinalPage || run.targetPage || "?"}</small>
+                  <span className="analysis-run-meta"><span>{run.platform || "-"} · {run.device || "未记录设备"}</span><span>{run.apiCalls.length} 接口 · {run.screenshots.length} 截图 · {run.uiActionCount} 动作</span></span>
+                  <span className="analysis-result-text">{run.errorSummary || (run.missingEvents.length ? `缺少 ${run.missingEvents.join("、")}` : run.passBasis?.map(item => item.description).join("；") || "证据采集完成")}</span>
+                </>}
               </span>
               <ChevronRight className="analysis-run-chevron" size={16} />
             </button>
@@ -1493,6 +1522,9 @@ function RunDiagnosticDetail({
   onCopy: (label: string, value: unknown) => void;
 }) {
   const diagnostics = diagnoseTaskResultRun(run, adapter?.resultAnalysis);
+  if (isSuiteResultRun(run)) {
+    return <SuiteDiagnosticDetail run={run} diagnostics={diagnostics} onCopy={onCopy} />;
+  }
   const failedApis = run.apiCalls.filter(isFailedApiCall);
   const failedInteractions = [
     ...(run.passBasis || [])
@@ -1563,6 +1595,55 @@ function RunDiagnosticDetail({
       {run.screenshots.length > 0 && <button type="button" className="secondary-button" onClick={() => onTab?.("screenshots")}><ImageIcon size={13} />查看截图</button>}
     </div>
   </section>;
+}
+
+function SuiteDiagnosticDetail({
+  run,
+  diagnostics,
+  onCopy,
+}: {
+  run: TaskResultRun;
+  diagnostics: Array<{ label: string; tone: "passed" | "failed" | "warning" }>;
+  onCopy: (label: string, value: unknown) => void;
+}) {
+  const summary = suiteTestSummary(run);
+  return <section className="run-diagnostic suite-diagnostic" aria-label={`${run.caseId || run.runId} 测试套件详情`}>
+    <div className="run-diagnostic-heading">
+      <div><strong>测试套件详情</strong><span>{run.targetPage || "未记录源文件"}</span></div>
+      <div className="run-diagnostic-tags">{diagnostics.map(item => <span className={item.tone} key={item.label}>{item.label}</span>)}</div>
+    </div>
+    <div className="suite-test-summary">
+      <span>{summary.total} 个测试点</span>
+      <span>{summary.passed} 通过</span>
+      <span>{summary.failed} 失败</span>
+      <span>{summary.skipped} 跳过</span>
+      <span>{formatDurationMs(summary.durationMs)}</span>
+    </div>
+    <div className="suite-test-list">
+      {summary.tests.map((test, index) => <div className={`suite-test-item ${test.status}`} key={`${test.fullName}:${index}`}>
+        <span className={`analysis-status ${test.status}`}>{resultStatusLabel(test.status)}</span>
+        <span className="suite-test-name"><strong>{test.name}</strong>{test.fullName !== test.name && <small>{test.fullName}</small>}{test.errorSummary && <small className="failed">{test.errorSummary}</small>}</span>
+        <span className="suite-test-duration">{formatDurationMs(test.durationMs)}</span>
+      </div>)}
+    </div>
+    {run.errorSummary && <pre className="run-diagnostic-log">{run.errorSummary}</pre>}
+    {run.status === "failed" && <div className="run-diagnostic-actions">
+      <button type="button" className="secondary-button" onClick={() => onCopy("错误信息", { caseId: run.caseId, sourceFile: run.targetPage, errorSummary: run.errorSummary, tests: summary.tests })}><Copy size={13} />复制错误</button>
+    </div>}
+  </section>;
+}
+
+function resultStatusLabel(status: string): string {
+  if (status === "passed") return "通过";
+  if (status === "failed") return "失败";
+  if (status === "skipped") return "跳过";
+  return "未知";
+}
+
+function formatDurationMs(durationMs: number | null): string {
+  if (durationMs === null) return "未记录耗时";
+  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
+  return `${(durationMs / 1_000).toFixed(1)}s`;
 }
 
 function ResultScope({ run, onClear }: { run: TaskResultRun; onClear: () => void }) {
