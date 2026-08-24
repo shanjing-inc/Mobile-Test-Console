@@ -3,7 +3,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource } from "../shared/contracts.js";
+import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource, type TestTask } from "../shared/contracts.js";
 import { toPublicTests, validateParameters, type LoadedProjectConfig } from "./config.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
@@ -213,6 +213,8 @@ const artifactCleanupApplySchema = z.object({
   runIds: z.array(z.string().regex(ARTIFACT_RUN_ID_PATTERN)).min(1).max(500).optional(),
 }).strict();
 
+const ACTIVE_TASK_STATUS_SET = new Set(ACTIVE_TASK_STATUSES);
+
 export interface CreateAppOptions {
   config: LoadedProjectConfig;
   devices: DeviceDiscoveryService;
@@ -366,6 +368,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
 
   app.get<{ Querystring: { refresh?: string } }>("/api/snapshot", async (request): Promise<ConsoleSnapshot> => {
     const discovery = await options.devices.snapshot({ refresh: request.query.refresh === "1" });
+    const tasks = await projectRetryTaskStatuses(options.tasks.listVisible(), options.tasks, taskResults);
     return {
       project: options.config.project,
       testing: options.config.testing ?? { environments: [], capabilities: [] },
@@ -379,7 +382,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       deviceErrors: discovery.errors,
       deviceDiscoveryPending: discovery.refreshing,
       tests: toPublicTests(options.config.tests),
-      tasks: options.tasks.listVisible(),
+      tasks,
       codexRepairEnabled: options.config.codexRepair?.enabled === true,
       repairJobs: options.repairs?.list() ?? [],
       updatedAt: new Date().toISOString(),
@@ -726,6 +729,31 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   }
 
   return app;
+}
+
+async function projectRetryTaskStatuses(
+  visibleTasks: TestTask[],
+  tasks: TaskManager,
+  taskResults: TaskResultServiceType,
+): Promise<TestTask[]> {
+  return Promise.all(visibleTasks.map(async task => {
+    if (task.retryOf || !["failed", "interrupted"].includes(task.status)) return task;
+    const retries = tasks.listRetryDescendants(task.id);
+    if (retries.length === 0 || retries.some(retry => ACTIVE_TASK_STATUS_SET.has(retry.status))) return task;
+    try {
+      const result = await taskResults.load(task.id);
+      if (result.total === 0 || result.failed > 0) return task;
+      return {
+        ...task,
+        status: "passed",
+        phase: "重试后通过",
+        exitCode: 0,
+        error: "",
+      };
+    } catch {
+      return task;
+    }
+  }));
 }
 
 function configuredRunTargets(config: LoadedProjectConfig): RunTarget[] {

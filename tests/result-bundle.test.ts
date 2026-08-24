@@ -58,7 +58,7 @@ describe("ResultBundleStore", () => {
 
   test("Provider 摄取在写入前校验任务上下文", async () => {
     const store = await createStore();
-    const expected = { runId: "run-one", projectId: "demo", status: "passed" as const };
+    const expected = { runId: "run-one", projectId: "demo" };
 
     await expect(store.ingest(
       createBundle({ run: { runId: "run-other" } }),
@@ -74,8 +74,8 @@ describe("ResultBundleStore", () => {
       createBundle({ run: { status: "failed" } }),
       "provider",
       expected,
-    )).rejects.toMatchObject({ code: "RESULT_BUNDLE_CONTEXT_MISMATCH" });
-    expect(await store.list()).toEqual([]);
+    )).resolves.toMatchObject({ summary: { status: "failed" } });
+    expect(await store.list()).toEqual([expect.objectContaining({ status: "failed" })]);
   });
 
   test("并发摄取相同结果时只创建一份状态文件", async () => {

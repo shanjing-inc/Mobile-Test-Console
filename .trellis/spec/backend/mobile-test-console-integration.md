@@ -342,6 +342,7 @@ POST /api/tasks/:taskId/retry
 - Retry execution passes through storage capacity, device preparation, account profile, platform support, and target concurrency gates.
 - A Runner or project adapter may ignore `metadata.retry`; this produces a complete execution of the original test while retaining the requested range for audit.
 - The run monitor collapses retry tasks into their root source task. While any descendant retry has an active status, the root row and detail header expose `正在重试`, all retry actions remain disabled, and run-group mutations such as deletion or retention changes remain locked.
+- After every retry descendant reaches a terminal status, `/api/snapshot` projects a failed or interrupted root task to `passed` only when the merged root `TaskResult` has at least one run and `failed === 0`. The projected response sets `status: "passed"`, `phase: "重试后通过"`, `exitCode: 0`, and clears the display error. `TaskManager` keeps the original root status, exit code, error, and logs for diagnostics, retention, and audit.
 - Retry lineage, scheduling locks, result merging, retention locks, deletion, and state persistence traverse the complete internal task collection. The public run list may cap recent rows, but it must include the ancestors of every visible retry and must never become the source of truth for persistence or internal operations.
 - `TaskManager.delete(rootTaskId)` traverses the retry lineage. It returns `TASK_ACTIVE` while any descendant is active; after every descendant reaches a terminal state, one delete removes the complete lineage and its project-owned artifacts.
 - Terminal retries merge into the root result in creation order. Each retry replaces only matching runs whose new status is `passed`; failed, cancelled, interrupted, malformed, or missing retry results preserve the existing item and its evidence. Matching precedence is exact `caseRunId`, invocation identity (`caseId`, `targetPage`, `parameterProfileId`, and `routeParams`), unique `caseId + targetPage`, then a unique `caseId` or unique `targetPage`. Nested retries whose direct-source `caseRunId` is absent from the root use their stable `caseIds` and `targetPages` scope to find root candidates. Ambiguous or unmatched fallback keys preserve the source item. A batch retry may therefore update its passed items while retaining the previous content of failed items.
@@ -360,6 +361,8 @@ POST /api/tasks/:taskId/retry
 | Retention change while a descendant retry is active | `TASK_ACTIVE`, HTTP 409; preserve the current retention flag |
 | Delete source while a descendant retry is active | `TASK_ACTIVE`, HTTP 409; preserve the complete retry lineage |
 | Retry item status differs from `passed`, or retry analysis is unavailable | Preserve the current source item and append a warning |
+| A retry lineage is terminal and the merged root has one or more passed runs with no failures | `/api/snapshot` projects the root task as passed while persisted task state remains unchanged |
+| A retry lineage is active, unavailable, empty, or has a merged failure | `/api/snapshot` preserves the persisted root task status |
 | Retry fallback matches more than one source item | Preserve every ambiguous source item and append no replacement |
 | Nested retry direct-source IDs are absent from the root | Restrict candidates by the stable case/page scope, then apply ordinary identity matching |
 | Public run history exceeds its display limit | Persist the complete task collection and cap only `/api/snapshot` output |
@@ -368,6 +371,7 @@ POST /api/tasks/:taskId/retry
 
 - Good: a passed page module is re-tested, the source row shows `正在重试`, and only that result item is replaced after completion.
 - Good: retry A passes and retry B fails; the final source result contains the new A item and the original B item.
+- Good: the final retry replaces the last failed root case; the run monitor and detail header show `重试后通过`, while raw task logs retain the first failure.
 - Good: two runs share a page and case ID while using different parameter profiles; reversed retry output still replaces the matching invocation.
 - Base: a terminal retry restores deletion and retention controls on the source row.
 - Bad: the source row enables deletion while an active retry still belongs to its lineage.
@@ -381,6 +385,7 @@ POST /api/tasks/:taskId/retry
 - Cover App device and mini-program target reconstruction from the source task.
 - Cover API request encoding and result-page actions for all failed cases and one arbitrary case.
 - Cover active descendant retries across direct and multi-attempt lineages. Assert the root ID is identified, `正在重试` is rendered, deletion is disabled, and controls recover at terminal status.
+- Cover `/api/snapshot` with a terminal retry lineage whose merged result is all passed. Assert only the response projection changes to `passed`, `重试后通过`, exit code zero, and no display error; assert persisted source state remains failed.
 - Cover `TaskManager.delete(rootTaskId)` returning `TASK_ACTIVE` during retry and removing the full lineage after completion.
 - Cover sequential sibling and nested retries, partial batch success, failed retry preservation, stable source `caseRunId`, and unavailable retry analysis.
 
@@ -409,6 +414,18 @@ const runtime = task.device.connectorId;
 
 ```ts
 const runtime = task.target?.runtime;
+```
+
+#### Wrong
+
+```ts
+tasks: options.tasks.listVisible(),
+```
+
+#### Correct
+
+```ts
+tasks: await projectRetryTaskStatuses(options.tasks.listVisible(), options.tasks, taskResults),
 ```
 
 #### Wrong

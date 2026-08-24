@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"检查 Bundle 驱动的终态、重试聚合成功投影、诊断信息保留与回归边界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查跨层状态投影的输入、输出、错误边界与回归覆盖。"}

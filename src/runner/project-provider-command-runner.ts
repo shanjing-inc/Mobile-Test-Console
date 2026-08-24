@@ -20,11 +20,11 @@ export interface ProjectProviderResultSink {
   ingest(bundle: unknown, source?: string, expected?: {
     runId: string;
     projectId: string;
-    status: "passed" | "failed";
   }): Promise<{
     resultUri: string;
     status: string;
     fingerprint: string;
+    summary?: { status?: string };
   }>;
 }
 
@@ -142,10 +142,10 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
         {
           runId: plan.runId,
           projectId: plan.projectId,
-          status: runnerResult.status,
         },
       );
       if (context.signal.aborted) return { ...runnerResult, status: "cancelled" };
+      const finalStatus = resultStatusOf(ingestion.summary?.status, runnerResult.status);
       context.emit(createRunnerEvent(plan.runId, "result", {
         source: "runner",
         message: "项目结果分析完成",
@@ -158,6 +158,8 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
       }));
       return {
         ...runnerResult,
+        status: finalStatus,
+        exitCode: finalStatus === "passed" ? 0 : runnerResult.exitCode,
         resultUri: ingestion.resultUri,
         metadata: {
           ...runnerResult.metadata,
@@ -165,6 +167,8 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
             providerId: this.provider.id,
             ingestionStatus: ingestion.status,
             fingerprint: ingestion.fingerprint,
+            runnerStatus: runnerResult.status,
+            finalStatus,
           },
         },
       };
@@ -183,4 +187,13 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
       };
     }
   }
+}
+
+function resultStatusOf(
+  bundleStatus: string | undefined,
+  runnerStatus: RunnerResult["status"],
+): RunnerResult["status"] {
+  return bundleStatus === "passed" || bundleStatus === "failed"
+    ? bundleStatus
+    : runnerStatus;
 }

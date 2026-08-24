@@ -208,9 +208,40 @@ describe("项目 Provider 命令 Runner", () => {
       { runId: "run-1", status: "failed" },
     ]);
     expect(expectedContexts).toEqual([
-      { runId: "run-1", projectId: "demo", status: "passed" },
-      { runId: "run-1", projectId: "demo", status: "failed" },
+      { runId: "run-1", projectId: "demo" },
+      { runId: "run-1", projectId: "demo" },
     ]);
+  });
+
+  it("以已摄取的 Result Bundle 汇总结论作为任务终态", async () => {
+    const provider = fakeProvider(async () => ({ commands: [] }));
+    provider.manifest.capabilities.push({ id: "result.analysis", version: 1 });
+    provider.collectResult = request => ({ bundle: { runId: request.plan.runId, status: "passed" } });
+    const runner = new ProjectProviderCommandRunner("project-runner", provider, ["app.build"], {
+      async ingest() {
+        return {
+          resultUri: "result-bundle://runs/run-1",
+          status: "created",
+          fingerprint: "digest",
+          summary: { status: "passed" },
+        };
+      },
+    });
+
+    const result = await runner.run(createPlan({
+      executable: process.execPath,
+      args: ["-e", "process.exit(7)"],
+    }), {
+      signal: new AbortController().signal,
+      emit: () => undefined,
+    });
+
+    expect(result).toMatchObject({
+      status: "passed",
+      exitCode: 0,
+      resultUri: "result-bundle://runs/run-1",
+      metadata: { resultAnalysis: { runnerStatus: "failed", finalStatus: "passed" } },
+    });
   });
 
   it("取消结果沿用原语义并跳过 Provider 分析", async () => {

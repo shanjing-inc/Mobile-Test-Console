@@ -1,0 +1,2 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"Result Bundle 摄取、Provider Runner 汇总、重测结果链与快照状态投影的集成契约。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"约束 Bundle、Runner、TaskManager 与快照展示之间的状态传递和边界。"}

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { TaskResult, TaskStatus } from "../src/shared/contracts.js";
+import type { TaskResult, TaskStatus, TestTask } from "../src/shared/contracts.js";
 import { createApp, expandPageSelectionParameters } from "../src/server/app.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
@@ -21,6 +21,66 @@ afterEach(async () => {
 });
 
 describe("HTTP API", () => {
+  it("重测全部通过时在快照中投影来源任务为通过", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-retry-status-"));
+    tempDirs.push(dir);
+    const config = createMiniProgramConfig(dir);
+    const source = createStoredTask("source", "failed");
+    const retry = createStoredTask("retry", "passed", {
+      taskId: source.id,
+      runId: source.runId,
+      scope: "cases",
+      attempt: 1,
+      caseRunIds: ["source-case"],
+    });
+    await new StateStore(dir).save([source, retry]);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    let resultLoadCount = 0;
+    const taskResults = {
+      async load(taskId: string): Promise<TaskResult> {
+        resultLoadCount += 1;
+        expect(taskId).toBe(source.id);
+        return {
+          schemaVersion: "mobile-test-console.task-result.v1",
+          generatedAt: "2026-08-24T09:00:00.000Z",
+          taskId,
+          runId: source.runId,
+          total: 1,
+          caseRunCount: 1,
+          passed: 1,
+          failed: 0,
+          warnings: [],
+          runs: [createRetryResultRun("source-case", "wallet-render", "passed")],
+        };
+      },
+      invalidate() {},
+    } as unknown as TaskResultService;
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, []),
+      tasks,
+      taskResults,
+    });
+
+    try {
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      const projected = snapshot.json().tasks.find((task: TestTask) => task.id === source.id);
+      expect(projected).toMatchObject({
+        id: source.id,
+        status: "passed",
+        phase: "重试后通过",
+        exitCode: 0,
+        error: "",
+      });
+      expect(tasks.get(source.id)).toMatchObject({ status: "failed", error: "测试进程退出码: 1" });
+      expect(resultLoadCount).toBe(1);
+    } finally {
+      await tasks.shutdown();
+      await app.close();
+    }
+  });
+
   it("创建页面任务时将全部页面预设展开为冻结的页面 ID 列表", async () => {
     const parameters = { pages: "all-pages" };
     const test = {
@@ -886,6 +946,42 @@ function createRetryResultRun(caseRunId: string, caseId: string, status: "passed
     screenshots: [],
     evidenceFiles: [],
     failureLogExcerpt: "",
+  };
+}
+
+function createStoredTask(
+  id: string,
+  status: TaskStatus,
+  retryOf?: TestTask["retryOf"],
+): TestTask {
+  return {
+    id,
+    runId: `${id}-run`,
+    projectId: "mini-demo",
+    testId: "smoke",
+    testLabel: "Smoke",
+    device: {
+      key: "wechat-devtools",
+      id: "wechat-devtools",
+      name: "微信开发者工具",
+      platform: "android",
+      type: "simulator",
+      connectionState: "available",
+      controlState: "ready",
+      controlReason: "",
+      osVersion: "",
+      detail: "",
+    },
+    parameters: {},
+    status,
+    phase: status === "passed" ? "测试通过" : "测试失败",
+    createdAt: "2026-08-24T09:00:00.000Z",
+    startedAt: "2026-08-24T09:00:00.000Z",
+    finishedAt: "2026-08-24T09:00:01.000Z",
+    exitCode: status === "passed" ? 0 : 1,
+    error: status === "passed" ? "" : "测试进程退出码: 1",
+    logs: [],
+    ...(retryOf ? { retryOf } : {}),
   };
 }
 

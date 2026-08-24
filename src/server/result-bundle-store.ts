@@ -21,7 +21,6 @@ export interface ResultBundleIngestResponse {
 export interface ResultBundleExpectedContext {
   runId: string;
   projectId: string;
-  status: "passed" | "failed";
 }
 
 const RESULT_BUNDLE_URI_PREFIX = "result-bundle://runs/";
@@ -52,7 +51,6 @@ export class ResultBundleStore {
     if (expected && (
       bundle.run.runId !== expected.runId
       || bundle.project.id !== expected.projectId
-      || bundle.run.status !== expected.status
     )) {
       throw new ConsoleError(
         "RESULT_BUNDLE_CONTEXT_MISMATCH",
