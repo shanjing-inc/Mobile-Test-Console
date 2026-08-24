@@ -182,6 +182,7 @@ export default function App() {
   const [parameters, setParameters] = useState<Record<string, string>>({});
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [runListCollapsed, setRunListCollapsed] = useState(false);
+  const [runListExpanded, setRunListExpanded] = useState(false);
   const [platformFilter, setPlatformFilter] = useState<"all" | Platform>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1006,7 +1007,7 @@ export default function App() {
 
             <section className="section-panel runs-panel">
               <div className="section-heading"><div><p className="eyebrow">RUN MONITOR</p><h2>运行状态</h2></div><span className="run-monitor-heading-actions"><span className="count-label">{tasks.length} 条记录</span>{tasks.length > 0 && <button className={`run-list-toggle ${runListCollapsed ? "collapsed" : ""}`} type="button" onClick={() => setRunListCollapsed(previous => !previous)} aria-expanded={!runListCollapsed} aria-controls="run-monitor-list" aria-label={runListCollapsed ? "展开运行记录" : "折叠运行记录"} title={runListCollapsed ? "展开运行记录" : "折叠运行记录"}><ChevronDown size={16} /></button>}</span></div>
-              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : !runListCollapsed && <div className="run-list" id="run-monitor-list">{tasks.map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} retrying={retryingRootTaskIds.has(task.id)} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}</div>}
+              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : !runListCollapsed && <div className="run-list" id="run-monitor-list">{(runListExpanded ? tasks : tasks.slice(0, 5)).map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} retrying={retryingRootTaskIds.has(task.id)} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}{tasks.length > 5 && <button className="run-list-more" type="button" onClick={() => setRunListExpanded(previous => !previous)} aria-expanded={runListExpanded} aria-controls="run-monitor-list" title={runListExpanded ? "收起较早的运行记录" : "查看更多运行记录"}>{runListExpanded ? <ChevronDown size={15} /> : <ChevronDown size={15} />}{runListExpanded ? "收起" : `查看更多（还有 ${tasks.length - 5} 条）`}</button>}</div>}
             </section>
 
             {focusedTask && <TaskDetail

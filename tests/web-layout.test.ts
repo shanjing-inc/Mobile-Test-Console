@@ -65,9 +65,12 @@ describe("控制台视口布局", () => {
 
   it("运行状态列表支持可访问的整体折叠", () => {
     expect(appSource).toContain('const [runListCollapsed, setRunListCollapsed] = useState(false)');
+    expect(appSource).toContain('const [runListExpanded, setRunListExpanded] = useState(false)');
     expect(appSource).toContain('aria-controls="run-monitor-list"');
     expect(appSource).toContain('aria-expanded={!runListCollapsed}');
-    expect(appSource).toContain('!runListCollapsed && <div className="run-list" id="run-monitor-list">');
+    expect(appSource).toContain('(runListExpanded ? tasks : tasks.slice(0, 5)).map');
+    expect(appSource).toContain('tasks.length > 5 && <button className="run-list-more"');
     expect(rule(".run-list-toggle.collapsed svg")).toContain("transform: rotate(-90deg)");
+    expect(rule(".run-list-more[aria-expanded=\"true\"] svg")).toContain("transform: rotate(180deg)");
   });
 });
