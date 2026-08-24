@@ -99,6 +99,11 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .devices-column > .section-heading { padding: 0 2px 15px; }
 .count-label, .selection-label { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .count-label { display: inline-flex; align-items: center; gap: 5px; }
+.run-monitor-heading-actions { display: inline-flex; align-items: center; gap: 8px; }
+.run-list-toggle { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 6px; }
+.run-list-toggle:hover { color: var(--teal); background: var(--teal-soft); border-color: #bfe5e2; }
+.run-list-toggle svg { transition: transform .15s ease; }
+.run-list-toggle.collapsed svg { transform: rotate(-90deg); }
 .platform-filter { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; padding: 3px; background: #edf2f2; border-radius: 7px; }
 .platform-filter button { min-height: 29px; padding: 0 5px; color: var(--muted); background: transparent; border: 0; border-radius: 5px; font-size: 10px; font-weight: 700; }
 .platform-filter button.active { color: var(--teal); background: white; box-shadow: 0 1px 3px rgba(24, 35, 40, .12); }

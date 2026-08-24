@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const styles = fs.readFileSync(path.resolve("src/web/styles.css"), "utf8");
+const appSource = fs.readFileSync(path.resolve("src/web/App.tsx"), "utf8");
 
 function rule(selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -60,5 +61,13 @@ describe("控制台视口布局", () => {
     const refreshRule = rule(".detail-tabs .detail-refresh");
     expect(refreshRule).toContain("position: absolute");
     expect(refreshRule).toContain("right: 0");
+  });
+
+  it("运行状态列表支持可访问的整体折叠", () => {
+    expect(appSource).toContain('const [runListCollapsed, setRunListCollapsed] = useState(false)');
+    expect(appSource).toContain('aria-controls="run-monitor-list"');
+    expect(appSource).toContain('aria-expanded={!runListCollapsed}');
+    expect(appSource).toContain('!runListCollapsed && <div className="run-list" id="run-monitor-list">');
+    expect(rule(".run-list-toggle.collapsed svg")).toContain("transform: rotate(-90deg)");
   });
 });
