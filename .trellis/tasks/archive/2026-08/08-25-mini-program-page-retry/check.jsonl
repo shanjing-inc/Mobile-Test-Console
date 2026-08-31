@@ -1,0 +1,1 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"质量检查需要验证页面范围互斥校验、错误码、Runner 透传和来源任务状态投影。"}

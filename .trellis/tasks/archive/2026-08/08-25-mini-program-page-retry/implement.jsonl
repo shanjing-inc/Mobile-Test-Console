@@ -1,0 +1,1 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"页面级重试请求、重试范围冻结、Runner 环境变量与重试 watchdog 的跨层契约。"}
