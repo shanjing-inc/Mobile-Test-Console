@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 18
-- **Last Active**: 2026-08-24
+- **Total Sessions**: 20
+- **Last Active**: 2026-08-31
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~608 | Active |
+| `journal-1.md` | ~652 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 20 | 2026-08-31 | 执行页自定义测试入口与命令预览 | `88c8da4` | `main` |
+| 19 | 2026-08-31 | 小程序页面重试与旧测试命令接入 | `0bfde1d` | `main` |
 | 18 | 2026-08-24 | 默认展示最近五条运行记录 | `119e6fc` | `main` |
 | 17 | 2026-08-24 | 支持运行状态列表折叠 | `6c7644c` | `main` |
 | 16 | 2026-08-24 | 优化小程序项目初始化与新手接入引导 | `198bff5` | `main` |

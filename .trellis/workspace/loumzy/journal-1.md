@@ -606,3 +606,47 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - None - task complete
+
+
+## Session 19: 小程序页面重试与旧测试命令接入
+<!-- trellis-session: v=2 fp=39ca5541512d2a0d -->
+
+**Date**: 2026-08-31
+**Task**: 小程序页面重试与旧测试命令接入
+**Branch**: `main`
+
+### Summary
+
+完成小程序按页面重试、重试超时收敛、手动测试命令五步引导、mobile-test.entries.json 安全写入、运行时刷新、AI 脱敏引导及全量回归验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0bfde1d` | fix(mtc): 完善小程序页面重试与手动测试命令接入 |
+
+### Status
+
+[OK] **Completed**
+
+
+## Session 20: 执行页自定义测试入口与命令预览
+<!-- trellis-session: v=2 fp=2b1d8d8b27050995 -->
+
+**Date**: 2026-08-31
+**Task**: 执行页自定义测试入口与命令预览
+**Branch**: `main`
+
+### Summary
+
+支持项目级自定义测试命令、预制与自定义入口来源标识、脱敏命令预览和详情；选择入口即可显示命令，单目标自动选择，启动后保留运行目标与命令。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `88c8da4` | feat(mtc): 支持自定义测试入口与命令预览 |
+
+### Status
+
+[OK] **Completed**
