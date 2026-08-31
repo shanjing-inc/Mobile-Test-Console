@@ -238,9 +238,12 @@ export interface ProjectTestingManifest {
   result?: ProjectTestResultContract;
 }
 
+export type TestEntrySource = "preset" | "custom";
+
 export interface PublicTestDefinition {
   id: string;
   label: string;
+  source: TestEntrySource;
   testType: string;
   description: string;
   kind: TestKind;
@@ -250,6 +253,85 @@ export interface PublicTestDefinition {
   platforms: Platform[];
   targetKeys?: string[];
   parameters: TestParameterDefinition[];
+}
+
+export interface ProjectTestCommand {
+  executable: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface ProjectTestEntryEditorResponse {
+  schemaVersion: "mobile-test-console.project-test-entry-editor.v1";
+  project: ProjectCatalogEntry;
+  targets: ProjectTestingTarget[];
+  mainConfigTests: PublicTestDefinition[];
+  editableTests: PublicTestDefinition[];
+  entriesPath: string;
+}
+
+export interface ProjectTestEntryInput {
+  id: string;
+  label: string;
+  testType: string;
+  description: string;
+  kind: TestKind;
+  runnerId: string;
+  providerId?: string;
+  requiredCapabilities: string[];
+  platforms: Platform[];
+  targetKeys: string[];
+  parameters: TestParameterDefinition[];
+  commands: Partial<Record<"default" | Platform, ProjectTestCommand>>;
+}
+
+export interface PreviewProjectTestEntryRequest {
+  mode: "create";
+  entry: ProjectTestEntryInput;
+  commandLine?: string;
+}
+
+export interface ProjectTestEntryPlan {
+  schemaVersion: "mobile-test-console.project-test-entry-plan.v1";
+  planId: string;
+  projectId: string;
+  entriesPath: string;
+  contentPreview: string;
+  commandPreview: ProjectTestCommand & { cwd: string; env: Record<string, string> };
+  warnings: string[];
+  aiGuidance: string;
+  canApply: boolean;
+}
+
+export interface ApplyProjectTestEntryRequest {
+  planId: string;
+}
+
+export interface ApplyProjectTestEntryResponse {
+  plan: ProjectTestEntryPlan;
+  editor: ProjectTestEntryEditorResponse;
+}
+
+export interface PreviewTestCommandsRequest {
+  testId: string;
+  targetKeys: string[];
+  parameters: Record<string, string>;
+}
+
+export interface TestCommandPreview {
+  targetKey: string;
+  targetLabel: string;
+  executable: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, "<redacted>">;
+}
+
+export interface PreviewTestCommandsResponse {
+  schemaVersion: "mobile-test-console.test-command-preview.v1";
+  testId: string;
+  commands: TestCommandPreview[];
 }
 
 export type TaskStatus =
@@ -733,6 +815,7 @@ export interface StartTasksResponse {
 
 export interface RetryTaskRequest {
   caseRunIds?: string[];
+  targetPages?: string[];
 }
 
 export interface RetryTaskResponse {

@@ -14,6 +14,187 @@ afterEach(async () => {
 });
 
 describe("项目目录与接入验证", () => {
+  it("预览并原子写入用户手动填写的小程序测试入口", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-manual-test-entry-"));
+    tempDirs.push(root);
+    await writeMiniProgramConfig(root, "manual-mini", "Manual Mini");
+    const configPath = path.join(root, "mobile-test.config.cjs");
+    const mainBefore = await fs.readFile(configPath, "utf8");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+    await service.initialize(await loadProjectConfig(configPath));
+
+    const editor = await service.testEntryEditor("manual-mini");
+    expect(editor).toMatchObject({
+      targets: [expect.objectContaining({ key: "wechat-devtools" })],
+      mainConfigTests: [expect.objectContaining({ id: "smoke" })],
+      editableTests: [],
+      entriesPath: path.join(root, "mobile-test.entries.json"),
+    });
+    const preview = await service.previewTestEntry("manual-mini", {
+      mode: "create",
+      entry: {
+        id: "page-tests",
+        label: "页面测试",
+        testType: "页面回归",
+        description: "运行已有页面测试脚本",
+        kind: "page",
+        runnerId: "legacy-command-runner",
+        requiredCapabilities: [],
+        platforms: [],
+        targetKeys: ["wechat-devtools"],
+        parameters: [{
+          id: "pages",
+          label: "页面",
+          type: "page-selection",
+          defaultValue: "all",
+          source: "page-parameters",
+          presets: [{ value: "all", label: "全部页面", filter: {} }],
+        }],
+        commands: { default: { executable: "node", args: ["qa/page-tests.cjs", "--pages", "{{params.pages}}"], cwd: ".", env: { PROJECT_TOKEN: "secret" } } },
+      },
+    });
+
+    expect(preview.commandPreview).toMatchObject({ executable: "node", args: ["qa/page-tests.cjs", "--pages", "all"], cwd: root });
+    expect(preview.aiGuidance).toContain('"PROJECT_TOKEN": "<redacted>"');
+    expect(preview.aiGuidance).not.toContain("secret");
+    await expect(fs.stat(preview.entriesPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const applied = await service.applyTestEntry("manual-mini", { planId: preview.planId });
+    expect(applied.editor.editableTests).toEqual([expect.objectContaining({ id: "page-tests" })]);
+    expect(await fs.readFile(configPath, "utf8")).toBe(mainBefore);
+    expect((await loadProjectConfig(configPath)).tests.map(test => test.id)).toEqual(["smoke", "page-tests"]);
+    const entriesPath = path.join(root, "mobile-test.entries.json");
+    expect((await fs.stat(entriesPath)).mode & 0o777).toBe(0o600);
+    await fs.chmod(entriesPath, 0o640);
+    const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-test-entry-backup-outside-"));
+    tempDirs.push(outsideRoot);
+    const outsideFile = path.join(outsideRoot, "outside.txt");
+    await fs.writeFile(outsideFile, "outside-content");
+    const backupPath = path.join(root, "mobile-test.entries.json.bak");
+    await fs.symlink(outsideFile, backupPath);
+
+    const secondPreview = await service.previewTestEntry("manual-mini", {
+      mode: "create",
+      entry: {
+        id: "flow-tests", label: "流程测试", testType: "", description: "", kind: "flow",
+        runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
+        commands: { default: { executable: "node", args: ["qa/flow-tests.cjs"] } },
+      },
+    });
+    await service.applyTestEntry("manual-mini", { planId: secondPreview.planId });
+    expect((await fs.stat(entriesPath)).mode & 0o777).toBe(0o640);
+    expect(await fs.readFile(outsideFile, "utf8")).toBe("outside-content");
+    expect((await fs.lstat(backupPath)).isSymbolicLink()).toBe(false);
+    const backup = JSON.parse(await fs.readFile(backupPath, "utf8")) as { tests: Array<{ id: string }> };
+    expect(backup.tests.map(test => test.id)).toEqual(["page-tests"]);
+  });
+
+  it("入口文件变化后拒绝应用旧预览计划", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-manual-test-entry-stale-"));
+    tempDirs.push(root);
+    await writeMiniProgramConfig(root, "stale-mini", "Stale Mini");
+    const configPath = path.join(root, "mobile-test.config.cjs");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+    await service.initialize(await loadProjectConfig(configPath));
+    const preview = await service.previewTestEntry("stale-mini", {
+      mode: "create",
+      entry: {
+        id: "flow-tests", label: "流程测试", testType: "", description: "", kind: "flow",
+        runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
+        commands: { default: { executable: "node", args: ["flow.cjs"] } },
+      },
+    });
+    const external = `${JSON.stringify({ schemaVersion: "mobile-test-console.test-entries.v1", tests: [] }, null, 2)}\n`;
+    await fs.writeFile(path.join(root, "mobile-test.entries.json"), external);
+
+    await expect(service.applyTestEntry("stale-mini", { planId: preview.planId })).rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PLAN_STALE" });
+    expect(await fs.readFile(path.join(root, "mobile-test.entries.json"), "utf8")).toBe(external);
+  });
+
+  it("服务端使用单行命令物化结构化命令并拒绝复合 shell 语法", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-simple-test-entry-command-"));
+    tempDirs.push(root);
+    await writeMiniProgramConfig(root, "simple-command-mini", "Simple Command Mini");
+    const configPath = path.join(root, "mobile-test.config.cjs");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+    await service.initialize(await loadProjectConfig(configPath));
+    const entry = {
+      id: "quoted-command", label: "带引号命令", testType: "自定义测试", description: "", kind: "general" as const,
+      runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
+      commands: { default: { executable: "ignored", args: ["ignored"], cwd: "." } },
+    };
+
+    const preview = await service.previewTestEntry("simple-command-mini", {
+      mode: "create",
+      commandLine: `pnpm test:e2e --filter "pickup code"`,
+      entry,
+    });
+    expect(preview.commandPreview).toMatchObject({ executable: "pnpm", args: ["test:e2e", "--filter", "pickup code"], cwd: root });
+    await service.applyTestEntry("simple-command-mini", { planId: preview.planId });
+    expect((await loadProjectConfig(configPath)).sidecarTests?.[0]?.commands.default).toMatchObject({
+      executable: "pnpm",
+      args: ["test:e2e", "--filter", "pickup code"],
+    });
+
+    await expect(service.previewTestEntry("simple-command-mini", {
+      mode: "create",
+      commandLine: "pnpm test:e2e | tee result.log",
+      entry: { ...entry, id: "invalid-shell" },
+    })).rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_COMMAND_INVALID" });
+  });
+
+  it("并发应用同一基础版本时只接受一个计划", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-manual-test-entry-concurrent-"));
+    tempDirs.push(root);
+    await writeMiniProgramConfig(root, "concurrent-mini", "Concurrent Mini");
+    const configPath = path.join(root, "mobile-test.config.cjs");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+    await service.initialize(await loadProjectConfig(configPath));
+    const entry = (id: string) => ({
+      mode: "create" as const,
+      entry: {
+        id, label: id, testType: "", description: "", kind: "general" as const,
+        runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
+        commands: { default: { executable: "node", args: [`${id}.cjs`] } },
+      },
+    });
+    const [first, second] = await Promise.all([service.previewTestEntry("concurrent-mini", entry("first-entry")), service.previewTestEntry("concurrent-mini", entry("second-entry"))]);
+    const applied = await Promise.allSettled([
+      service.applyTestEntry("concurrent-mini", { planId: first.planId }),
+      service.applyTestEntry("concurrent-mini", { planId: second.planId }),
+    ]);
+
+    expect(applied.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(applied.filter(result => result.status === "rejected")).toEqual([expect.objectContaining({ reason: expect.objectContaining({ code: "PROJECT_TEST_ENTRY_PLAN_STALE" }) })]);
+    expect((await loadProjectConfig(configPath)).sidecarTests).toHaveLength(1);
+  });
+
+  it("拒绝未知目标、未知模板变量和项目外工作目录", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-manual-test-entry-invalid-"));
+    tempDirs.push(root);
+    await writeMiniProgramConfig(root, "invalid-mini", "Invalid Mini");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+    await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
+    const baseEntry = {
+      id: "manual", label: "手动测试", testType: "", description: "", kind: "general" as const,
+      runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
+      commands: { default: { executable: "node", args: ["test.cjs"] } },
+    };
+    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, targetKeys: ["missing"] } }))
+      .rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, runnerId: "custom-runner" } }))
+      .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_RUNNER_UNSUPPORTED" });
+    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: ["{{unknown.value}}"] } } } }))
+      .rejects.toMatchObject({ code: "TEMPLATE_TOKEN_UNKNOWN" });
+    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: "../outside" } } } }))
+      .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
+    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: ".." } } } }))
+      .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
+    await fs.symlink(path.dirname(root), path.join(root, "outside-link"));
+    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: "outside-link/generated" } } } }))
+      .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
+  });
+
   it("兼容缺少接入明细数组和测试类型的历史项目目录记录", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-catalog-legacy-"));
     tempDirs.push(root);

@@ -326,6 +326,7 @@ interface TestTask {
 
 POST /api/tasks/:taskId/retry
 { "caseRunIds": ["case-run-id"] }
+{ "targetPages": ["pages/demo/index"] }
 ```
 
 ### 3. Contracts
@@ -335,12 +336,14 @@ POST /api/tasks/:taskId/retry
 - The source task must be terminal.
 - `TaskManager.start` assigns `retryOf.attempt` from the complete persisted retry lineage immediately before enqueueing. API handlers may propose an attempt value, while the task manager remains authoritative so sibling requests receive monotonically increasing attempts.
 - An explicit case range contains unique `caseRunId` values from the source `TaskResult`, including passed cases.
+- A page range contains unique `targetPage` values and is mutually exclusive with `caseRunIds`; MTC resolves every matching source run, freezes the resulting case/page scope, and returns `RETRY_PAGE_UNKNOWN` when any requested page is absent.
 - MTC projects the selected runs into stable `caseRunIds`, `caseIds`, `targetPages`, and `caseRuns` fields. Each `caseRuns` item carries the direct source ID plus invocation identity such as `parameterProfileId` and `routeParams`.
 - `TestTask.retryOf` survives persistence and the Runner plan exposes the same value as `metadata.retry`.
 - Runner commands receive the optional retry context as environment variables: `MTC_RETRY_SCOPE`, `MTC_RETRY_ATTEMPT`, `MTC_RETRY_CASE_RUN_IDS`, `MTC_RETRY_CASE_IDS`, `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_SOURCE_TASK_ID`, and `MTC_RETRY_SOURCE_RUN_ID`. Command templates may use `{{retry.scope}}`, `{{retry.attempt}}`, `{{retry.caseRunIds}}`, `{{retry.caseIds}}`, `{{retry.targetPages}}`, `{{retry.sourceTaskId}}`, and `{{retry.sourceRunId}}`.
 - A project Runner must apply `MTC_RETRY_TARGET_PAGES` or `MTC_RETRY_CASE_IDS` to its page/case selector. MTC cannot infer project-specific navigation from a generic command.
 - Retry execution passes through storage capacity, device preparation, account profile, platform support, and target concurrency gates.
 - A Runner or project adapter may ignore `metadata.retry`; this produces a complete execution of the original test while retaining the requested range for audit.
+- Retry tasks have a bounded watchdog. Timeout aborts and cancels the Runner, persists a failed terminal task with the timeout diagnosis, and releases the source retry lock.
 - The run monitor collapses retry tasks into their root source task. While any descendant retry has an active status, the root row and detail header expose `正在重试`, all retry actions remain disabled, and run-group mutations such as deletion or retention changes remain locked.
 - After every retry descendant reaches a terminal status, `/api/snapshot` projects a failed or interrupted root task to `passed` only when the merged root `TaskResult` has at least one run and `failed === 0`. The projected response sets `status: "passed"`, `phase: "重试后通过"`, `exitCode: 0`, and clears the display error. `TaskManager` keeps the original root status, exit code, error, and logs for diagnostics, retention, and audit.
 - Retry lineage, scheduling locks, result merging, retention locks, deletion, and state persistence traverse the complete internal task collection. The public run list may cap recent rows, but it must include the ancestors of every visible retry and must never become the source of truth for persistence or internal operations.
@@ -863,6 +866,231 @@ onPreviewInitialization({
   platforms: family === "mini-program" ? [] : platforms,
   family,
 });
+```
+
+## Scenario: Manual legacy test-command onboarding
+
+### 1. Scope / Trigger
+
+- Trigger: a mini-program project already owns its test command and a user opens `添加自定义命令` from the execution workspace.
+- MTC owns the structured entry contract, validation, preview, persistence, runtime refresh, and retry metadata transport.
+- The project owns command semantics, framework selection, test implementation, and Result Bundle generation.
+- Command input comes from explicit user fields. Project files are not scanned to infer or rank command candidates.
+
+### 2. Signatures
+
+```ts
+interface ProjectTestEntryEditorResponse {
+  schemaVersion: "mobile-test-console.project-test-entry-editor.v1";
+  project: ProjectCatalogEntry;
+  targets: MiniProgramRunTarget[];
+  mainConfigTests: PublicTestDefinition[];
+  editableTests: PublicTestDefinition[];
+  entriesPath: string;
+}
+
+interface PreviewProjectTestEntryRequest {
+  mode: "create";
+  entry: ProjectTestEntryInput;
+  commandLine?: string;
+}
+
+parseTestCommandLine(commandLine): { executable: string; args: string[] }
+createUniqueTestEntryId(commandLine, existingIds): string
+
+interface ProjectTestEntryPlan {
+  schemaVersion: "mobile-test-console.project-test-entry-plan.v1";
+  planId: string;
+  projectId: string;
+  entriesPath: string;
+  contentPreview: string;
+  commandPreview: ResolvedCommand;
+  aiGuidance: string;
+  warnings: string[];
+  canApply: boolean;
+}
+
+GET  /api/projects/:projectId/test-entry-editor
+POST /api/projects/:projectId/test-entries/preview
+POST /api/projects/:projectId/test-entries/apply
+```
+
+The optional sidecar next to `mobile-test.config.cjs` has this file signature:
+
+```json
+{
+  "schemaVersion": "mobile-test-console.test-entries.v1",
+  "tests": []
+}
+```
+
+### 3. Contracts
+
+- `mobile-test.entries.json` is the only file written by the visual editor. `mobile-test.config.cjs` remains byte-identical.
+- `loadProjectConfig()` loads main-config tests first, appends sidecar tests in file order, and reports both source paths when IDs conflict.
+- The quick form accepts a single `commandLine`; the shared tokenizer converts it to `executable` plus ordered `args` in both browser and server code. Persisted entries and task execution remain structured and never enable a shell.
+- The tokenizer supports whitespace, single quotes, double quotes, empty quoted arguments, and Windows/UNC backslashes. It rejects pipes, redirects, command chaining, variable expansion, backticks, and unterminated quotes.
+- The browser generates a stable lowercase test ID from the parsed command, prefixes digit-leading or non-Latin results with `test-` / `custom-test`, and adds a numeric suffix when either source already owns the candidate.
+- A visual entry uses `runnerId: "legacy-command-runner"` and one structured command with `executable`, ordered `args`, optional project-relative `cwd`, and optional `env` string values.
+- The quick form defaults to every configured mini-program target, `kind: "general"`, `testType: "自定义测试"`, project-root `cwd`, and empty environment/parameter collections. Advanced fields may override those defaults.
+- Mini-program entries select at least one key from `testing.targets`; every template token and parameter default must satisfy the shared config schema.
+- A page entry confirms that its project script consumes `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_CASE_IDS`, and `MTC_RETRY_CASE_RUN_IDS` before preview.
+- Preview resolves a representative command with default parameter values and retry metadata. It performs no command execution and no file write.
+- `planId` covers project ID, main-config digest, sidecar digest, and normalized request. Apply rebuilds the plan inside the catalog operation queue and rejects stale or competing plans.
+- Apply writes the sidecar and backup through same-directory exclusive temporary files followed by atomic rename. It preserves an existing sidecar mode, creates a new sidecar with mode `0600`, and replaces a pre-existing `.bak` path without following its symlink target.
+- Both lexical paths and resolved symlink ancestors must remain under the project root. The exact parent value `..` is an escape, as are `../...`, absolute paths, and resolved symlink ancestors outside the root.
+- A successful apply refreshes the catalog editor response and the active in-memory config so the test appears in the current snapshot and run workspace.
+- AI guidance contains field rules, target keys, retry keys, template syntax, and the current draft. Environment values are replaced with `<redacted>`.
+- The execution workspace is the only UI surface that opens this flow. The project overview remains focused on onboarding status, runtime activation, and storage management.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Project is unknown | `PROJECT_UNKNOWN`, HTTP 404 |
+| Project family is outside mini-program | `PROJECT_TEST_ENTRY_UNSUPPORTED`, HTTP 409 |
+| Runner differs from `legacy-command-runner` | `PROJECT_TEST_ENTRY_RUNNER_UNSUPPORTED`, HTTP 409 |
+| `commandLine` is empty or contains unsupported shell syntax | `PROJECT_TEST_ENTRY_COMMAND_INVALID`, HTTP 409; preserve the browser draft |
+| Test ID already exists in either source | `PROJECT_TEST_ENTRY_DUPLICATE`, HTTP 409 |
+| Target key, parameter, command shape, or cross-field rule is invalid | `CONFIG_INVALID`, HTTP 409 |
+| Command template token is unknown | `TEMPLATE_TOKEN_UNKNOWN` |
+| Default command is absent | `COMMAND_UNAVAILABLE`, HTTP 409 |
+| `cwd`, sidecar path, or a resolved symlink ancestor escapes the project root | `PROJECT_TEST_ENTRY_PATH_OUTSIDE`, HTTP 409 |
+| Plan ID is unknown or evicted | `PROJECT_TEST_ENTRY_PLAN_UNKNOWN`, HTTP 409 |
+| Main config or sidecar changes after preview | `PROJECT_TEST_ENTRY_PLAN_STALE`, HTTP 409; preserve the current files |
+| Sidecar JSON/schema is invalid or IDs conflict across sources | `CONFIG_INVALID` with the sidecar and conflicting source paths |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a user enters `pnpm test:e2e:pickup-code-sort`; MTC generates a unique ID, selects all targets, materializes `{ executable: "pnpm", args: ["test:e2e:pickup-code-sort"] }`, previews, and writes one sidecar entry.
+- Base: a legacy project keeps every test in `mobile-test.config.cjs`; the absent sidecar loads as an empty collection and execution remains unchanged. Existing structured preview callers may omit `commandLine`.
+- Bad: a command contains `&&`, `|`, redirection, `$VAR`, or backticks; validation stops before plan creation. Package scripts remain explicit user input and are never scanned or guessed.
+
+### 6. Tests Required
+
+- Config tests cover missing sidecar, valid merge order, source partitions, invalid JSON/schema, internal duplicate IDs, and cross-source duplicate diagnostics.
+- Command-line tests cover ordinary arguments, single/double quotes, empty arguments, Windows and UNC paths, every rejected shell operator, valid generated IDs, digit-leading commands, non-Latin fallback, and collision suffixes.
+- Catalog tests cover command-line materialization, preview immutability, apply, symlink-safe backup replacement, new and preserved file modes, main-config byte identity, concurrent plans, stale plans, unknown targets/templates, runner enforcement, exact-parent traversal, sibling traversal, and symlink boundaries.
+- HTTP tests cover all three endpoints and assert the active runtime config and returned editor snapshot contain the applied entry.
+- Web tests cover the single-page quick fields, automatic defaults, advanced fields, page-retry confirmation, save error retention, AI redaction, apply refresh, execution-workspace ownership, and the absence of a project-overview action.
+- Browser verification uses a `390x844` viewport and asserts equal document `scrollWidth` and `clientWidth`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const command = `pnpm test && pnpm report`;
+await spawn(command, { shell: true });
+```
+
+#### Correct
+
+```ts
+const preview = await catalog.previewTestEntry(projectId, {
+  mode: "create",
+  commandLine: "pnpm test:e2e:pickup-code-sort",
+  entry: quickFormDefaults,
+});
+await catalog.applyTestEntry(projectId, { planId: preview.planId });
+```
+
+## Scenario: Runtime test-entry source and command preview
+
+### 1. Scope / Trigger
+
+- Trigger: a user selects a mini-program test entry, target, or parameter in the execution workspace.
+- MTC exposes preset and project-sidecar entries through one selector and resolves the same structured command contract used by task creation.
+- Preview is read-only. It creates no task, starts no Runner, executes no command, and writes no project file.
+
+### 2. Signatures
+
+```ts
+type TestEntrySource = "preset" | "custom";
+
+interface PublicTestDefinition {
+  source: TestEntrySource;
+}
+
+interface PreviewTestCommandsRequest {
+  testId: string;
+  targetKeys: string[];
+  parameters: Record<string, string>;
+}
+
+interface TestCommandPreview {
+  targetKey: string;
+  targetLabel: string;
+  executable: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, "<redacted>">;
+}
+
+interface PreviewTestCommandsResponse {
+  schemaVersion: "mobile-test-console.test-command-preview.v1";
+  testId: string;
+  commands: TestCommandPreview[];
+}
+
+POST /api/test-commands/preview
+```
+
+### 3. Contracts
+
+- `toPublicTestsFromConfig()` projects main-config entries as `preset` and `mobile-test.entries.json` entries as `custom`, preserving main-config-first order. A historical in-memory config without source partitions projects every current test as `preset`.
+- Preview accepts one active-project test ID, unique declared target keys, and declared string parameters. It applies defaults through `validateParameters()`.
+- A `page-selection` preset is expanded through `expandPageSelectionParameters()` before command resolution, matching the task-start path. The resolved preview and created task therefore receive the same frozen page ID list.
+- Each target is resolved through `resolveTargetCommand()`. Runtime-generated `task.id` and `task.runId` use `<runtime:task.id>` and `<runtime:task.runId>` placeholders.
+- Every environment key is returned while every value is exactly `<redacted>`. The API never returns configured secret values.
+- A custom Runner entry may omit `commands`. Its successful preview contains `commands: []`; the execution workspace identifies Runner ownership and keeps task start available. A legacy command Runner still requires a structured command.
+- Saving an entry for the active project reloads the in-memory test partitions. The next snapshot contains the custom entry immediately, allowing the execution workspace to select it and issue a preview request.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Request body is malformed, target keys repeat, or target list is empty | `REQUEST_INVALID`, HTTP 400 |
+| Active project is outside mini-program | `TEST_COMMAND_PREVIEW_UNSUPPORTED`, HTTP 409 |
+| Test ID is unknown | `TEST_UNKNOWN`, HTTP 404 |
+| Target key is unknown | `TARGET_UNKNOWN`, HTTP 404 |
+| Target exists but the test does not declare it | `TEST_TARGET_UNSUPPORTED`, HTTP 409 |
+| Parameter is unknown or invalid | Existing `PARAMETER_UNKNOWN` / `PARAMETER_INVALID` error |
+| Page preset resolves to no pages or explicit pages are unavailable | `PAGE_SELECTION_EMPTY` / `PAGE_SELECTION_UNKNOWN` |
+| Legacy command Runner has no resolved command | `COMMAND_UNAVAILABLE`, HTTP 409 |
+| Custom Runner owns the plan and declares no command | HTTP 200 with `commands: []` |
+
+### 5. Good / Base / Bad Cases
+
+- Good: two selected targets resolve two commands with ordered arguments, final `cwd`, runtime placeholders, and redacted environment values.
+- Good: a page preset expands to concrete page IDs in both preview and task creation.
+- Base: a custom Runner owns command generation; preview returns an empty command list and task start remains available.
+- Bad: the browser reads command templates directly, displays environment secrets, or executes a command during preview.
+
+### 6. Tests Required
+
+- Config tests assert preset/custom projection order and historical fallback.
+- API tests assert multi-target resolution, defaults, page-preset expansion, runtime placeholders, duplicate/unknown/unsupported targets, unknown parameters, and complete environment redaction.
+- Runner compatibility tests assert a custom Runner with no command previews successfully and starts through its existing `RunPlan` path.
+- Web tests assert source labels, single-command content, multi-command detail, Runner-owned state, stale-response rejection, start gating, and post-apply selection.
+- Browser tests cover desktop and `390x844`; assert long command wrapping, modal bounds, and equal document `scrollWidth` / `clientWidth`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const command = interpolateInBrowser(test.commands.default, parameters);
+return { ...command, env: test.commands.default.env };
+```
+
+#### Correct
+
+```ts
+const parameters = validateParameters(test, request.parameters);
+await expandPageSelectionParameters(test, parameters, pageParameters, []);
+const command = resolveTargetCommand(config, test, target, previewTask, parameters);
+return redactCommandEnvironment(command);
 ```
 
 ## Design Decisions

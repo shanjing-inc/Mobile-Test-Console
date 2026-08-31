@@ -3,6 +3,9 @@ import {
   CheckCircle2,
   ChevronDown,
   ClipboardCopy,
+  ArrowUp,
+  ArrowDown,
+  Plus,
   FolderPlus,
   FolderOpen,
   FileText,
@@ -35,6 +38,10 @@ import type {
   ProjectOnboardingStep,
   ProjectOnboardingStepStatus,
   ProjectTestEntryCheck,
+  ProjectTestEntryEditorResponse,
+  ProjectTestEntryInput,
+  ProjectTestEntryPlan,
+  TestParameterDefinition,
   ProjectToolCheck,
   ProjectSetupApplyResponse,
   ProjectSetupPlan,
@@ -42,7 +49,8 @@ import type {
   RegisterProjectRequest,
 } from "../shared/contracts";
 import { PROJECT_EXECUTION_PREREQUISITE_STEP_IDS } from "../shared/contracts";
-import { ApiError, applyArtifactCleanup, fetchArtifactRetention, fetchProjectCatalogDetail, inventoryArtifactCleanup, previewArtifactCleanup } from "./api";
+import { createUniqueTestEntryId, parseTestCommandLine, TestCommandLineError } from "../shared/test-command-line";
+import { ApiError, applyArtifactCleanup, applyProjectTestEntry, fetchArtifactRetention, fetchProjectCatalogDetail, fetchProjectTestEntryEditor, inventoryArtifactCleanup, previewArtifactCleanup, previewProjectTestEntry } from "./api";
 
 const platformLabels: Record<Platform, string> = {
   android: "Android",
@@ -491,6 +499,288 @@ export function ProjectCatalogWorkspace({
       onConfirm={runIds => void confirmCleanup(runIds)}
     />}
   </div>;
+}
+
+export function ProjectTestEntryWizard({
+  projectId,
+  onClose,
+  onApplied,
+  onMessage,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onApplied: (entryId: string) => Promise<void>;
+  onMessage: (message: { kind: "error" | "info"; text: string }) => void;
+}) {
+  const [editor, setEditor] = useState<ProjectTestEntryEditorResponse | null>(null);
+  const [draft, setDraft] = useState<ProjectTestEntryInput>(() => emptyTestEntryDraft(""));
+  const [commandLine, setCommandLine] = useState("");
+  const [envRows, setEnvRows] = useState<Array<{ key: string; value: string }>>([{ key: "", value: "" }]);
+  const [plan, setPlan] = useState<ProjectTestEntryPlan | null>(null);
+  const [retryContractConfirmed, setRetryContractConfirmed] = useState(false);
+  const [pending, setPending] = useState(true);
+  const [error, setError] = useState("");
+  const [commandError, setCommandError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setPending(true);
+    void fetchProjectTestEntryEditor(projectId)
+      .then(response => {
+        if (cancelled) return;
+        setEditor(response);
+        setDraft(emptyTestEntryDraft(response.targets.map(target => target.key)));
+      })
+      .catch(reason => { if (!cancelled) setError(reason instanceof ApiError ? reason.message : "无法读取测试入口配置"); })
+      .finally(() => { if (!cancelled) setPending(false); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
+  const command = draft.commands.default ?? { executable: "", args: [], cwd: ".", env: {} };
+  const updateDraft = (updater: (current: ProjectTestEntryInput) => ProjectTestEntryInput) => {
+    setDraft(updater);
+    setPlan(null);
+  };
+  const setCommand = (next: Partial<typeof command>) => {
+    updateDraft(current => ({
+      ...current,
+      commands: {
+        ...current.commands,
+        default: { ...(current.commands.default ?? command), ...next },
+      },
+    }));
+  };
+  const save = async () => {
+    if (!editor) return;
+    setCommandError("");
+    setError("");
+    let parsed: ReturnType<typeof parseTestCommandLine>;
+    try {
+      parsed = parseTestCommandLine(commandLine);
+    } catch (reason) {
+      setCommandError(reason instanceof TestCommandLineError ? reason.message : "测试命令格式无效");
+      return;
+    }
+    if (!draft.label.trim()) {
+      setError("请填写显示名称");
+      return;
+    }
+    if (draft.targetKeys.length === 0) {
+      setError("请在高级设置中选择至少一个运行目标");
+      return;
+    }
+    if (draft.kind === "page" && !retryContractConfirmed) {
+      setError("请确认项目脚本已经接入页面重试范围");
+      return;
+    }
+    const entryId = createUniqueTestEntryId(commandLine, [
+      ...editor.mainConfigTests.map(test => test.id),
+      ...editor.editableTests.map(test => test.id),
+    ]);
+    const nextDraft: ProjectTestEntryInput = {
+      ...draft,
+      id: entryId,
+      label: draft.label.trim(),
+      description: draft.description.trim(),
+      testType: draft.testType.trim() || "自定义测试",
+      commands: {
+        ...draft.commands,
+        default: {
+          ...command,
+          executable: parsed.executable,
+          args: parsed.args,
+          cwd: command.cwd?.trim() || ".",
+          env: Object.fromEntries(envRows.map(row => [row.key.trim(), row.value]).filter(([key]) => Boolean(key))),
+        },
+      },
+    };
+    setDraft(nextDraft);
+    setPlan(null);
+    setPending(true);
+    try {
+      const response = await previewProjectTestEntry(projectId, {
+        mode: "create",
+        entry: nextDraft,
+        commandLine: commandLine.trim(),
+      });
+      setPlan(response);
+      if (!response.canApply) throw new ApiError("PROJECT_TEST_ENTRY_CANNOT_APPLY", "测试入口当前无法保存");
+      await applyProjectTestEntry(projectId, { planId: response.planId });
+      onMessage({ kind: "info", text: `测试入口 ${nextDraft.label} 已写入 mobile-test.entries.json` });
+      await onApplied(nextDraft.id);
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "测试入口保存失败");
+    } finally {
+      setPending(false);
+    }
+  };
+  const copyAiGuidance = () => {
+    const guidance = plan?.aiGuidance ?? [
+      "请帮助我检查这条 MTC 小程序测试命令。",
+      `显示名称：${draft.label.trim() || "待填写"}`,
+      `命令：${commandLine.trim() || "待填写"}`,
+      `运行目标：${draft.targetKeys.join("、") || "待选择"}`,
+      `测试类型：${draft.kind}`,
+      `业务分类：${draft.testType || "自定义测试"}`,
+      `环境变量名称：${envRows.map(row => row.key.trim()).filter(Boolean).join("、") || "无"}`,
+      "请按 MTC 的 executable、args、cwd、env 结构检查命令，并说明需要修正的字段。",
+    ].join("\n");
+    void navigator.clipboard.writeText(guidance)
+      .then(() => onMessage({ kind: "info", text: "已复制 AI 接入说明" }))
+      .catch(() => onMessage({ kind: "error", text: "复制 AI 接入说明失败" }));
+  };
+  const canSave = Boolean(editor && draft.label.trim() && commandLine.trim() && draft.targetKeys.length > 0);
+
+  return <div className="confirm-overlay" role="presentation">
+    <section className="confirm-dialog project-test-entry-dialog" role="dialog" aria-modal="true" aria-labelledby="project-test-entry-title">
+      <header className="project-test-entry-header">
+        <div><p className="eyebrow">TEST ENTRY</p><h2 id="project-test-entry-title">添加自定义命令</h2></div>
+        <button className="icon-button" type="button" onClick={onClose} disabled={pending} title="关闭" aria-label="关闭添加自定义命令"><X size={17} /></button>
+      </header>
+      <div className="project-test-entry-body">
+        {pending && !editor && <div className="project-catalog-loading"><LoaderCircle className="spin" size={18} />正在读取项目配置</div>}
+        {editor && <div className="project-test-entry-quick-form">
+          <div className="project-test-entry-form two-columns">
+            <label className="field"><span>显示名称</span><input autoFocus value={draft.label} placeholder="员工取件码排序验证" onChange={event => updateDraft(current => ({ ...current, label: event.currentTarget.value }))} /></label>
+            <label className="field"><span>命令</span><input value={commandLine} placeholder="pnpm test:e2e:pickup-code-sort" aria-invalid={Boolean(commandError)} onChange={event => { setCommandLine(event.currentTarget.value); setCommandError(""); setPlan(null); }} /><small>支持空格、单引号和双引号参数。</small>{commandError && <small className="field-error">{commandError}</small>}</label>
+            <label className="field project-test-entry-wide"><span>说明（可选）</span><textarea value={draft.description} placeholder="说明这条命令验证的功能" onChange={event => updateDraft(current => ({ ...current, description: event.currentTarget.value }))} /></label>
+          </div>
+          <details className="project-test-entry-advanced">
+            <summary><span>高级设置</span><small>运行目标、类型、目录、环境变量、参数与重试</small><ChevronDown size={14} /></summary>
+            <div className="project-test-entry-advanced-body">
+              <section className="project-test-entry-advanced-section">
+                <header><strong>运行目标</strong><small>默认选择项目声明的全部目标</small></header>
+                <div className="project-test-entry-targets">
+                  {editor.targets.map(target => <label key={target.key} className={draft.targetKeys.includes(target.key) ? "selected" : ""}>
+                    <input type="checkbox" checked={draft.targetKeys.includes(target.key)} onChange={event => updateDraft(current => ({ ...current, targetKeys: event.currentTarget.checked ? [...new Set([...current.targetKeys, target.key])] : current.targetKeys.filter(key => key !== target.key) }))} />
+                    <span><strong>{target.label}</strong><code>{target.key}</code><small>{target.platform} · {target.runtime} · {target.appId}</small></span>
+                  </label>)}
+                  {editor.targets.length === 0 && <div className="project-test-entry-empty"><AlertCircle size={18} />项目需要先在 mobile-test.config.cjs 声明 testing.targets。</div>}
+                </div>
+              </section>
+              <div className="project-test-entry-form three-columns">
+                <label className="field"><span>测试类型</span><select value={draft.kind} onChange={event => { updateDraft(current => ({ ...current, kind: event.currentTarget.value as ProjectTestEntryInput["kind"] })); setRetryContractConfirmed(false); }}><option value="general">通用测试</option><option value="page">页面测试</option><option value="flow">流程测试</option></select></label>
+                <label className="field"><span>业务分类</span><input value={draft.testType} placeholder="自定义测试" onChange={event => updateDraft(current => ({ ...current, testType: event.currentTarget.value }))} /></label>
+                <label className="field"><span>工作目录</span><input value={command.cwd ?? ""} placeholder="." onChange={event => setCommand({ cwd: event.currentTarget.value })} /><small>使用项目根目录内的相对路径。</small></label>
+              </div>
+              <EntryListEditor title="环境变量" addLabel="添加环境变量" rows={envRows} onChange={rows => { setEnvRows(rows); setPlan(null); }} placeholder="MTC_CUSTOM_OPTION" keyed />
+              <section className="project-test-entry-parameters">
+                <div className="project-test-entry-parameter-actions">
+                  <button className="secondary-button" type="button" onClick={() => updateDraft(current => ({ ...current, parameters: [...current.parameters, createSelectParameter(current.parameters.length)] }))}><Plus size={14} />选择参数</button>
+                  <button className="secondary-button" type="button" onClick={() => updateDraft(current => ({ ...current, parameters: [...current.parameters, createPageParameter(current.parameters.length)] }))}><Plus size={14} />页面参数</button>
+                  <button className="secondary-button" type="button" onClick={() => updateDraft(current => ({ ...current, parameters: [...current.parameters, createAccountParameter(current.parameters.length)] }))}><Plus size={14} />账号参数</button>
+                </div>
+                {draft.parameters.map((parameter, index) => <TestParameterEditor key={`${parameter.type}-${index}`} parameter={parameter} onChange={next => updateDraft(current => ({ ...current, parameters: current.parameters.map((item, itemIndex) => itemIndex === index ? next : item) }))} onRemove={() => updateDraft(current => ({ ...current, parameters: current.parameters.filter((_item, itemIndex) => itemIndex !== index) }))} />)}
+                <p className="project-test-entry-rule">参数通过 <code>{"{{params.<参数ID>}}"}</code> 传给命令，并在运行前由 MTC 校验。</p>
+              </section>
+              {draft.kind === "page" && <section className="project-test-entry-retry-guide">
+                <strong>页面重试接入</strong>
+                <p>项目脚本读取以下环境变量，将范围转换为已有命令的页面或用例筛选参数。</p>
+                <code>MTC_RETRY_TARGET_PAGES</code><code>MTC_RETRY_CASE_IDS</code><code>MTC_RETRY_CASE_RUN_IDS</code>
+                <pre>{`const pages = process.env.MTC_RETRY_TARGET_PAGES;
+const args = pages ? ["--pages", pages] : [];`}</pre>
+                <label className="project-test-entry-retry-confirm"><input type="checkbox" checked={retryContractConfirmed} onChange={event => setRetryContractConfirmed(event.currentTarget.checked)} /><span>我已确认项目脚本会读取重试范围，并将它传给原有测试命令。</span></label>
+              </section>}
+              <section className="project-test-entry-ai-guide"><div><strong>AI 操作引导</strong><small>复制当前表单摘要，让 AI 按 MTC 规则检查命令。</small></div><button className="secondary-button" type="button" onClick={copyAiGuidance}><ClipboardCopy size={14} />复制引导</button></section>
+            </div>
+          </details>
+        </div>}
+        {editor && plan && <details className="project-test-entry-save-details">
+          <summary><span>保存详情</span><small>预览计划与写入内容</small><ChevronDown size={14} /></summary>
+          <div className="project-test-entry-review">
+          <div className="project-test-entry-review-meta"><span><strong>目标文件</strong><code>{plan.entriesPath}</code></span><span><strong>命令预览</strong><code>{[plan.commandPreview.executable, ...plan.commandPreview.args].join(" ")}</code></span><span><strong>执行目录</strong><code>{plan.commandPreview.cwd}</code></span></div>
+          {plan.warnings.map(warning => <div className="project-test-entry-warning" key={warning}><AlertCircle size={15} />{warning}</div>)}
+          <details><summary>完整 JSON<ChevronDown size={14} /></summary><pre>{plan.contentPreview}</pre></details>
+          </div>
+        </details>}
+        {error && <div className="project-detail-error"><AlertCircle size={16} />{error}</div>}
+      </div>
+      <footer className="confirm-actions project-test-entry-footer">
+        <button className="secondary-button" type="button" onClick={onClose} disabled={pending}>取消</button>
+        <button className="primary-button" type="button" onClick={() => void save()} disabled={pending || !canSave}>{pending ? <LoaderCircle className="spin" size={14} /> : <CheckCircle2 size={14} />}{pending ? "保存中" : "保存命令"}</button>
+      </footer>
+    </section>
+  </div>;
+}
+
+function EntryListEditor({ title, addLabel, rows, onChange, placeholder, keyed = false }: {
+  title: string;
+  addLabel: string;
+  rows: Array<{ key: string; value: string }>;
+  onChange: (rows: Array<{ key: string; value: string }>) => void;
+  placeholder: string;
+  keyed?: boolean;
+}) {
+  return <section className="project-test-entry-list-editor">
+    <div><strong>{title}</strong><button className="secondary-button" type="button" onClick={() => onChange([...rows, { key: keyed ? "" : String(rows.length), value: "" }])}><Plus size={13} />{addLabel}</button></div>
+    {rows.map((row, index) => <div className="project-test-entry-list-row" key={index}>
+      {keyed && <input value={row.key} placeholder={placeholder} aria-label={`${title}名称 ${index + 1}`} onChange={event => onChange(rows.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.currentTarget.value } : item))} />}
+      <input value={row.value} placeholder={keyed ? "值" : placeholder} aria-label={`${title}值 ${index + 1}`} onChange={event => onChange(rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.currentTarget.value } : item))} />
+      {!keyed && <span className="project-test-entry-order-actions">
+        <button className="icon-button" type="button" title="上移参数" aria-label={`上移${title}项 ${index + 1}`} disabled={index === 0} onClick={() => onChange(moveEntryRow(rows, index, index - 1))}><ArrowUp size={13} /></button>
+        <button className="icon-button" type="button" title="下移参数" aria-label={`下移${title}项 ${index + 1}`} disabled={index === rows.length - 1} onClick={() => onChange(moveEntryRow(rows, index, index + 1))}><ArrowDown size={13} /></button>
+      </span>}
+      <button className="icon-button" type="button" title={`删除${title}项`} aria-label={`删除${title}项 ${index + 1}`} onClick={() => onChange(rows.filter((_item, itemIndex) => itemIndex !== index))}><Trash2 size={14} /></button>
+    </div>)}
+  </section>;
+}
+
+function moveEntryRow(rows: Array<{ key: string; value: string }>, from: number, to: number): Array<{ key: string; value: string }> {
+  if (to < 0 || to >= rows.length) return rows;
+  const next = [...rows];
+  const [row] = next.splice(from, 1);
+  next.splice(to, 0, row);
+  return next;
+}
+
+function TestParameterEditor({ parameter, onChange, onRemove }: { parameter: TestParameterDefinition; onChange: (parameter: TestParameterDefinition) => void; onRemove: () => void }) {
+  const updateCommon = (patch: { id?: string; label?: string; defaultValue?: string }) => onChange({ ...parameter, ...patch } as TestParameterDefinition);
+  return <section className="project-test-entry-parameter">
+    <header><strong>{parameter.type === "select" ? "选择参数" : parameter.type === "page-selection" ? "页面参数" : "账号参数"}</strong><button className="icon-button" type="button" onClick={onRemove} title="删除参数" aria-label="删除参数"><Trash2 size={14} /></button></header>
+    <div className="project-test-entry-form three-columns">
+      <label className="field"><span>参数 ID</span><input value={parameter.id} onChange={event => updateCommon({ id: event.currentTarget.value })} /></label>
+      <label className="field"><span>名称</span><input value={parameter.label} onChange={event => updateCommon({ label: event.currentTarget.value })} /></label>
+      <label className="field"><span>默认值</span><input value={parameter.defaultValue} readOnly={parameter.type === "account-profile"} onChange={event => updateCommon({ defaultValue: event.currentTarget.value })} /></label>
+      {parameter.type === "select" && <label className="field project-test-entry-wide"><span>选项（每行 value|名称）</span><textarea value={parameter.options.map(option => `${option.value}|${option.label}`).join("\n")} onChange={event => onChange({ ...parameter, options: parseValueLabelLines(event.currentTarget.value) })} /></label>}
+      {parameter.type === "page-selection" && <label className="field project-test-entry-wide"><span>页面预设（每行 value|名称）</span><textarea value={parameter.presets.map(preset => `${preset.value}|${preset.label}`).join("\n")} onChange={event => onChange({ ...parameter, presets: parseValueLabelLines(event.currentTarget.value).map(item => ({ ...item, filter: {} })) })} /></label>}
+      {parameter.type === "account-profile" && <label className="field project-test-entry-wide"><span>能力 ID</span><input value={parameter.capability} onChange={event => onChange({ ...parameter, capability: event.currentTarget.value })} /></label>}
+    </div>
+  </section>;
+}
+
+function parseValueLabelLines(value: string): Array<{ value: string; label: string }> {
+  return value.split("\n").map(line => line.trim()).filter(Boolean).map(line => {
+    const [optionValue, ...labelParts] = line.split("|");
+    return { value: optionValue.trim(), label: (labelParts.join("|").trim() || optionValue.trim()) };
+  });
+}
+
+function createSelectParameter(index: number): TestParameterDefinition {
+  return { id: `option-${index + 1}`, label: "测试选项", type: "select", defaultValue: "default", options: [{ value: "default", label: "默认" }] };
+}
+
+function createPageParameter(index: number): TestParameterDefinition {
+  return { id: index === 0 ? "pages" : `pages-${index + 1}`, label: "测试页面", type: "page-selection", defaultValue: "all", source: "page-parameters", presets: [{ value: "all", label: "全部页面", filter: {} }] };
+}
+
+function createAccountParameter(index: number): TestParameterDefinition {
+  return { id: index === 0 ? "account-profile" : `account-profile-${index + 1}`, label: "测试账号", type: "account-profile", defaultValue: "current-session", capability: "login" };
+}
+
+function emptyTestEntryDraft(targetKeys: string[] | string): ProjectTestEntryInput {
+  return {
+    id: "",
+    label: "",
+    testType: "自定义测试",
+    description: "",
+    kind: "general",
+    runnerId: "legacy-command-runner",
+    requiredCapabilities: [],
+    platforms: [],
+    targetKeys: typeof targetKeys === "string" ? (targetKeys ? [targetKeys] : []) : targetKeys,
+    parameters: [],
+    commands: { default: { executable: "", args: [], cwd: ".", env: {} } },
+  };
 }
 
 function ProjectStoragePanel({

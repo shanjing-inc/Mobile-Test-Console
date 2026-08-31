@@ -1,8 +1,8 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Device, MiniProgramRunTarget, PublicTestDefinition, TestTask } from "../src/shared/contracts.js";
-import { DeviceRow, reconcileSelectedKeysForTest, TargetRow, TestEntryDescription, testEntryOptionLabel } from "../src/web/App.js";
+import type { Device, MiniProgramRunTarget, PublicTestDefinition, TestCommandPreview, TestTask } from "../src/shared/contracts.js";
+import { DeviceRow, formatCommandLine, initializeSelectedTargetKeys, materializeTestParameters, reconcileSelectedKeysForTest, resolveCommandPreviewTargetKeys, TargetRow, TestCommandDetailsDialog, TestCommandPreviewPanel, TestEntryDescription, testEntryOptionLabel } from "../src/web/App.js";
 import { installDevicePreparation, startDevice } from "../src/web/api.js";
 
 afterEach(() => {
@@ -22,11 +22,79 @@ describe("网页 iOS 模拟器启动", () => {
 
     expect(testEntryOptionLabel({ label: "Smoke 测试", testType: "核心链路 Smoke" })).toBe("核心链路 Smoke · Smoke 测试");
     expect(testEntryOptionLabel({ label: "Smoke 测试", testType: "" })).toBe("Smoke 测试");
+    expect(testEntryOptionLabel({ label: "Smoke 测试", testType: "", source: "preset" })).toBe("预制 · Smoke 测试");
+    expect(testEntryOptionLabel({ label: "页面测试", testType: "页面回归", source: "custom" })).toBe("自定义 · 页面回归 · 页面测试");
     expect(html).toContain("test-type-label");
     expect(html).toContain("核心链路 Smoke");
     expect(html).toContain("验证登录和组织入口；适合合并前。");
     expect(legacyHtml).not.toContain("test-type-label");
     expect(legacyHtml).toContain("旧配置说明");
+  });
+
+  it("单目标展示完整命令，多目标通过详情弹窗逐条展示", () => {
+    const test: PublicTestDefinition = {
+      id: "pages",
+      label: "页面测试",
+      source: "custom",
+      testType: "页面回归",
+      description: "运行项目已有页面测试",
+      kind: "page",
+      runnerId: "legacy-command-runner",
+      requiredCapabilities: [],
+      platforms: [],
+      targetKeys: ["wechat", "alipay"],
+      parameters: [{ id: "suite", label: "套件", type: "select", defaultValue: "smoke", options: [{ value: "smoke", label: "Smoke", description: "" }] }],
+    };
+    const commands: TestCommandPreview[] = [
+      { targetKey: "wechat", targetLabel: "微信", executable: "node", args: ["qa/run.cjs", "--page", "pages/home index"], cwd: "/project", env: { API_TOKEN: "<redacted>" } },
+      { targetKey: "alipay", targetLabel: "支付宝", executable: "pnpm", args: ["test:mini", "--target", "alipay"], cwd: "/project", env: {} },
+    ];
+    const single = renderToStaticMarkup(React.createElement(TestCommandPreviewPanel, {
+      test,
+      preview: { requestKey: "single", loading: false, response: { schemaVersion: "mobile-test-console.test-command-preview.v1", testId: test.id, commands: [commands[0]] }, error: "" },
+      previewTargetCount: 1,
+      missingCapabilities: [],
+      onOpenDetails: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+    expect(single).toContain("自定义");
+    expect(single).toContain("node qa/run.cjs --page \&quot;pages/home index\&quot;");
+    expect(single).toContain("API_TOKEN=&lt;redacted&gt;");
+    expect(single).toContain("/project");
+
+    const multiple = renderToStaticMarkup(React.createElement(TestCommandPreviewPanel, {
+      test,
+      preview: { requestKey: "multiple", loading: false, response: { schemaVersion: "mobile-test-console.test-command-preview.v1", testId: test.id, commands }, error: "" },
+      previewTargetCount: 2,
+      missingCapabilities: [],
+      onOpenDetails: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+    expect(multiple).toContain("2 条目标命令");
+    expect(multiple).toContain("查看详情");
+    expect(multiple).not.toContain("pnpm test:mini");
+
+    const details = renderToStaticMarkup(React.createElement(TestCommandDetailsDialog, {
+      commands,
+      onClose: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+    expect(details).toContain("测试命令详情");
+    expect(details).toContain("node qa/run.cjs");
+    expect(details).toContain("pnpm test:mini --target alipay");
+    expect(formatCommandLine(commands[0])).toBe('node qa/run.cjs --page "pages/home index"');
+    expect(materializeTestParameters(test, { suite: "smoke", stale: "ignored" })).toEqual({ suite: "smoke" });
+
+    const runner = renderToStaticMarkup(React.createElement(TestCommandPreviewPanel, {
+      test: { ...test, runnerId: "custom-runner" },
+      preview: { requestKey: "runner", loading: false, response: { schemaVersion: "mobile-test-console.test-command-preview.v1", testId: test.id, commands: [] }, error: "" },
+      previewTargetCount: 1,
+      missingCapabilities: [],
+      onOpenDetails: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+    expect(runner).toContain("custom-runner");
+    expect(runner).toContain("将在任务启动后生成运行计划");
   });
 
   it("可启动设备展示启动按钮并禁用测试选择", () => {
@@ -175,6 +243,7 @@ describe("网页 iOS 模拟器启动", () => {
     const nextTest: PublicTestDefinition = {
       id: "smoke",
       label: "Smoke 测试",
+      source: "preset",
       testType: "",
       description: "",
       kind: "general",
@@ -193,10 +262,101 @@ describe("网页 iOS 模拟器启动", () => {
     )).toEqual(["wechat-devtools"]);
   });
 
+  it("按入口支持范围预览命令，并在用户选择目标后收窄范围", () => {
+    const targets: MiniProgramRunTarget[] = [
+      {
+        key: "wechat-devtools",
+        kind: "mini-program",
+        label: "微信开发者工具",
+        platform: "wechat",
+        runtime: "wechat-devtools",
+        appId: "wx-test",
+        concurrencyKey: "mini-wechat",
+      },
+      {
+        key: "alipay-devtools",
+        kind: "mini-program",
+        label: "支付宝开发者工具",
+        platform: "alipay",
+        runtime: "alipay-devtools",
+        appId: "ali-test",
+        concurrencyKey: "mini-alipay",
+      },
+    ];
+    const allTargetsTest: PublicTestDefinition = {
+      id: "pages",
+      label: "页面测试",
+      source: "preset",
+      testType: "页面回归",
+      description: "",
+      kind: "page",
+      runnerId: "legacy-command-runner",
+      requiredCapabilities: [],
+      platforms: [],
+      targetKeys: targets.map(target => target.key),
+      parameters: [],
+    };
+    const wechatOnlyTest = { ...allTargetsTest, id: "wechat-pages", targetKeys: ["wechat-devtools"] };
+
+    expect(resolveCommandPreviewTargetKeys([], allTargetsTest, targets)).toEqual(["wechat-devtools", "alipay-devtools"]);
+    expect(resolveCommandPreviewTargetKeys(["alipay-devtools"], allTargetsTest, targets)).toEqual(["alipay-devtools"]);
+    expect(resolveCommandPreviewTargetKeys([], wechatOnlyTest, targets)).toEqual(["wechat-devtools"]);
+    expect(resolveCommandPreviewTargetKeys([], { ...allTargetsTest, targetKeys: ["missing"] }, targets)).toEqual([]);
+    expect(initializeSelectedTargetKeys([], wechatOnlyTest, targets)).toEqual(["wechat-devtools"]);
+    expect(initializeSelectedTargetKeys([], allTargetsTest, targets)).toEqual([]);
+    expect(initializeSelectedTargetKeys(["alipay-devtools"], allTargetsTest, targets)).toEqual(["alipay-devtools"]);
+  });
+
+  it("未勾选运行目标时直接展示入口支持的命令", () => {
+    const test: PublicTestDefinition = {
+      id: "sort",
+      label: "取件码排序验证",
+      source: "preset",
+      testType: "页面排序",
+      description: "验证取件码排序",
+      kind: "page",
+      runnerId: "legacy-command-runner",
+      requiredCapabilities: [],
+      platforms: [],
+      targetKeys: ["wechat-devtools"],
+      parameters: [],
+    };
+    const html = renderToStaticMarkup(React.createElement(TestCommandPreviewPanel, {
+      test,
+      preview: {
+        requestKey: "entry-targets",
+        loading: false,
+        response: {
+          schemaVersion: "mobile-test-console.test-command-preview.v1",
+          testId: test.id,
+          commands: [{
+            targetKey: "wechat-devtools",
+            targetLabel: "微信开发者工具",
+            executable: "pnpm",
+            args: ["test:e2e:pickup-code-sort"],
+            cwd: "/project",
+            env: {},
+          }],
+        },
+        error: "",
+      },
+      previewTargetCount: 1,
+      usingEntryTargets: true,
+      missingCapabilities: [],
+      onOpenDetails: vi.fn(),
+      onCopy: vi.fn(),
+    }));
+
+    expect(html).toContain("当前展示入口支持的命令；启动前请选择运行目标。");
+    expect(html).toContain("pnpm test:e2e:pickup-code-sort");
+    expect(html).not.toContain("选择运行目标后显示完整命令");
+  });
+
   it("切换 App 测试入口时保留平台匹配设备并移除失效设备", () => {
     const nextTest: PublicTestDefinition = {
       id: "android-smoke",
       label: "Android Smoke 测试",
+      source: "preset",
       testType: "",
       description: "",
       kind: "general",

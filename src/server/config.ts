@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,6 +19,7 @@ import {
   type RunTarget,
   type TaskRetrySource,
   type TestTask,
+  type TestEntrySource,
 } from "../shared/contracts.js";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
 import { LEGACY_COMMAND_RUNNER_ID, RUNNER_ID_PATTERN } from "../runner/sdk.js";
@@ -252,6 +254,26 @@ const testSchema = z.object({
     ios: commandSchema.optional(),
     harmony: commandSchema.optional(),
   }).default({}),
+});
+
+export const TEST_ENTRIES_FILE_NAME = "mobile-test.entries.json";
+export const TEST_ENTRIES_SCHEMA_VERSION = "mobile-test-console.test-entries.v1" as const;
+
+export const testEntriesSchema = z.object({
+  schemaVersion: z.literal(TEST_ENTRIES_SCHEMA_VERSION),
+  tests: z.array(testSchema).default([]),
+}).strict().superRefine((entries, context) => {
+  const testIds = new Set<string>();
+  for (const [testIndex, test] of entries.tests.entries()) {
+    if (testIds.has(test.id)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `测试 ID 重复: ${test.id}`,
+        path: ["tests", testIndex, "id"],
+      });
+    }
+    testIds.add(test.id);
+  }
 });
 
 export const configSchema = z.object({
@@ -533,6 +555,9 @@ export interface LoadedProjectConfig {
   };
   devicePreparations?: DevicePreparationDefinition[];
   tests: TestDefinition[];
+  mainConfigTests?: TestDefinition[];
+  sidecarTests?: TestDefinition[];
+  testEntriesPath?: string;
 }
 
 export interface ResolvedCommand {
@@ -563,7 +588,22 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
   }
 
   const raw = (imported as { default?: unknown }).default ?? imported;
-  const parsed = configSchema.safeParse(raw);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ConsoleError("CONFIG_INVALID", `项目配置校验失败: 配置根节点必须是对象`);
+  }
+  const configDir = path.dirname(configPath);
+  const testEntriesPath = path.join(configDir, TEST_ENTRIES_FILE_NAME);
+  const sidecar = await loadTestEntries(testEntriesPath);
+  const mainTests = Array.isArray((raw as { tests?: unknown }).tests) ? (raw as { tests: unknown[] }).tests : [];
+  const mainIds = new Set(mainTests.flatMap(test => test && typeof test === "object" && typeof (test as { id?: unknown }).id === "string" ? [(test as { id: string }).id] : []));
+  const duplicateId = sidecar.tests.find(test => mainIds.has(test.id))?.id;
+  if (duplicateId) {
+    throw new ConsoleError(
+      "CONFIG_INVALID",
+      `测试 ID 重复: ${duplicateId}（${configPath} 与 ${testEntriesPath}）`,
+    );
+  }
+  const parsed = configSchema.safeParse({ ...raw, tests: [...mainTests, ...sidecar.tests] });
   if (!parsed.success) {
     throw new ConsoleError(
       "CONFIG_INVALID",
@@ -571,7 +611,6 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
     );
   }
 
-  const configDir = path.dirname(configPath);
   const projectRoot = path.resolve(configDir, parsed.data.project.root);
   const stateDir = parsed.data.stateDir
     ? path.resolve(configDir, parsed.data.stateDir)
@@ -581,6 +620,8 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
     parsed.data.compatibility.v1ProjectAdapterDefaults,
   );
 
+  const mainConfigTests = parsed.data.tests.slice(0, mainTests.length);
+  const sidecarTests = parsed.data.tests.slice(mainTests.length);
   return {
     ...parsed.data,
     configPath,
@@ -621,7 +662,36 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
       : parsed.data.codexRepair,
     adapter,
     stateDir,
+    mainConfigTests,
+    sidecarTests,
+    testEntriesPath,
   };
+}
+
+async function loadTestEntries(entriesPath: string): Promise<z.infer<typeof testEntriesSchema>> {
+  let content: string;
+  try {
+    content = await fs.readFile(entriesPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { schemaVersion: TEST_ENTRIES_SCHEMA_VERSION, tests: [] };
+    }
+    throw new ConsoleError("CONFIG_LOAD_FAILED", `读取测试入口文件失败: ${entriesPath}\n${error instanceof Error ? error.message : String(error)}`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch (error) {
+    throw new ConsoleError("CONFIG_INVALID", `测试入口文件不是有效 JSON: ${entriesPath}\n${error instanceof Error ? error.message : String(error)}`);
+  }
+  const parsed = testEntriesSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new ConsoleError(
+      "CONFIG_INVALID",
+      `测试入口文件校验失败: ${entriesPath}\n${parsed.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; ")}`,
+    );
+  }
+  return parsed.data;
 }
 
 async function resolveLoadedProjectAdapter(
@@ -636,10 +706,11 @@ async function resolveLoadedProjectAdapter(
   return resolveV1ProjectAdapter(undefined);
 }
 
-export function toPublicTests(tests: TestDefinition[]): PublicTestDefinition[] {
+export function toPublicTests(tests: TestDefinition[], source: TestEntrySource = "preset"): PublicTestDefinition[] {
   return tests.map(test => ({
     id: test.id,
     label: test.label,
+    source,
     testType: test.testType ?? "",
     description: test.description,
     kind: test.kind ?? "general",
@@ -650,6 +721,16 @@ export function toPublicTests(tests: TestDefinition[]): PublicTestDefinition[] {
     targetKeys: [...(test.targetKeys ?? [])],
     parameters: test.parameters,
   }));
+}
+
+export function toPublicTestsFromConfig(config: LoadedProjectConfig): PublicTestDefinition[] {
+  if (config.mainConfigTests === undefined && config.sidecarTests === undefined) {
+    return toPublicTests(config.tests, "preset");
+  }
+  return [
+    ...toPublicTests(config.mainConfigTests ?? [], "preset"),
+    ...toPublicTests(config.sidecarTests ?? [], "custom"),
+  ];
 }
 
 export function validateParameters(

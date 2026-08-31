@@ -171,6 +171,63 @@ The copy action includes both snippets in one clipboard payload and reports succ
 - Mini-program initialization writes `qa/mtc/health-check.cjs` and references it from `testing.targets[].healthCheck`.
 - A `390px` viewport has equal document `scrollWidth` and `clientWidth`.
 
+### Manual mini-program test-command wizard
+
+The mini-program execution workspace exposes `添加自定义命令` as a single-page quick dialog. The default surface contains only `显示名称`, one-line `命令`, optional `说明`, a collapsed `高级设置`, and stable `取消 / 保存命令` actions. The project overview has no command-creation action.
+
+The command field accepts familiar input such as `pnpm test:e2e:pickup-code-sort`. The shared tokenizer materializes `executable` and ordered `args`; it supports whitespace, single/double quotes, empty quoted arguments, and Windows/UNC backslashes. Compound shell operators and variable expansion render a field-level error while preserving the name and command values.
+
+The editor selects all project targets by default, derives a unique schema-valid ID from the command, and defaults to `通用测试 / 自定义测试`. `高级设置` owns target selection, test kind, business type, project-relative `cwd`, environment rows, parameter definitions, page retry, and AI guidance. Parameter controls create `select`, `page-selection`, and `account-profile` definitions while showing `{{params.<参数ID>}}` usage.
+
+Page tests display all three project integration keys: `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_CASE_IDS`, and `MTC_RETRY_CASE_RUN_IDS`. The user must check `我已确认项目脚本会读取重试范围` before saving. This gate makes page-scoped retry compatibility an explicit project contract.
+
+`保存命令` calls preview and immediately applies an applicable plan. Validation or apply failure keeps every draft value. Success closes the dialog through the execution workspace callback, refreshes the snapshot, and selects the new entry. A failed apply may expose collapsed `保存详情` with target file, resolved command, working directory, warnings, and complete JSON. AI guidance carries environment names only until the server returns its redacted plan payload.
+
+At `max-width: 640px`, the dialog uses `calc(100vw - 16px)`, collapses multi-column forms and the retry guide to one column, and gives footer actions stable equal-width tracks. At a `390px` viewport the document has no horizontal overflow, long paths and code wrap inside the dialog, the body owns vertical scrolling, and footer actions remain visible while advanced content scrolls.
+
+**Required regression checks**:
+
+- The execution workspace renders `添加自定义命令` for mini-program projects and opens one page containing name, command, optional description, and advanced settings.
+- The project overview renders no command-creation action, state, prop chain, or duplicate wizard mount.
+- The default draft selects all configured targets and uses `general / 自定义测试`; generated IDs satisfy the config schema and avoid both preset and custom IDs.
+- Invalid command syntax and failed saves preserve the name, command, description, advanced values, and selected targets.
+- Page entries cannot save until retry consumption is confirmed; general and flow entries skip that confirmation gate.
+- Preview performs no test execution or project write; apply refreshes the project test list and selects the created entry.
+- AI guidance contains the current MTC contract and target keys while environment values remain absent or `<redacted>`.
+- A `390x844` browser viewport has equal document `scrollWidth` and `clientWidth`, readable footer actions, and no overlapping fields.
+
+### Execution-workspace command confirmation
+
+The mini-program execution workspace renders preset and custom entries in one accessible `select`. The visible label contains `预制` or `自定义`, followed by the optional business test type and entry label. `添加自定义命令` opens the shared `ProjectTestEntryWizard`; successful apply refreshes the runtime snapshot, selects the returned entry ID, reconciles target selection, and starts a fresh preview.
+
+`ProjectCatalogWorkspace` may continue to export the shared wizard component, while its rendered project overview keeps onboarding and storage actions only. File ownership does not create a second user entry point.
+
+The existing right-side description column owns command confirmation. One resolved target shows the complete command line, final `cwd`, environment names with `<redacted>` values, and a copy icon. Multiple targets show only the command count and `查看详情`; the current-page modal renders one complete block per target. A Runner-owned entry with an empty command list shows the Runner ID and remains startable.
+
+```tsx
+<select id="test-entry-select" aria-label="测试入口">...</select>
+<TestCommandPreviewPanel preview={currentPreview} />
+{detailsOpen && <TestCommandDetailsDialog commands={currentPreview.commands} />}
+```
+
+Preview requests are keyed by the serialized test ID, ordered target keys, and materialized parameters. Every effect cleanup aborts its request, and response state is accepted only when its request key still matches. Mini-program start remains disabled during loading and after parse errors; it becomes available for one-command-per-target responses and successful Runner-owned empty responses.
+
+Command visibility starts with the test entry. When `selectedKeys` is empty, preview uses the intersection of the entry's supported target keys and the snapshot's configured targets. A user selection replaces that fallback range. A single supported target is selected once when its project-and-entry context becomes active; snapshot polling preserves subsequent user changes. Successful task start keeps the actual target selection so the displayed command remains available for repeated runs. Multi-target entries preserve explicit selection, and the start action always requires at least one actual selected target.
+
+At `max-width: 640px`, the form becomes one column, command tokens use `white-space: pre-wrap` plus `overflow-wrap: anywhere`, and the detail dialog uses `calc(100vw - 16px)` with an independently scrolling body.
+
+**Required regression checks**:
+
+- The select has an explicit accessible name and every option exposes its source.
+- The project overview contains no `添加测试命令` action while the execution workspace contains one `添加自定义命令` action.
+- Single-target markup includes executable, ordered args, `cwd`, and redacted env keys.
+- Multi-target summary keeps commands out of the base panel; the modal contains every target command.
+- A stale preview response cannot replace state for a newer request key.
+- Loading, parse errors, and missing target selection disable start; a successful custom Runner preview stays startable.
+- An entry displays its supported command before explicit target selection; one supported target is selected automatically, while multi-target entries remain user-controlled.
+- Starting a task preserves target selection and command visibility for the next run.
+- Desktop and `390x844` browser runs have no horizontal overflow or overlapping command controls.
+
 ---
 
 ## Accessibility

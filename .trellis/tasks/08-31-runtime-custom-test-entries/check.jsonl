@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"审核公开入口来源、命令预览脱敏和执行兼容契约"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"审核单/多命令展示、弹窗交互和窄屏布局"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"验证配置到 API 再到 UI 的类型、错误和状态流"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查解析逻辑、入口投影和向导组件是否保持单一实现"}

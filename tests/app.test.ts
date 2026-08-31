@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TaskResult, TaskStatus, TestTask } from "../src/shared/contracts.js";
-import { createApp, expandPageSelectionParameters } from "../src/server/app.js";
+import { createApp, expandPageSelectionParameters, previewTestCommands } from "../src/server/app.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
-import type { LoadedProjectConfig } from "../src/server/config.js";
+import { loadProjectConfig, type LoadedProjectConfig } from "../src/server/config.js";
 import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
@@ -21,6 +21,88 @@ afterEach(async () => {
 });
 
 describe("HTTP API", () => {
+  it("按运行目标和参数解析命令预览并拒绝无效入口", async () => {
+    const config = createMiniProgramConfig("/tmp/mtc-command-preview");
+    config.testing!.targets!.push(
+      { key: "alipay-devtools", label: "支付宝开发者工具", kind: "mini-program", platform: "alipay", runtime: "alipay-devtools", appId: "ali-test", concurrencyKey: "mini-demo-alipay" },
+      { key: "unsupported", label: "未启用目标", kind: "mini-program", platform: "other", runtime: "other-devtools", appId: "other-test", concurrencyKey: "mini-demo-other" },
+    );
+    config.tests[0].targetKeys = ["wechat-devtools", "alipay-devtools"];
+    config.tests[0].parameters = [{
+      id: "suite",
+      label: "测试套件",
+      type: "select",
+      defaultValue: "smoke",
+      options: [{ value: "smoke", label: "Smoke", description: "" }, { value: "full", label: "Full", description: "" }],
+    }];
+    config.tests[0].commands.default = {
+      executable: "node",
+      args: ["run.cjs", "--target", "{{target.key}}", "--app-id", "{{target.appId}}", "--suite", "{{params.suite}}", "--run", "{{task.runId}}"],
+      env: { ACCESS_TOKEN: "private-token" },
+    };
+
+    await expect(previewTestCommands(config, {
+      testId: "smoke",
+      targetKeys: ["wechat-devtools", "alipay-devtools"],
+      parameters: { suite: "full" },
+    })).resolves.toMatchObject({
+      commands: [
+        { targetKey: "wechat-devtools", args: ["run.cjs", "--target", "wechat-devtools", "--app-id", "wx-test", "--suite", "full", "--run", "<runtime:task.runId>"], env: { ACCESS_TOKEN: "<redacted>" } },
+        { targetKey: "alipay-devtools", args: ["run.cjs", "--target", "alipay-devtools", "--app-id", "ali-test", "--suite", "full", "--run", "<runtime:task.runId>"], env: { ACCESS_TOKEN: "<redacted>" } },
+      ],
+    });
+    await expect(previewTestCommands(config, { testId: "missing", targetKeys: ["wechat-devtools"], parameters: {} }))
+      .rejects.toThrow("测试入口不存在");
+    await expect(previewTestCommands(config, { testId: "smoke", targetKeys: ["unsupported"], parameters: { suite: "smoke" } }))
+      .rejects.toThrow("不支持运行目标");
+    await expect(previewTestCommands(config, { testId: "smoke", targetKeys: ["missing"], parameters: { suite: "smoke" } }))
+      .rejects.toThrow("运行目标不存在");
+    await expect(previewTestCommands(config, { testId: "smoke", targetKeys: ["wechat-devtools"], parameters: { unknown: "value" } }))
+      .rejects.toThrow("测试参数未声明");
+
+    config.tests.push({
+      id: "provider-only",
+      label: "Provider Only",
+      description: "",
+      runnerId: "custom-runner",
+      platforms: [],
+      targetKeys: ["wechat-devtools"],
+      parameters: [],
+      commands: {},
+    });
+    await expect(previewTestCommands(config, { testId: "provider-only", targetKeys: ["wechat-devtools"], parameters: {} }))
+      .resolves.toMatchObject({ testId: "provider-only", commands: [] });
+
+    config.tests[0].parameters = [{
+      id: "pages",
+      label: "页面范围",
+      type: "page-selection",
+      source: "page-parameters",
+      defaultValue: "all-pages",
+      presets: [{ value: "all-pages", label: "全部页面", description: "", filter: {} }],
+    }];
+    config.tests[0].commands.default.args = ["run.cjs", "--pages", "{{params.pages}}"];
+    const pageParameters: Parameters<typeof previewTestCommands>[2] = {
+      isEnabled: () => true,
+      snapshot: async () => ({
+        schemaVersion: "mobile-test-console.page-parameters.v1",
+        pages: [
+          { pageId: "pages/home", label: "首页", bundle: "main", source: "manifest", fields: [], warnings: [], status: "missing", profiles: [] },
+          { pageId: "pages/detail", label: "详情", bundle: "main", source: "manifest", fields: [], warnings: [], status: "missing", profiles: [] },
+        ],
+        recordings: [],
+        warnings: [],
+      }),
+    };
+    await expect(previewTestCommands(config, {
+      testId: "smoke",
+      targetKeys: ["wechat-devtools"],
+      parameters: { pages: "all-pages" },
+    }, pageParameters)).resolves.toMatchObject({
+      commands: [{ args: ["run.cjs", "--pages", "pages/home,pages/detail"] }],
+    });
+  });
+
   it("重测全部通过时在快照中投影来源任务为通过", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-retry-status-"));
     tempDirs.push(dir);
@@ -243,6 +325,96 @@ describe("HTTP API", () => {
       expect(activeDelete.statusCode).toBe(200);
       expect(activeDelete.json()).toMatchObject({ activeProjectId: "demo", projects: [] });
     } finally {
+      await app.close();
+    }
+  });
+
+  it("通过 API 预览并应用手动填写的小程序测试入口", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-test-entry-"));
+    tempDirs.push(dir);
+    const miniRoot = path.join(dir, "mini");
+    await fs.mkdir(miniRoot);
+    await fs.writeFile(path.join(miniRoot, "mobile-test.config.cjs"), `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "api-mini", name: "API Mini", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [{ key: "wechat", label: "微信", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-api", concurrencyKey: "api-wechat" }] },
+      tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat"], commands: { default: { executable: "node", args: ["--version"] } } }],
+    };\n`);
+    const config = await loadProjectConfig(path.join(miniRoot, "mobile-test.config.cjs"));
+    const catalog = new ProjectCatalogService(new ProjectCatalogStore(path.join(dir, "projects.json")));
+    await catalog.initialize(config);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, ["android"]),
+      tasks,
+      projectCatalog: catalog,
+    });
+    try {
+      const editor = await app.inject({ method: "GET", url: "/api/projects/api-mini/test-entry-editor" });
+      expect(editor.statusCode).toBe(200);
+      expect(editor.json()).toMatchObject({ targets: [{ key: "wechat" }], mainConfigTests: [{ id: "smoke", source: "preset" }], editableTests: [] });
+
+      const preview = await app.inject({
+        method: "POST",
+        url: "/api/projects/api-mini/test-entries/preview",
+        payload: {
+          mode: "create",
+          entry: {
+            id: "page-tests", label: "页面测试", testType: "页面回归", description: "", kind: "page",
+            runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat"], parameters: [],
+            commands: { default: { executable: "node", args: ["qa/pages.cjs", "{{retry.targetPages}}", "{{target.key}}", "{{task.id}}"], cwd: ".", env: { API_TOKEN: "secret-value" } } },
+          },
+        },
+      });
+      expect(preview.statusCode).toBe(200);
+      expect(preview.json()).toMatchObject({ projectId: "api-mini", canApply: true, commandPreview: { args: ["qa/pages.cjs", "pages/example/index", "wechat", "preview-task"] } });
+      const applied = await app.inject({ method: "POST", url: "/api/projects/api-mini/test-entries/apply", payload: { planId: preview.json().planId } });
+      expect(applied.statusCode).toBe(200);
+      expect(applied.json().editor.editableTests).toEqual([expect.objectContaining({ id: "page-tests", source: "custom" })]);
+      const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
+      expect(snapshot.json().tests).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "smoke", source: "preset" }),
+        expect.objectContaining({ id: "page-tests", source: "custom" }),
+      ]));
+      const commandPreview = await app.inject({
+        method: "POST",
+        url: "/api/test-commands/preview",
+        payload: { testId: "page-tests", targetKeys: ["wechat"], parameters: {} },
+      });
+      expect(commandPreview.statusCode).toBe(200);
+      expect(commandPreview.json()).toEqual({
+        schemaVersion: "mobile-test-console.test-command-preview.v1",
+        testId: "page-tests",
+        commands: [{
+          targetKey: "wechat",
+          targetLabel: "微信",
+          executable: "node",
+          args: ["qa/pages.cjs", "", "wechat", "<runtime:task.id>"],
+          cwd: miniRoot,
+          env: { API_TOKEN: "<redacted>" },
+        }],
+      });
+      expect(commandPreview.body).not.toContain("secret-value");
+      const duplicateTargets = await app.inject({
+        method: "POST",
+        url: "/api/test-commands/preview",
+        payload: { testId: "page-tests", targetKeys: ["wechat", "wechat"], parameters: {} },
+      });
+      expect(duplicateTargets.statusCode).toBe(400);
+      const started = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { testId: "page-tests", targetKeys: ["wechat"], parameters: {} },
+      });
+      expect(started.statusCode).toBe(200);
+
+      const invalid = await app.inject({ method: "POST", url: "/api/projects/api-mini/test-entries/preview", payload: { mode: "create", entry: {} } });
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await tasks.shutdown();
       await app.close();
     }
   });
@@ -566,6 +738,92 @@ describe("HTTP API", () => {
       });
       expect(duplicate.statusCode).toBe(400);
       expect(duplicate.json().error.code).toBe("RETRY_CASE_DUPLICATE");
+    } finally {
+      await tasks.shutdown();
+      await app.close();
+    }
+  });
+
+  it("按页面范围冻结匹配用例并校验页面输入", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-page-retry-"));
+    tempDirs.push(dir);
+    const config = createMiniProgramConfig(dir);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const taskResult: TaskResult = {
+      schemaVersion: "mobile-test-console.task-result.v1",
+      generatedAt: "2026-08-13T00:00:00.000Z",
+      taskId: "",
+      runId: "",
+      total: 3,
+      caseRunCount: 3,
+      passed: 0,
+      failed: 3,
+      warnings: [],
+      runs: [
+        createRetryResultRun("page-a-run-1", "page-a-case-1", "failed", "pages/a"),
+        createRetryResultRun("page-a-run-2", "page-a-case-2", "failed", "pages/a"),
+        createRetryResultRun("page-b-run-1", "page-b-case-1", "failed", "pages/b"),
+      ],
+    };
+    const taskResults = {
+      async load(taskId: string) {
+        const source = tasks.get(taskId);
+        return { ...taskResult, taskId, runId: source?.runId ?? "" };
+      },
+      invalidate() {},
+    } as unknown as TaskResultService;
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, []),
+      tasks,
+      taskResults,
+    });
+
+    try {
+      const sourceResponse = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { testId: "smoke", targetKeys: ["wechat-devtools"], parameters: {} },
+      });
+      const [source] = sourceResponse.json().tasks;
+      await tasks.waitForTerminal(source.id);
+
+      const pageRetry = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { targetPages: ["pages/a"] },
+      });
+      expect(pageRetry.statusCode).toBe(200);
+      expect(pageRetry.json().tasks[0]).toMatchObject({
+        retryOf: {
+          scope: "cases",
+          targetPages: ["pages/a"],
+          caseRunIds: ["page-a-run-1", "page-a-run-2"],
+          caseIds: ["page-a-case-1", "page-a-case-2"],
+          caseRuns: [
+            { caseRunId: "page-a-run-1", targetPage: "pages/a" },
+            { caseRunId: "page-a-run-2", targetPage: "pages/a" },
+          ],
+        },
+      });
+      await tasks.waitForTerminal(pageRetry.json().tasks[0].id);
+
+      const duplicate = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { targetPages: ["pages/a", "pages/a"] },
+      });
+      expect(duplicate.statusCode).toBe(400);
+      expect(duplicate.json().error.code).toBe("RETRY_PAGE_DUPLICATE");
+
+      const unknown = await app.inject({
+        method: "POST",
+        url: `/api/tasks/${source.id}/retry`,
+        payload: { targetPages: ["pages/a", "pages/missing"] },
+      });
+      expect(unknown.statusCode).toBe(404);
+      expect(unknown.json().error.code).toBe("RETRY_PAGE_UNKNOWN");
     } finally {
       await tasks.shutdown();
       await app.close();
@@ -924,14 +1182,14 @@ function createMiniProgramConfig(stateDir: string): LoadedProjectConfig {
   };
 }
 
-function createRetryResultRun(caseRunId: string, caseId: string, status: "passed" | "failed") {
+function createRetryResultRun(caseRunId: string, caseId: string, status: "passed" | "failed", targetPage = "pages/demo/index") {
   return {
     runId: caseRunId,
     caseRunId,
     caseRunCount: 1,
     caseId,
-    targetPage: "pages/demo/index",
-    launchPage: "pages/demo/index",
+    targetPage,
+    launchPage: targetPage,
     scenario: "render",
     fixture: "fixture-v1",
     platform: "wechat",

@@ -3,8 +3,9 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource, type TestTask } from "../shared/contracts.js";
-import { toPublicTests, validateParameters, type LoadedProjectConfig } from "./config.js";
+import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ApplyProjectTestEntryRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type PreviewProjectTestEntryRequest, type PreviewTestCommandsRequest, type PreviewTestCommandsResponse, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource, type TestTask } from "../shared/contracts.js";
+import { LEGACY_COMMAND_RUNNER_ID } from "../runner/sdk.js";
+import { loadProjectConfig, resolveTargetCommand, toPublicTestsFromConfig, validateParameters, type LoadedProjectConfig } from "./config.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import type { TaskManager } from "./task-manager.js";
@@ -36,7 +37,10 @@ const startRequestSchema = z.object({
 
 const retryTaskRequestSchema = z.object({
   caseRunIds: z.array(z.string().min(1)).min(1).max(500).optional(),
-}).strict();
+  targetPages: z.array(z.string().min(1)).min(1).max(500).optional(),
+}).strict().refine(value => !(value.caseRunIds && value.targetPages), {
+  message: "用例和页面只能选择一种重试范围",
+});
 
 const accountProfileProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
 
@@ -181,6 +185,80 @@ const registerProjectSchema = z.object({
   configFile: z.string().trim().min(1).default("mobile-test.config.cjs"),
 });
 
+const projectTestCommandSchema = z.object({
+  executable: z.string().trim().min(1),
+  args: z.array(z.string()),
+  cwd: z.string().trim().min(1).optional(),
+  env: z.record(z.string()).optional(),
+});
+
+const projectTestParameterSchema = z.discriminatedUnion("type", [
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    label: z.string().min(1),
+    type: z.literal("select"),
+    defaultValue: z.string().min(1),
+    options: z.array(z.object({ value: z.string().min(1), label: z.string().min(1), description: z.string().optional() })).min(1),
+  }),
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    label: z.string().min(1),
+    type: z.literal("account-profile"),
+    defaultValue: z.literal("current-session"),
+    capability: z.string().min(1),
+  }),
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    label: z.string().min(1),
+    type: z.literal("page-selection"),
+    defaultValue: z.string().min(1),
+    source: z.literal("page-parameters"),
+    presets: z.array(z.object({
+      value: z.string().min(1),
+      label: z.string().min(1),
+      description: z.string().optional(),
+      filter: z.object({ priorities: z.array(z.string()).optional(), tags: z.array(z.string()).optional(), testScopes: z.array(z.string()).optional() }),
+    })).min(1),
+  }),
+]);
+
+const projectTestEntrySchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+  label: z.string().trim().min(1),
+  testType: z.string(),
+  description: z.string(),
+  kind: z.enum(["general", "page", "flow"]),
+  runnerId: z.string().regex(/^[a-z][a-z0-9-]*$/),
+  providerId: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(),
+  requiredCapabilities: z.array(z.string()),
+  platforms: z.array(z.enum(PLATFORMS)),
+  targetKeys: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)),
+  parameters: z.array(projectTestParameterSchema),
+  commands: z.object({
+    default: projectTestCommandSchema.optional(),
+    android: projectTestCommandSchema.optional(),
+    ios: projectTestCommandSchema.optional(),
+    harmony: projectTestCommandSchema.optional(),
+  }),
+});
+
+const previewProjectTestEntrySchema = z.object({
+  mode: z.literal("create"),
+  entry: projectTestEntrySchema,
+  commandLine: z.string().trim().min(1).max(4096).optional(),
+}) satisfies z.ZodType<PreviewProjectTestEntryRequest>;
+
+const applyProjectTestEntrySchema = z.object({
+  planId: z.string().min(1),
+}) satisfies z.ZodType<ApplyProjectTestEntryRequest>;
+
+const previewTestCommandsSchema = z.object({
+  testId: z.string().min(1),
+  targetKeys: z.array(z.string().min(1)).min(1).max(100)
+    .refine(keys => new Set(keys).size === keys.length, { message: "运行目标不能重复" }),
+  parameters: z.record(z.string()),
+}).strict() satisfies z.ZodType<PreviewTestCommandsRequest>;
+
 const projectInitializationSchema = z.discriminatedUnion("family", [
   z.object({
     projectDirectory: z.string().trim().min(1),
@@ -272,6 +350,36 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/detail", async request => (
     requireProjectCatalog(options).detail(request.params.projectId)
   ));
+
+  app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/test-entry-editor", async request => (
+    requireProjectCatalog(options).testEntryEditor(request.params.projectId)
+  ));
+
+  app.post<{ Params: { projectId: string }; Body: PreviewProjectTestEntryRequest }>("/api/projects/:projectId/test-entries/preview", async request => {
+    const parsed = previewProjectTestEntrySchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return requireProjectCatalog(options).previewTestEntry(request.params.projectId, parsed.data);
+  });
+
+  app.post<{ Params: { projectId: string }; Body: ApplyProjectTestEntryRequest }>("/api/projects/:projectId/test-entries/apply", async request => {
+    const parsed = applyProjectTestEntrySchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    const response = await requireProjectCatalog(options).applyTestEntry(request.params.projectId, parsed.data);
+    if (request.params.projectId === options.config.project.id) {
+      const refreshed = await loadProjectConfig(options.config.configPath);
+      options.config.tests = refreshed.tests;
+      options.config.mainConfigTests = refreshed.mainConfigTests;
+      options.config.sidecarTests = refreshed.sidecarTests;
+      options.config.testEntriesPath = refreshed.testEntriesPath;
+    }
+    return response;
+  });
+
+  app.post<{ Body: PreviewTestCommandsRequest }>("/api/test-commands/preview", async request => {
+    const parsed = previewTestCommandsSchema.safeParse(request.body);
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    return previewTestCommands(options.config, parsed.data, pageParameters);
+  });
 
   app.post("/api/projects/select-directory", async () => {
     requireProjectCatalog(options);
@@ -381,7 +489,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
       targets: configuredRunTargets(options.config),
       deviceErrors: discovery.errors,
       deviceDiscoveryPending: discovery.refreshing,
-      tests: toPublicTests(options.config.tests),
+      tests: toPublicTestsFromConfig(options.config),
       tasks,
       codexRepairEnabled: options.config.codexRepair?.enabled === true,
       repairJobs: options.repairs?.list() ?? [],
@@ -571,24 +679,46 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     }
 
     const requestedCaseRunIds = parsed.data.caseRunIds;
+    const requestedTargetPages = parsed.data.targetPages;
     const retryOf: TaskRetrySource = {
       taskId: source.id,
       runId: source.runId,
-      scope: requestedCaseRunIds ? "cases" : "task",
+      scope: requestedCaseRunIds || requestedTargetPages ? "cases" : "task",
       attempt: options.tasks.nextRetryAttempt(source.id),
     };
-    if (requestedCaseRunIds) {
-      const uniqueCaseRunIds = [...new Set(requestedCaseRunIds)];
-      if (uniqueCaseRunIds.length !== requestedCaseRunIds.length) {
-        throw new ConsoleError("RETRY_CASE_DUPLICATE", "重试范围包含重复用例");
-      }
+    if (requestedCaseRunIds || requestedTargetPages) {
       const result = await taskResults.load(source.id);
       const runsById = new Map(result.runs.map(run => [run.caseRunId, run]));
-      const selectedRuns = uniqueCaseRunIds.map(caseRunId => {
-        const run = runsById.get(caseRunId);
-        if (!run) throw new ConsoleError("RETRY_CASE_UNKNOWN", `测试结果中不存在用例: ${caseRunId}`, 404);
-        return run;
-      });
+      const selectedRuns = requestedCaseRunIds
+        ? (() => {
+          const uniqueCaseRunIds = [...new Set(requestedCaseRunIds)];
+          if (uniqueCaseRunIds.length !== requestedCaseRunIds.length) {
+            throw new ConsoleError("RETRY_CASE_DUPLICATE", "重试范围包含重复用例");
+          }
+          return uniqueCaseRunIds.map(caseRunId => {
+            const run = runsById.get(caseRunId);
+            if (!run) throw new ConsoleError("RETRY_CASE_UNKNOWN", `测试结果中不存在用例: ${caseRunId}`, 404);
+            return run;
+          });
+        })()
+        : (() => {
+          const targetPages = requestedTargetPages!;
+          const uniqueTargetPages = [...new Set(targetPages)];
+          if (uniqueTargetPages.length !== targetPages.length) {
+            throw new ConsoleError("RETRY_PAGE_DUPLICATE", "重试范围包含重复页面");
+          }
+          const pageSet = new Set(uniqueTargetPages);
+          const matches = result.runs.filter(run => pageSet.has(run.targetPage));
+          const matchedPages = new Set(matches.map(run => run.targetPage));
+          const unknownPages = uniqueTargetPages.filter(page => !matchedPages.has(page));
+          if (unknownPages.length > 0) throw new ConsoleError("RETRY_PAGE_UNKNOWN", `测试结果中不存在页面: ${unknownPages.join(", ")}`, 404);
+          if (matches.length === 0) throw new ConsoleError("RETRY_PAGE_UNKNOWN", "测试结果中不存在可重试页面", 404);
+          return matches;
+        })();
+      const uniqueCaseRunIds = [...new Set(selectedRuns.map(run => run.caseRunId))];
+      if (uniqueCaseRunIds.length !== selectedRuns.length) {
+        throw new ConsoleError("RETRY_CASE_DUPLICATE", "测试结果中存在重复用例运行记录");
+      }
       retryOf.caseRunIds = uniqueCaseRunIds;
       retryOf.caseIds = [...new Set(selectedRuns.map(run => run.caseId).filter(Boolean))];
       retryOf.targetPages = [...new Set(selectedRuns.map(run => run.targetPage).filter(Boolean))];
@@ -775,6 +905,48 @@ function findConfiguredTarget(config: LoadedProjectConfig, targetKey: string): E
   return target as Extract<RunTarget, { kind: "mini-program" }>;
 }
 
+export async function previewTestCommands(
+  config: LoadedProjectConfig,
+  request: PreviewTestCommandsRequest,
+  pageParameters?: Pick<PageParameterService, "isEnabled" | "snapshot">,
+): Promise<PreviewTestCommandsResponse> {
+  if (config.project.integrationType !== "mini-program") {
+    throw new ConsoleError("TEST_COMMAND_PREVIEW_UNSUPPORTED", "命令预览当前仅支持小程序项目", 409);
+  }
+  const test = config.tests.find(item => item.id === request.testId);
+  if (!test) throw new ConsoleError("TEST_UNKNOWN", `测试入口不存在: ${request.testId}`, 404);
+  const parameters = validateParameters(test, request.parameters);
+  await expandPageSelectionParameters(test, parameters, pageParameters, []);
+  const supportedTargetKeys = new Set(test.targetKeys ?? []);
+  const commands = request.targetKeys.flatMap(targetKey => {
+    const target = findConfiguredTarget(config, targetKey);
+    if (!supportedTargetKeys.has(targetKey)) {
+      throw new ConsoleError("TEST_TARGET_UNSUPPORTED", `${test.label} 不支持运行目标: ${targetKey}`, 409);
+    }
+    const command = resolveTargetCommand(config, test, target, {
+      id: "<runtime:task.id>",
+      runId: "<runtime:task.runId>",
+    }, parameters);
+    if (!command) {
+      if (test.runnerId !== LEGACY_COMMAND_RUNNER_ID) return [];
+      throw new ConsoleError("COMMAND_UNAVAILABLE", `${test.label} 未配置可预览的测试命令`, 409);
+    }
+    return [{
+      targetKey: target.key,
+      targetLabel: target.label,
+      executable: command.executable,
+      args: command.args,
+      cwd: command.cwd,
+      env: Object.fromEntries(Object.keys(command.env).map(key => [key, "<redacted>" as const])),
+    }];
+  });
+  return {
+    schemaVersion: "mobile-test-console.test-command-preview.v1",
+    testId: test.id,
+    commands,
+  };
+}
+
 async function startTaskRequest(
   options: CreateAppOptions,
   accountProfiles: AccountProfileService,
@@ -832,7 +1004,7 @@ async function startTaskRequest(
 export async function expandPageSelectionParameters(
   test: LoadedProjectConfig["tests"][number],
   parameters: Record<string, string>,
-  pageParameters: PageParameterService | undefined,
+  pageParameters: Pick<PageParameterService, "isEnabled" | "snapshot"> | undefined,
   selectedDevices: Device[],
 ): Promise<void> {
   const pageParameter = test.parameters.find(item => item.type === "page-selection");

@@ -42,6 +42,13 @@ import type {
   StartAccountProfileRecordingRequest,
   TaskResultResponse,
   TestTask,
+  ProjectTestEntryEditorResponse,
+  PreviewProjectTestEntryRequest,
+  ProjectTestEntryPlan,
+  ApplyProjectTestEntryRequest,
+  ApplyProjectTestEntryResponse,
+  PreviewTestCommandsRequest,
+  PreviewTestCommandsResponse,
 } from "../shared/contracts";
 
 export class ApiError extends Error {
@@ -160,6 +167,32 @@ export function fetchProjectCatalog(): Promise<ProjectCatalogResponse> {
 
 export function fetchProjectCatalogDetail(projectId: string): Promise<ProjectCatalogDetailResponse> {
   return request<ProjectCatalogDetailResponse>(`/api/projects/${encodeURIComponent(projectId)}/detail`);
+}
+
+export function fetchProjectTestEntryEditor(projectId: string): Promise<ProjectTestEntryEditorResponse> {
+  return request<ProjectTestEntryEditorResponse>(`/api/projects/${encodeURIComponent(projectId)}/test-entry-editor`);
+}
+
+export function previewProjectTestEntry(projectId: string, body: PreviewProjectTestEntryRequest): Promise<ProjectTestEntryPlan> {
+  return request<ProjectTestEntryPlan>(`/api/projects/${encodeURIComponent(projectId)}/test-entries/preview`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function applyProjectTestEntry(projectId: string, body: ApplyProjectTestEntryRequest): Promise<ApplyProjectTestEntryResponse> {
+  return request<ApplyProjectTestEntryResponse>(`/api/projects/${encodeURIComponent(projectId)}/test-entries/apply`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function previewTestCommands(body: PreviewTestCommandsRequest, signal?: AbortSignal): Promise<PreviewTestCommandsResponse> {
+  return request<PreviewTestCommandsResponse>("/api/test-commands/preview", {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
 }
 
 export function fetchArtifactRetention(): Promise<ArtifactRetentionSnapshot> {

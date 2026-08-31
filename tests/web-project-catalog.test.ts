@@ -299,7 +299,7 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("无需参数");
   });
 
-  it("小程序项目卡展示运行环境、目标和项目 Runner 边界", () => {
+  it("小程序项目卡展示运行环境、目标和项目 Runner 边界，且不提供测试命令入口", () => {
     const miniCatalog = structuredClone(catalog);
     miniCatalog.projects[0] = {
       ...miniCatalog.projects[0],
@@ -341,6 +341,7 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("微信开发者工具");
     expect(markup).toContain("saas-mini-program-runner");
     expect(markup).toContain("复制小程序接入指南路径");
+    expect(markup).not.toContain("添加测试命令");
   });
 
   it("小程序运行环境缺少 healthCheck 时展示完整配置方法", () => {

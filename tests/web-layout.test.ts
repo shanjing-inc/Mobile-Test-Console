@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const styles = fs.readFileSync(path.resolve("src/web/styles.css"), "utf8");
 const appSource = fs.readFileSync(path.resolve("src/web/App.tsx"), "utf8");
+const projectCatalogSource = fs.readFileSync(path.resolve("src/web/ProjectCatalogWorkspace.tsx"), "utf8");
 
 function rule(selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -72,5 +73,60 @@ describe("控制台视口布局", () => {
     expect(appSource).toContain('tasks.length > 5 && <button className="run-list-more"');
     expect(rule(".run-list-toggle.collapsed svg")).toContain("transform: rotate(-90deg)");
     expect(rule(".run-list-more[aria-expanded=\"true\"] svg")).toContain("transform: rotate(180deg)");
+  });
+
+  it("小程序自定义命令使用单页快速表单和窄屏固定操作区", () => {
+    expect(projectCatalogSource).toContain('id="project-test-entry-title">添加自定义命令');
+    expect(projectCatalogSource).toContain("员工取件码排序验证");
+    expect(projectCatalogSource).toContain("pnpm test:e2e:pickup-code-sort");
+    expect(projectCatalogSource).toContain("说明（可选）");
+    expect(projectCatalogSource).toContain("高级设置");
+    expect(projectCatalogSource).toContain("默认选择项目声明的全部目标");
+    expect(projectCatalogSource).toContain("保存命令");
+    expect(projectCatalogSource).toContain("previewProjectTestEntry(projectId");
+    expect(projectCatalogSource).toContain("applyProjectTestEntry(projectId");
+    expect(projectCatalogSource).toContain("response.targets.map(target => target.key)");
+    expect(projectCatalogSource).not.toContain("testEntrySteps");
+    expect(projectCatalogSource).not.toContain("setStep(");
+    expect(projectCatalogSource).toContain("MTC_RETRY_TARGET_PAGES");
+    expect(projectCatalogSource).toContain("MTC_RETRY_CASE_IDS");
+    expect(projectCatalogSource).toContain("我已确认项目脚本会读取重试范围");
+    expect(projectCatalogSource).toContain('{{params.<参数ID>}}');
+    expect(projectCatalogSource).toContain("AI 操作引导");
+    expect(projectCatalogSource).not.toContain("scanTestCommandCandidates");
+    expect(rule(".project-test-entry-dialog")).toContain("grid-template-rows: auto minmax(0, 1fr) auto");
+    expect(rule(".project-test-entry-dialog")).toContain("max-height: min(820px, calc(100dvh - 32px))");
+    expect(rule(".project-test-entry-body")).toContain("overflow-y: auto");
+    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+    expect(mobileStyles).toContain(".project-test-entry-dialog { width: calc(100vw - 16px);");
+    expect(mobileStyles).toContain(".project-test-entry-form.two-columns, .project-test-entry-form.three-columns { grid-template-columns: 1fr;");
+    expect(mobileStyles).toContain(".project-test-entry-footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));");
+  });
+
+  it("执行页展示来源与命令详情并约束长命令的窄屏宽度", () => {
+    expect(appSource).toContain("添加自定义命令");
+    expect(appSource).toContain("onClick={() => setTestEntryWizardOpen(true)}");
+    expect(appSource).toContain("{testEntryWizardOpen && snapshot?.project.id && <ProjectTestEntryWizard");
+    expect(projectCatalogSource).not.toContain("testEntryProjectId");
+    expect(projectCatalogSource).not.toContain("onAddTestEntry");
+    expect(projectCatalogSource).not.toContain("<ProjectTestEntryWizard");
+    expect(appSource).toContain('htmlFor="test-entry-select"');
+    expect(appSource).toContain('id="test-entry-select"');
+    expect(appSource).toContain("previewTestCommands(request, controller.signal)");
+    expect(appSource).toContain("current.requestKey === commandPreviewRequestKey");
+    expect(appSource).toContain("initializeSelectedTargetKeys(previous, selectedTest, snapshot?.targets ?? [])");
+    expect(appSource).toContain('initializedTargetSelectionContext.current = ""');
+    expect(appSource).toContain("当前展示入口支持的命令；启动前请选择运行目标。");
+    const startHandler = appSource.slice(appSource.indexOf("const handleStart = async"), appSource.indexOf("const handlePageSelectionMessage"));
+    expect(startHandler).not.toContain("setSelectedKeys([])");
+    expect(appSource).toContain("测试命令详情");
+    expect(appSource).toContain('test.source === "custom" ? "自定义" : "预制"');
+    expect(rule(".test-command-line")).toContain("white-space: pre-wrap");
+    expect(rule(".test-command-line")).toContain("overflow-wrap: anywhere");
+    expect(rule(".test-command-details-dialog")).toContain("max-height: min(760px, calc(100dvh - 32px))");
+    expect(rule(".test-command-details-body")).toContain("overflow-y: auto");
+    const mobileStyles = styles.slice(styles.indexOf("@media (max-width: 640px)"));
+    expect(mobileStyles).toContain(".test-command-details-dialog { width: calc(100vw - 16px);");
+    expect(mobileStyles).toContain(".test-command-preview-multiple { align-items: stretch; flex-direction: column;");
   });
 });

@@ -18,6 +18,7 @@ import {
   resolveTargetCommand,
   resolveTargetHealthCheckCommand,
   toPublicTests,
+  toPublicTestsFromConfig,
   validateParameters,
   type LoadedProjectConfig,
 } from "../src/server/config.js";
@@ -29,6 +30,85 @@ afterEach(async () => {
 });
 
 describe("项目配置", () => {
+  it("合并独立测试入口文件并保留来源", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-test-entries-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "mini-sidecar", name: "Mini Sidecar", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [{ key: "wechat", label: "微信", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-test", concurrencyKey: "wechat" }] },
+      tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat"], commands: { default: { executable: "node", args: ["smoke.cjs"] } } }],
+    };\n`);
+    await fs.writeFile(path.join(dir, "mobile-test.entries.json"), JSON.stringify({
+      schemaVersion: "mobile-test-console.test-entries.v1",
+      tests: [{ id: "pages", label: "页面测试", kind: "page", targetKeys: ["wechat"], commands: { default: { executable: "node", args: ["pages.cjs"] } } }],
+    }));
+
+    const config = await loadProjectConfig(configPath);
+    expect(config.tests.map(test => test.id)).toEqual(["smoke", "pages"]);
+    expect(config.mainConfigTests?.map(test => test.id)).toEqual(["smoke"]);
+    expect(config.sidecarTests?.map(test => test.id)).toEqual(["pages"]);
+    expect(config.testEntriesPath).toBe(path.join(dir, "mobile-test.entries.json"));
+    expect(toPublicTestsFromConfig(config).map(test => ({ id: test.id, source: test.source }))).toEqual([
+      { id: "smoke", source: "preset" },
+      { id: "pages", source: "custom" },
+    ]);
+
+    const historicalConfig = { ...config };
+    delete historicalConfig.mainConfigTests;
+    delete historicalConfig.sidecarTests;
+    expect(toPublicTestsFromConfig(historicalConfig).map(test => test.source)).toEqual(["preset", "preset"]);
+  });
+
+  it("报告主配置与独立入口文件中的重复测试 ID", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-test-entries-duplicate-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "mini-duplicate", name: "Mini Duplicate", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [{ key: "wechat", label: "微信", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-test", concurrencyKey: "wechat" }] },
+      tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat"], commands: { default: { executable: "node", args: [] } } }],
+    };\n`);
+    await fs.writeFile(path.join(dir, "mobile-test.entries.json"), JSON.stringify({
+      schemaVersion: "mobile-test-console.test-entries.v1",
+      tests: [{ id: "smoke", label: "重复", targetKeys: ["wechat"], commands: { default: { executable: "node", args: [] } } }],
+    }));
+
+    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+      message: expect.stringContaining("mobile-test.entries.json"),
+    });
+  });
+
+  it("报告独立入口文件内部的重复测试 ID 和来源路径", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-test-entries-self-duplicate-"));
+    tempDirs.push(dir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "mini-sidecar-duplicate", name: "Mini Sidecar Duplicate", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [{ key: "wechat", label: "微信", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-test", concurrencyKey: "wechat" }] },
+      tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat"], commands: { default: { executable: "node", args: [] } } }],
+    };\n`);
+    await fs.writeFile(path.join(dir, "mobile-test.entries.json"), JSON.stringify({
+      schemaVersion: "mobile-test-console.test-entries.v1",
+      tests: [
+        { id: "pages", label: "页面测试", targetKeys: ["wechat"], commands: { default: { executable: "node", args: [] } } },
+        { id: "pages", label: "重复页面测试", targetKeys: ["wechat"], commands: { default: { executable: "node", args: [] } } },
+      ],
+    }));
+
+    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({
+      code: "CONFIG_INVALID",
+      message: expect.stringMatching(/mobile-test\.entries\.json[\s\S]*测试 ID 重复: pages/),
+    });
+  });
+
   it("加载小程序运行目标并解析 target 命令模板", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-target-"));
     tempDirs.push(dir);

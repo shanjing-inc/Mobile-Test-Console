@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"复用测试入口、命令解析、sidecar 写入和小程序运行目标契约"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"遵循执行工作区、测试入口向导、弹窗和 390px 响应式约束"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"命令预览跨共享契约、服务端 API 和 Web 状态，需要完整数据流检查"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用现有命令解析与添加入口向导，避免形成第二套实现"}

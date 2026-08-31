@@ -34,6 +34,7 @@ import {
   FolderPlus,
   RotateCcw,
   PanelsTopLeft,
+  Plus,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -60,18 +61,21 @@ import type {
   RepairJob,
   RepairJobPreview,
   ProjectFamily,
+  PreviewTestCommandsRequest,
+  PreviewTestCommandsResponse,
   PublicTestDefinition,
   RunTarget,
+  TestCommandPreview,
 } from "../shared/contracts";
 import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, PROJECT_EXECUTION_PREREQUISITE_STEP_IDS, TERMINAL_TASK_STATUSES, projectFamilyOf } from "../shared/contracts";
 import { supportsAccountProfileProvider } from "../shared/account-profile-compatibility";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults";
-import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, registerProject, retryRepairTest, retryTask, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
+import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, previewTestCommands, registerProject, retryRepairTest, retryTask, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
 import { PageParametersWorkspace } from "./PageParametersWorkspace";
 import { PageSelectionField } from "./PageSelectionField";
 import { AccountProfilesWorkspace } from "./AccountProfilesWorkspace";
 import { BusinessScriptsWorkspace } from "./BusinessScriptsWorkspace";
-import { ProjectCatalogWorkspace } from "./ProjectCatalogWorkspace";
+import { ProjectCatalogWorkspace, ProjectTestEntryWizard } from "./ProjectCatalogWorkspace";
 import {
   reconcileWorkspaceView,
   resolveWorkspaceViews,
@@ -85,10 +89,19 @@ const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
 
 type DetailTab = "overview" | "screenshots" | "api" | "evidence" | "logs";
 
+type RetryScope = { caseRunIds?: string[]; targetPages?: string[] };
+
 interface ResultState {
   taskId: string;
   loading: boolean;
   result: TaskResult | null;
+  error: string;
+}
+
+interface CommandPreviewState {
+  requestKey: string;
+  loading: boolean;
+  response: PreviewTestCommandsResponse | null;
   error: string;
 }
 
@@ -180,6 +193,14 @@ export default function App() {
   const [preparingDeviceKeys, setPreparingDeviceKeys] = useState<Set<string>>(new Set());
   const [selectedTestId, setSelectedTestId] = useState("");
   const [parameters, setParameters] = useState<Record<string, string>>({});
+  const [testEntryWizardOpen, setTestEntryWizardOpen] = useState(false);
+  const [commandDetailsOpen, setCommandDetailsOpen] = useState(false);
+  const [commandPreview, setCommandPreview] = useState<CommandPreviewState>({
+    requestKey: "",
+    loading: false,
+    response: null,
+    error: "",
+  });
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [runListCollapsed, setRunListCollapsed] = useState(false);
   const [runListExpanded, setRunListExpanded] = useState(false);
@@ -204,6 +225,7 @@ export default function App() {
     error: "",
   });
   const deletedTaskIds = useRef(new Set<string>());
+  const initializedTargetSelectionContext = useRef("");
 
   const load = useCallback(async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
@@ -222,10 +244,12 @@ export default function App() {
         || next.targets?.some(target => target.key === key)
       )));
       setFocusedTaskId(previous => reconcileFocusedTaskId(previous, next.tasks));
+      return next;
     } catch (error) {
       if (!switchingProjectId) {
         setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法读取控制服务" });
       }
+      return null;
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -310,6 +334,23 @@ export default function App() {
     selectedProjectFamily,
   ]);
   const selectedTest = tests.find(test => test.id === selectedTestId) || tests[0];
+  const selectedTestParameters = useMemo(
+    () => selectedTest ? materializeTestParameters(selectedTest, parameters) : {},
+    [parameters, selectedTest],
+  );
+  const commandPreviewTargetKeys = useMemo(() => (
+    selectedTest
+      ? resolveCommandPreviewTargetKeys(selectedKeys, selectedTest, snapshot?.targets ?? [])
+      : []
+  ), [selectedKeys, selectedTest, snapshot?.targets]);
+  const commandPreviewRequestKey = useMemo(() => {
+    if (selectedProjectFamily !== "mini-program" || !selectedTest || commandPreviewTargetKeys.length === 0) return "";
+    return JSON.stringify({
+      testId: selectedTest.id,
+      targetKeys: commandPreviewTargetKeys,
+      parameters: selectedTestParameters,
+    } satisfies PreviewTestCommandsRequest);
+  }, [commandPreviewTargetKeys, selectedProjectFamily, selectedTest, selectedTestParameters]);
   const selectedTestMissingCapabilities = useMemo(() => {
     const available = new Set((snapshot?.projectProviders ?? []).flatMap(provider => provider.capabilities.map(capability => capability.id)));
     return (selectedTest?.requiredCapabilities ?? []).filter(capability => !available.has(capability));
@@ -371,6 +412,25 @@ export default function App() {
     });
   }, [selectedTest]);
 
+  const targetSelectionContextKey = selectedProjectFamily === "mini-program"
+    && selectedProjectRuntimeReady
+    && selectedTest
+    && snapshot
+    ? `${snapshot.project.id}\u0000${selectedTest.id}`
+    : "";
+
+  useEffect(() => {
+    if (!targetSelectionContextKey || !selectedTest) {
+      initializedTargetSelectionContext.current = "";
+      return;
+    }
+    if (initializedTargetSelectionContext.current === targetSelectionContextKey) return;
+    const supportedTargetKeys = resolveCommandPreviewTargetKeys([], selectedTest, snapshot?.targets ?? []);
+    if (supportedTargetKeys.length === 0) return;
+    initializedTargetSelectionContext.current = targetSelectionContextKey;
+    setSelectedKeys(previous => initializeSelectedTargetKeys(previous, selectedTest, snapshot?.targets ?? []));
+  }, [selectedTest, snapshot?.targets, targetSelectionContextKey]);
+
   useEffect(() => {
     if (!selectedTest) return;
     setParameters(previous => {
@@ -396,6 +456,44 @@ export default function App() {
       return changed ? next : previous;
     });
   }, [accountProfiles?.profiles, accountProfiles?.providers, selectedKeys, selectedTest, snapshot?.devices]);
+
+  useEffect(() => {
+    setCommandDetailsOpen(false);
+    if (!commandPreviewRequestKey) {
+      setCommandPreview({ requestKey: "", loading: false, response: null, error: "" });
+      return;
+    }
+    const controller = new AbortController();
+    const request = JSON.parse(commandPreviewRequestKey) as PreviewTestCommandsRequest;
+    setCommandPreview({ requestKey: commandPreviewRequestKey, loading: true, response: null, error: "" });
+    const timer = window.setTimeout(() => {
+      void previewTestCommands(request, controller.signal)
+        .then(response => setCommandPreview(current => current.requestKey === commandPreviewRequestKey
+          ? { requestKey: commandPreviewRequestKey, loading: false, response, error: "" }
+          : current))
+        .catch(error => {
+          if (controller.signal.aborted) return;
+          setCommandPreview(current => current.requestKey === commandPreviewRequestKey
+            ? { requestKey: commandPreviewRequestKey, loading: false, response: null, error: error instanceof ApiError ? error.message : "无法预览测试命令" }
+            : current);
+        });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [commandPreviewRequestKey]);
+
+  const currentCommandPreview = commandPreview.requestKey === commandPreviewRequestKey
+    ? commandPreview
+    : { requestKey: commandPreviewRequestKey, loading: Boolean(commandPreviewRequestKey), response: null, error: "" };
+  const commandPreviewReady = selectedProjectFamily !== "mini-program"
+    || (Boolean(commandPreviewRequestKey)
+      && !currentCommandPreview.loading
+      && !currentCommandPreview.error
+      && Boolean(currentCommandPreview.response)
+      && (currentCommandPreview.response!.commands.length === commandPreviewTargetKeys.length
+        || currentCommandPreview.response!.commands.length === 0));
 
   const taskByTarget = useMemo(() => {
     const map = new Map<string, TestTask>();
@@ -461,6 +559,10 @@ export default function App() {
       setMessage({ kind: "error", text: selectedProjectFamily === "mini-program" ? "请选择测试套件和运行目标" : "请选择测试和至少一台设备" });
       return;
     }
+    if (selectedProjectFamily === "mini-program" && !commandPreviewReady) {
+      setMessage({ kind: "error", text: currentCommandPreview.error || "请等待测试命令预览完成" });
+      return;
+    }
     const accountParameter = selectedTest.parameters.find(parameter => parameter.type === "account-profile");
     if (accountParameter && selectedProjectFamily === "app") {
       const selectedValue = parameters[accountParameter.id] || accountParameter.defaultValue;
@@ -483,9 +585,8 @@ export default function App() {
       const result = await startTasks({
         testId: selectedTest.id,
         ...(selectedProjectFamily === "mini-program" ? { targetKeys: selectedKeys } : { deviceKeys: selectedKeys }),
-        parameters,
+        parameters: selectedTestParameters,
       });
-      setSelectedKeys([]);
       setFocusedTaskId(result.tasks[0]?.id || "");
       setMessage({ kind: "info", text: `已启动 ${result.tasks.length} 个运行任务` });
       await load();
@@ -499,6 +600,17 @@ export default function App() {
   const handlePageSelectionMessage = useCallback((next: { kind: "error" | "info"; text: string }) => {
     setMessage(next);
   }, []);
+
+  const handleTestEntryApplied = useCallback(async (entryId: string) => {
+    const nextSnapshot = await load();
+    const addedTest = nextSnapshot?.tests.find(test => test.id === entryId);
+    setSelectedTestId(entryId);
+    setParameters({});
+    setSelectedKeys(previous => addedTest
+      ? reconcileSelectedKeysForTest(previous, addedTest, "mini-program", nextSnapshot?.devices ?? [])
+      : []);
+    setTestEntryWizardOpen(false);
+  }, [load]);
 
   const handleRegisterProject = useCallback(async (request: RegisterProjectRequest): Promise<boolean> => {
     try {
@@ -537,11 +649,12 @@ export default function App() {
   const handleVerifyProject = useCallback(async (projectId: string) => {
     try {
       setProjectCatalog(await verifyProjectOnboarding(projectId));
+      await load();
       setMessage({ kind: "info", text: "项目接入状态已更新" });
     } catch (error) {
       setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "验证项目接入失败" });
     }
-  }, []);
+  }, [load]);
 
   const handlePreviewProjectInitialization = useCallback(async (
     request: PreviewProjectInitializationRequest,
@@ -711,18 +824,22 @@ export default function App() {
     }
   };
 
-  const handleRetryTask = async (task: TestTask, caseRunIds?: string[]) => {
+  const handleRetryTask = async (task: TestTask, scope: RetryScope = {}) => {
+    const caseRunIds = scope.caseRunIds;
+    const targetPages = scope.targetPages;
     setActionPending(true);
-    setRetryingCaseRunId(caseRunIds?.length === 1 ? caseRunIds[0] : caseRunIds ? "__batch__" : "__task__");
+    setRetryingCaseRunId(caseRunIds?.length === 1 ? caseRunIds[0] : targetPages ? "__pages__" : caseRunIds ? "__batch__" : "__task__");
     try {
-      await retryTask(task.id, caseRunIds ? { caseRunIds } : {});
+      await retryTask(task.id, caseRunIds ? { caseRunIds } : targetPages ? { targetPages } : {});
       setFocusedTaskId(task.id);
       setDetailTab("logs");
       setMessage({
         kind: "info",
-        text: caseRunIds
+        text: targetPages
+          ? `已启动 ${targetPages.length} 个页面的重新测试任务`
+          : caseRunIds
           ? `已启动 ${caseRunIds.length} 个用例的重新测试任务`
-          : "已启动整任务重新测试",
+          : task.target?.kind === "mini-program" ? "已启动全部页面的重新测试任务" : "已启动整任务重新测试",
       });
       await load();
     } catch (error) {
@@ -821,6 +938,15 @@ export default function App() {
       setMessage({ kind: "info", text: `已复制${label}` });
     } catch {
       setMessage({ kind: "error", text: `${label}复制失败` });
+    }
+  };
+
+  const copyCommand = async (command: TestCommandPreview) => {
+    try {
+      await navigator.clipboard.writeText(formatCommandPreviewText(command));
+      setMessage({ kind: "info", text: `已复制 ${command.targetLabel} 的测试命令` });
+    } catch {
+      setMessage({ kind: "error", text: "测试命令复制失败" });
     }
   };
 
@@ -956,13 +1082,26 @@ export default function App() {
             <section className="section-panel test-panel">
               <div className="section-heading"><div><p className="eyebrow">TEST PLAN</p><h2>{selectedProjectFamily === "mini-program" ? "启动测试套件" : "启动测试"}</h2></div><span className="selection-label">已选 {selectedKeys.length} {selectedProjectFamily === "mini-program" ? "个目标" : "台"}</span></div>
               <div className="form-grid">
-                <label className="field"><span>测试入口</span><select value={selectedTest?.id || ""} onChange={event => handleSelectTest(event.target.value)} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{testEntryOptionLabel(test)}</option>)}</select></label>
-                <TestEntryDescription
-                  testType={selectedTest?.testType ?? ""}
-                  text={selectedTestMissingCapabilities.length > 0
-                    ? `测试能力未就绪：${selectedTestMissingCapabilities.join("、")}，请在项目概览完成接入验证。`
-                    : selectedTest?.description || (selectedProjectFamily === "mini-program" ? "选择测试套件和运行目标后启动。" : "选择已声明的测试入口和设备后启动。")}
-                />
+                <div className="field test-entry-field">
+                  <span className="test-entry-field-heading"><label htmlFor="test-entry-select">测试入口</label>{selectedProjectFamily === "mini-program" && <button className="text-button" type="button" onClick={() => setTestEntryWizardOpen(true)}><Plus size={13} />添加自定义命令</button>}</span>
+                  <select id="test-entry-select" value={selectedTest?.id || ""} onChange={event => handleSelectTest(event.target.value)} disabled={tests.length === 0}><option value="" disabled>选择测试入口</option>{tests.map(test => <option key={test.id} value={test.id}>{testEntryOptionLabel(test)}</option>)}</select>
+                </div>
+                {selectedProjectFamily === "mini-program"
+                  ? <TestCommandPreviewPanel
+                      test={selectedTest}
+                      preview={currentCommandPreview}
+                      previewTargetCount={commandPreviewTargetKeys.length}
+                      usingEntryTargets={selectedKeys.length === 0 && commandPreviewTargetKeys.length > 0}
+                      missingCapabilities={selectedTestMissingCapabilities}
+                      onOpenDetails={() => setCommandDetailsOpen(true)}
+                      onCopy={command => void copyCommand(command)}
+                    />
+                  : <TestEntryDescription
+                      testType={selectedTest?.testType ?? ""}
+                      text={selectedTestMissingCapabilities.length > 0
+                        ? `测试能力未就绪：${selectedTestMissingCapabilities.join("、")}，请在项目概览完成接入验证。`
+                        : selectedTest?.description || "选择已声明的测试入口和设备后启动。"}
+                    />}
                 {selectedTest?.parameters.map(parameter => {
                   if (parameter.type === "page-selection") {
                     return <div className="field page-selection-wrapper" key={parameter.id}>
@@ -1002,7 +1141,7 @@ export default function App() {
                   </label>;
                 })}
               </div>
-              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每个运行目标独立记录结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0}><Play size={16} fill="currentColor" />启动测试</button></div>
+              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每个运行目标独立记录结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0 || !commandPreviewReady}><Play size={16} fill="currentColor" />启动测试</button></div>
             </section>
 
             <section className="section-panel runs-panel">
@@ -1025,7 +1164,7 @@ export default function App() {
               onReload={() => void loadTaskResult(focusedTask.id, true)}
               onCopy={(label, value) => void copyJson(label, value)}
               onCreateRepair={run => void handlePrepareRepair(focusedTask, run)}
-              onRetryTask={caseRunIds => void handleRetryTask(focusedTask, caseRunIds)}
+              onRetryTask={scope => void handleRetryTask(focusedTask, scope)}
               onCancelRepair={job => void handleCancelRepair(job)}
               onRetryRepair={job => void handleRetryRepairTest(job)}
               onOpenRepair={job => void handleOpenRepairTask(job)}
@@ -1046,6 +1185,17 @@ export default function App() {
             : <AccountProfilesWorkspace devices={snapshot?.devices ?? []} onMessage={setMessage} />}
         </main>
       </div>
+      {testEntryWizardOpen && snapshot?.project.id && <ProjectTestEntryWizard
+        projectId={snapshot.project.id}
+        onClose={() => setTestEntryWizardOpen(false)}
+        onApplied={handleTestEntryApplied}
+        onMessage={setMessage}
+      />}
+      {commandDetailsOpen && currentCommandPreview.response && <TestCommandDetailsDialog
+        commands={currentCommandPreview.response.commands}
+        onClose={() => setCommandDetailsOpen(false)}
+        onCopy={command => void copyCommand(command)}
+      />}
       {deleteCandidate && <DeleteConfirmation task={deleteCandidate} pending={actionPending} retrying={retryingRootTaskIds.has(deleteCandidate.id)} onCancel={() => setDeleteCandidate(null)} onConfirm={() => void handleDelete()} />}
       {projectDeleteCandidate && <ProjectDeleteConfirmation project={projectDeleteCandidate} runtimeProjectId={snapshot?.project.id ?? ""} pending={projectDeletePending} onCancel={() => setProjectDeleteCandidate(null)} onConfirm={() => void handleDeleteProject()} />}
       {repairPreview && <RepairPromptConfirmation preview={repairPreview.preview} pending={actionPending} onCancel={() => setRepairPreview(null)} onConfirm={() => void handleConfirmRepair()} />}
@@ -1140,7 +1290,7 @@ function TaskDetail({
   onReload: () => void;
   onCopy: (label: string, value: unknown) => void;
   onCreateRepair: (run: TaskResultRun) => void;
-  onRetryTask: (caseRunIds?: string[]) => void;
+  onRetryTask: (scope?: RetryScope) => void;
   onCancelRepair: (job: RepairJob) => void;
   onRetryRepair: (job: RepairJob) => void;
   onOpenRepair: (job: RepairJob) => void;
@@ -1158,7 +1308,7 @@ function TaskDetail({
     { id: "logs", label: "日志", icon: <Terminal size={14} /> },
   ];
   return <section className="section-panel detail-panel">
-    <div className="section-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>{taskTargetLabel(task)}</h2></div><div className="detail-heading-actions">{retryable && <button type="button" className="secondary-button" onClick={() => onRetryTask()} disabled={retryPending}><RotateCcw className={retrying ? "spin" : ""} size={14} />{retrying ? "正在重试" : "重试任务"}</button>}{retrying ? <span className="status-badge status-running">正在重试</span> : <StatusBadge status={task.status} />}</div></div>
+    <div className="section-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>{taskTargetLabel(task)}</h2></div><div className="detail-heading-actions">{retryable && <button type="button" className="secondary-button" onClick={() => onRetryTask()} disabled={retryPending}><RotateCcw className={retrying ? "spin" : ""} size={14} />{retrying ? "正在重试" : task.target?.kind === "mini-program" ? "重试全部页面" : "重试任务"}</button>}{retrying ? <span className="status-badge status-running">正在重试</span> : <StatusBadge status={task.status} />}</div></div>
     <div className="detail-meta"><span>{taskTargetEnvironment(task)}</span><span>{task.testLabel}</span><span>{task.phase}</span><span>{formatDuration(task.startedAt, task.finishedAt)}</span>{task.retryOf && <span>第 {task.retryOf.attempt} 次重试 · 来源 {task.retryOf.runId}</span>}</div>
     <div className="detail-tabs" role="tablist" aria-label="运行详情视图">
       {tabs.map(item => <button
@@ -1183,6 +1333,7 @@ function TaskDetail({
           repairPending={repairPending}
           retryPending={retryPending}
           retryingCaseRunId={retryingCaseRunId}
+          pageRetryEnabled={task.target?.kind === "mini-program"}
           adapter={adapter}
           onCreateRepair={onCreateRepair}
           onRetryTask={terminal ? onRetryTask : undefined}
@@ -1267,6 +1418,7 @@ export function ResultPanel({
   repairPending = false,
   retryPending = false,
   retryingCaseRunId = null,
+  pageRetryEnabled = true,
   onCreateRepair,
   onRetryTask,
   onCancelRepair,
@@ -1286,8 +1438,9 @@ export function ResultPanel({
   repairPending?: boolean;
   retryPending?: boolean;
   retryingCaseRunId?: string | null;
+  pageRetryEnabled?: boolean;
   onCreateRepair?: (run: TaskResultRun) => void;
-  onRetryTask?: (caseRunIds?: string[]) => void;
+  onRetryTask?: (scope?: RetryScope) => void;
   onCancelRepair?: (job: RepairJob) => void;
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
@@ -1343,6 +1496,7 @@ export function ResultPanel({
     repairPending={repairPending}
     retryPending={retryPending}
     retryingCaseRunId={retryingCaseRunId}
+    pageRetryEnabled={pageRetryEnabled}
     onCreateRepair={onCreateRepair}
     onRetryTask={onRetryTask}
     onCancelRepair={onCancelRepair}
@@ -1368,6 +1522,7 @@ function OverviewResult({
   repairPending,
   retryPending,
   retryingCaseRunId,
+  pageRetryEnabled,
   onCreateRepair,
   onRetryTask,
   onCancelRepair,
@@ -1390,8 +1545,9 @@ function OverviewResult({
   repairPending: boolean;
   retryPending: boolean;
   retryingCaseRunId?: string | null;
+  pageRetryEnabled: boolean;
   onCreateRepair?: (run: TaskResultRun) => void;
-  onRetryTask?: (caseRunIds?: string[]) => void;
+  onRetryTask?: (scope?: RetryScope) => void;
   onCancelRepair?: (job: RepairJob) => void;
   onRetryRepair?: (job: RepairJob) => void;
   onOpenRepair?: (job: RepairJob) => void;
@@ -1401,7 +1557,7 @@ function OverviewResult({
   const screenshots = result.runs.reduce((total, run) => total + run.screenshots.length, 0);
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
   const visibleScreenshots = visibleRuns.reduce((total, run) => total + run.screenshots.length, 0);
-  const failedCaseRunIds = visibleRuns.filter(run => run.status === "failed").map(run => run.caseRunId);
+  const failedTargetPages = [...new Set(visibleRuns.filter(run => run.status === "failed" && run.targetPage).map(run => run.targetPage))];
   const suiteOnly = result.runs.length > 0 && result.runs.every(isSuiteResultRun);
   const suiteTotals = result.runs.reduce((totals, run) => {
     const summary = suiteTestSummary(run);
@@ -1443,7 +1599,7 @@ function OverviewResult({
         : <div><ImageIcon size={15} /><strong>测试条目</strong><span>{filter === "failed" ? `失败筛选 · ${visibleRuns.length} 条` : `${visibleRuns.length} 条`} · {visibleScreenshots} 张截图</span></div>}
       <div className="analysis-run-toolbar-actions">
         {filter === "failed" && <button type="button" onClick={() => onFilterChange("all")}><List size={13} />查看全部</button>}
-        {failedCaseRunIds.length > 0 && onRetryTask && <button type="button" onClick={() => onRetryTask(failedCaseRunIds)} disabled={retryPending && retryingCaseRunId === "__batch__"}><RotateCcw size={13} />重试全部失败用例</button>}
+        {pageRetryEnabled && failedTargetPages.length > 0 && onRetryTask && <button type="button" title="重试全部失败页面" aria-label="重试全部失败页面" onClick={() => onRetryTask({ targetPages: failedTargetPages })} disabled={retryPending && retryingCaseRunId === "__pages__"}><RotateCcw size={13} />重试全部失败页面</button>}
         {screenshots > 0 && <button
           type="button"
           aria-expanded={imagesVisible}
@@ -1484,7 +1640,7 @@ function OverviewResult({
               </span>
               <ChevronRight className="analysis-run-chevron" size={16} />
             </button>
-            {onRetryTask && <button type="button" className="run-retry-button" onClick={() => onRetryTask([run.caseRunId])} disabled={retryPending && retryingCaseRunId === run.caseRunId} aria-label={`重新测试 ${run.caseId || run.targetPage || run.runId}`}><RotateCcw size={13} />重新测试</button>}
+            {onRetryTask && <button type="button" className="run-retry-button" onClick={() => onRetryTask({ caseRunIds: [run.caseRunId] })} disabled={retryPending && retryingCaseRunId === run.caseRunId} aria-label={`重新测试 ${run.caseId || run.targetPage || run.runId}`}><RotateCcw size={13} />重新测试</button>}
             {imagesVisible && run.screenshots.length > 0 && <RunScreenshotPreview taskId={taskId} run={run} />}
           </div>
           {selected && <RunDiagnosticDetail
@@ -1922,9 +2078,56 @@ export function reconcileSelectedKeysForTest(
   return previous.filter(key => allowedKeys.has(key));
 }
 
+// 未选择目标时使用入口支持范围展示命令；运行选择状态仍由用户显式控制。
 // eslint-disable-next-line react-refresh/only-export-components
-export function testEntryOptionLabel(test: Pick<PublicTestDefinition, "label" | "testType">): string {
-  return test.testType ? `${test.testType} · ${test.label}` : test.label;
+export function resolveCommandPreviewTargetKeys(
+  selectedKeys: string[],
+  test: PublicTestDefinition,
+  targets: RunTarget[],
+): string[] {
+  const configuredKeys = new Set(targets.map(target => target.key));
+  const declaredTargetKeys = test.targetKeys ?? [];
+  const supportedKeys = declaredTargetKeys.length > 0
+    ? new Set(declaredTargetKeys)
+    : configuredKeys;
+  const requestedKeys = selectedKeys.length > 0
+    ? selectedKeys
+    : targets.map(target => target.key);
+  return requestedKeys.filter(key => configuredKeys.has(key) && supportedKeys.has(key));
+}
+
+// 入口首次生效时补齐唯一目标；已有有效选择和多目标入口继续由用户控制。
+// eslint-disable-next-line react-refresh/only-export-components
+export function initializeSelectedTargetKeys(
+  previous: string[],
+  test: PublicTestDefinition,
+  targets: RunTarget[],
+): string[] {
+  const supportedTargetKeys = resolveCommandPreviewTargetKeys([], test, targets);
+  const supported = new Set(supportedTargetKeys);
+  const reconciled = previous.filter(key => supported.has(key));
+  return reconciled.length === 0 && supportedTargetKeys.length === 1
+    ? supportedTargetKeys
+    : reconciled;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function materializeTestParameters(
+  test: PublicTestDefinition,
+  values: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(test.parameters.map(parameter => [
+    parameter.id,
+    Object.hasOwn(values, parameter.id) ? values[parameter.id] : parameter.defaultValue,
+  ]));
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function testEntryOptionLabel(
+  test: Pick<PublicTestDefinition, "label" | "testType"> & Partial<Pick<PublicTestDefinition, "source">>,
+): string {
+  const label = test.testType ? `${test.testType} · ${test.label}` : test.label;
+  return test.source ? `${test.source === "custom" ? "自定义" : "预制"} · ${label}` : label;
 }
 
 export function TestEntryDescription({ testType, text }: { testType: string; text: string }) {
@@ -1932,6 +2135,102 @@ export function TestEntryDescription({ testType, text }: { testType: string; tex
     {testType && <span className="test-type-label">{testType}</span>}
     <span>{text}</span>
   </div>;
+}
+
+export function TestCommandPreviewPanel({
+  test,
+  preview,
+  previewTargetCount,
+  usingEntryTargets = false,
+  missingCapabilities,
+  onOpenDetails,
+  onCopy,
+}: {
+  test?: PublicTestDefinition;
+  preview: CommandPreviewState;
+  previewTargetCount: number;
+  usingEntryTargets?: boolean;
+  missingCapabilities: string[];
+  onOpenDetails: () => void;
+  onCopy: (command: TestCommandPreview) => void;
+}) {
+  const commands = preview.response?.commands ?? [];
+  return <section className="test-description test-command-preview" aria-live="polite">
+    <header className="test-command-preview-heading">
+      <span className={`test-entry-source ${test?.source ?? "preset"}`}>{test?.source === "custom" ? "自定义" : "预制"}</span>
+      {test?.testType && <span className="test-type-label">{test.testType}</span>}
+      <span>{test?.description || "确认当前入口实际调用的测试命令。"}</span>
+    </header>
+    {missingCapabilities.length > 0
+      ? <div className="test-command-preview-error"><AlertCircle size={14} />测试能力未就绪：{missingCapabilities.join("、")}</div>
+      : previewTargetCount === 0
+        ? <p className="test-command-preview-empty">当前入口没有可用运行目标，暂时无法解析命令。</p>
+        : preview.loading
+          ? <p className="test-command-preview-loading"><LoaderCircle className="spin" size={14} />正在解析测试命令</p>
+          : preview.error
+            ? <div className="test-command-preview-error"><AlertCircle size={14} />{preview.error}</div>
+            : <>
+                {usingEntryTargets && <p className="test-command-preview-scope">当前展示入口支持的命令；启动前请选择运行目标。</p>}
+                {commands.length === 1
+                  ? <CommandPreviewContent command={commands[0]} onCopy={onCopy} />
+                  : preview.response && commands.length === 0
+                    ? <div className="test-command-preview-runner"><Terminal size={14} /><span><strong>{test?.runnerId}</strong> 将在任务启动后生成运行计划。</span></div>
+                    : <div className="test-command-preview-multiple">
+                        <div><strong>{commands.length} 条目标命令</strong><span>每个运行目标会创建独立任务并使用各自解析后的命令。</span></div>
+                        <button className="secondary-button" type="button" onClick={onOpenDetails}><Eye size={14} />查看详情</button>
+                      </div>}
+              </>}
+  </section>;
+}
+
+function CommandPreviewContent({ command, onCopy }: { command: TestCommandPreview; onCopy: (command: TestCommandPreview) => void }) {
+  const envEntries = Object.entries(command.env);
+  return <div className="test-command-preview-content">
+    <div className="test-command-preview-target"><strong>{command.targetLabel}</strong><code>{command.targetKey}</code><button className="icon-button" type="button" onClick={() => onCopy(command)} title="复制完整命令" aria-label={`复制 ${command.targetLabel} 的完整命令`}><Copy size={13} /></button></div>
+    <pre className="test-command-line">{formatCommandLine(command)}</pre>
+    <div className="test-command-preview-meta">
+      <span><strong>cwd</strong><code>{command.cwd}</code></span>
+      <span><strong>env</strong><code>{envEntries.length > 0 ? envEntries.map(([key, value]) => `${key}=${value}`).join(" ") : "未配置"}</code></span>
+    </div>
+  </div>;
+}
+
+export function TestCommandDetailsDialog({
+  commands,
+  onClose,
+  onCopy,
+}: {
+  commands: TestCommandPreview[];
+  onClose: () => void;
+  onCopy: (command: TestCommandPreview) => void;
+}) {
+  return <div className="confirm-overlay" role="presentation">
+    <section className="confirm-dialog test-command-details-dialog" role="dialog" aria-modal="true" aria-labelledby="test-command-details-title">
+      <header className="test-command-details-header">
+        <div><p className="eyebrow">RESOLVED COMMANDS</p><h2 id="test-command-details-title">测试命令详情</h2></div>
+        <button className="icon-button" type="button" onClick={onClose} title="关闭" aria-label="关闭测试命令详情"><XCircle size={17} /></button>
+      </header>
+      <div className="test-command-details-body">
+        {commands.map(command => <CommandPreviewContent key={command.targetKey} command={command} onCopy={onCopy} />)}
+      </div>
+      <footer className="confirm-actions"><button className="secondary-button" type="button" onClick={onClose}>关闭</button></footer>
+    </section>
+  </div>;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function formatCommandLine(command: Pick<TestCommandPreview, "executable" | "args">): string {
+  return [command.executable, ...command.args].map(formatCommandToken).join(" ");
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function formatCommandPreviewText(command: TestCommandPreview): string {
+  const env = Object.entries(command.env).map(([key, value]) => `${key}=${value}`).join(" ") || "未配置";
+  return [formatCommandLine(command), `cwd: ${command.cwd}`, `env: ${env}`].join("\n");
+}
+
+function formatCommandToken(token: string): string {
+  return token && /^[A-Za-z0-9_./:@%+=,-]+$/.test(token) ? token : JSON.stringify(token);
 }
 
 export function DeleteConfirmation({ task, pending, retrying = false, onCancel, onConfirm }: { task: Pick<TestTask, "testLabel" | "device" | "target">; pending: boolean; retrying?: boolean; onCancel: () => void; onConfirm: () => void }) {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -24,13 +25,19 @@ import {
   type ProjectSetupApplyResponse,
   type ProjectSetupPlan,
   type ProjectTestEntryCheck,
+  type ApplyProjectTestEntryResponse,
+  type ApplyProjectTestEntryRequest,
+  type PreviewProjectTestEntryRequest,
+  type ProjectTestEntryPlan,
+  type ProjectTestEntryEditorResponse,
   type ProjectTestingManifest,
   type ProjectToolCheck,
   type PreviewProjectInitializationRequest,
   type RegisterProjectRequest,
 } from "../shared/contracts.js";
+import { parseTestCommandLine, TestCommandLineError } from "../shared/test-command-line.js";
 import { resolveDeviceExecutable, SystemCommandRunner, type CommandRunner } from "./command-runner.js";
-import { loadProjectConfig, resolveTargetHealthCheckCommand, toPublicTests, type LoadedProjectConfig } from "./config.js";
+import { configSchema, loadProjectConfig, resolveTargetCommand, resolveTargetHealthCheckCommand, TEST_ENTRIES_SCHEMA_VERSION, toPublicTests, toPublicTestsFromConfig, type LoadedProjectConfig, type TestDefinition } from "./config.js";
 import { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import { ResultBundleStore } from "./result-bundle-store.js";
@@ -145,6 +152,7 @@ export class ProjectCatalogService {
   private readonly projects = new Map<string, ProjectCatalogEntry>();
   private activeProjectId = "";
   private operationQueue = Promise.resolve();
+  private readonly testEntryPlans = new Map<string, PreviewProjectTestEntryRequest>();
 
   constructor(
     private readonly store: ProjectCatalogStore,
@@ -213,11 +221,157 @@ export class ProjectCatalogService {
     }
     return {
       project: structuredClone(entry),
-      tests: toPublicTests(config.tests),
+      tests: toPublicTestsFromConfig(config),
       executionReady: PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.every(id => (
         entry.onboarding.find(step => step.id === id)?.status === "verified"
       )),
     };
+  }
+
+  async testEntryEditor(projectId: string): Promise<ProjectTestEntryEditorResponse> {
+    const entry = this.projects.get(projectId);
+    if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
+    const config = await this.loadEntryConfig(entry);
+    return {
+      schemaVersion: "mobile-test-console.project-test-entry-editor.v1",
+      project: structuredClone(entry),
+      targets: structuredClone(config.testing?.targets ?? []),
+      mainConfigTests: toPublicTests(config.mainConfigTests ?? config.tests, "preset"),
+      editableTests: toPublicTests(config.sidecarTests ?? [], "custom"),
+      entriesPath: config.testEntriesPath ?? path.join(path.dirname(entry.configPath), "mobile-test.entries.json"),
+    };
+  }
+
+  async previewTestEntry(projectId: string, input: PreviewProjectTestEntryRequest): Promise<ProjectTestEntryPlan> {
+    const built = await this.buildTestEntryPlan(projectId, input);
+    this.testEntryPlans.set(built.planId, structuredClone(input));
+    if (this.testEntryPlans.size > 100) this.testEntryPlans.delete(this.testEntryPlans.keys().next().value!);
+    return built;
+  }
+
+  async applyTestEntry(projectId: string, input: ApplyProjectTestEntryRequest): Promise<ApplyProjectTestEntryResponse> {
+    const request = this.testEntryPlans.get(input.planId);
+    if (!request) throw new ConsoleError("PROJECT_TEST_ENTRY_PLAN_UNKNOWN", "测试入口预览计划不存在或已经失效", 409);
+    const plan = await this.runExclusive(async () => {
+      const entry = this.projects.get(projectId);
+      if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
+      const entriesPath = path.join(path.dirname(entry.configPath), "mobile-test.entries.json");
+      const currentPlanId = await createTestEntryPlanId(projectId, entry.configPath, entriesPath, request);
+      if (currentPlanId !== input.planId) {
+        throw new ConsoleError("PROJECT_TEST_ENTRY_PLAN_STALE", "测试入口文件或项目配置已变化，请重新预览", 409);
+      }
+      const currentPlan = await this.buildTestEntryPlan(projectId, request);
+      if (currentPlan.planId !== input.planId) {
+        throw new ConsoleError("PROJECT_TEST_ENTRY_PLAN_STALE", "测试入口文件或项目配置已变化，请重新预览", 409);
+      }
+      await assertPathInsideProject(entry.root, currentPlan.entriesPath);
+      const nextPath = `${currentPlan.entriesPath}.next-${process.pid}-${Date.now()}`;
+      const backupPath = `${currentPlan.entriesPath}.bak`;
+      const backupNextPath = `${nextPath}.bak`;
+      const existing = await fs.stat(currentPlan.entriesPath).catch(() => null);
+      try {
+        await fs.writeFile(nextPath, currentPlan.contentPreview, {
+          flag: "wx",
+          mode: existing?.isFile() ? existing.mode : 0o600,
+        });
+        if (existing?.isFile()) {
+          await fs.copyFile(currentPlan.entriesPath, backupNextPath, fsConstants.COPYFILE_EXCL);
+          await fs.rm(backupPath, { force: true });
+          await fs.rename(backupNextPath, backupPath);
+        }
+        await fs.rename(nextPath, currentPlan.entriesPath);
+      } catch (error) {
+        await Promise.all([
+          fs.rm(nextPath, { force: true }),
+          fs.rm(backupNextPath, { force: true }),
+        ]);
+        throw error;
+      }
+      entry.updatedAt = new Date().toISOString();
+      await this.saveEntry(entry);
+      return currentPlan;
+    });
+    this.testEntryPlans.delete(input.planId);
+    return { plan, editor: await this.testEntryEditor(projectId) };
+  }
+
+  private async buildTestEntryPlan(projectId: string, input: PreviewProjectTestEntryRequest): Promise<ProjectTestEntryPlan> {
+    const entry = this.projects.get(projectId);
+    if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
+    if (entry.integrationType !== "mini-program") {
+      throw new ConsoleError("PROJECT_TEST_ENTRY_UNSUPPORTED", "添加测试命令引导当前仅支持小程序项目", 409);
+    }
+    const request = materializeTestEntryCommandLine(input);
+    if (request.entry.runnerId !== "legacy-command-runner") {
+      throw new ConsoleError("PROJECT_TEST_ENTRY_RUNNER_UNSUPPORTED", "手动测试命令需要使用 legacy-command-runner", 409);
+    }
+    const config = await this.loadEntryConfig(entry);
+    if (config.tests.some(test => test.id === request.entry.id)) {
+      throw new ConsoleError("PROJECT_TEST_ENTRY_DUPLICATE", `测试 ID 已存在: ${request.entry.id}`, 409);
+    }
+    const parsed = configSchema.safeParse({ ...config, tests: [...config.tests, request.entry] });
+    if (!parsed.success) {
+      throw new ConsoleError("CONFIG_INVALID", `测试入口配置校验失败: ${parsed.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; ")}`, 409);
+    }
+    const test = parsed.data.tests.at(-1) as TestDefinition;
+    await validateTestCommandPaths(config.project.root, test);
+    const targetDefinition = config.testing?.targets?.find(target => test.targetKeys?.includes(target.key));
+    if (!targetDefinition) throw new ConsoleError("TARGET_UNKNOWN", "请选择项目已声明的小程序运行目标", 409);
+    const target = {
+      key: targetDefinition.key,
+      kind: "mini-program" as const,
+      label: targetDefinition.label,
+      platform: targetDefinition.platform,
+      runtime: targetDefinition.runtime,
+      appId: targetDefinition.appId,
+      concurrencyKey: targetDefinition.concurrencyKey,
+      ...(targetDefinition.extensions ? { extensions: structuredClone(targetDefinition.extensions) } : {}),
+    };
+    const parameters = Object.fromEntries(test.parameters.map(parameter => [parameter.id, parameter.defaultValue]));
+    const commandPreview = resolveTargetCommand(config, test, target, {
+      id: "preview-task",
+      runId: "preview-run",
+      retryOf: {
+        taskId: "source-task",
+        runId: "source-run",
+        scope: "cases",
+        attempt: 1,
+        caseRunIds: ["case-run-1"],
+        caseIds: ["case-1"],
+        targetPages: ["pages/example/index"],
+      },
+    }, parameters);
+    if (!commandPreview) throw new ConsoleError("COMMAND_UNAVAILABLE", "测试入口需要声明 default 命令", 409);
+    const sidecar = {
+      schemaVersion: TEST_ENTRIES_SCHEMA_VERSION,
+      tests: [...(config.sidecarTests ?? []), test],
+    };
+    const contentPreview = `${JSON.stringify(sidecar, null, 2)}\n`;
+    const planId = await createTestEntryPlanId(projectId, entry.configPath, config.testEntriesPath ?? path.join(path.dirname(entry.configPath), "mobile-test.entries.json"), input);
+    return {
+      schemaVersion: "mobile-test-console.project-test-entry-plan.v1",
+      planId,
+      projectId,
+      entriesPath: config.testEntriesPath ?? path.join(path.dirname(entry.configPath), "mobile-test.entries.json"),
+      contentPreview,
+      commandPreview,
+      warnings: test.kind === "page" ? ["项目脚本需要读取 MTC_RETRY_TARGET_PAGES 等重试环境变量并映射到原有页面筛选参数。"] : [],
+      aiGuidance: buildTestEntryAiGuidance(entry, config, request),
+      canApply: true,
+    };
+  }
+
+  private async loadEntryConfig(entry: ProjectCatalogEntry): Promise<LoadedProjectConfig> {
+    try {
+      const config = await loadProjectConfig(entry.configPath);
+      if (config.project.id !== entry.id || config.project.root !== entry.root) {
+        throw new ConsoleError("PROJECT_CONFIG_INVALID", "项目配置与登记信息不一致", 409);
+      }
+      return config;
+    } catch (error) {
+      if (error instanceof ConsoleError) throw error;
+      throw new ConsoleError("PROJECT_CONFIG_INVALID", `项目配置无法加载: ${errorMessage(error)}`, 409);
+    }
   }
 
   async register(input: RegisterProjectRequest): Promise<ProjectCatalogResponse> {
@@ -339,7 +493,7 @@ export class ProjectCatalogService {
         `配置已加载，声明 ${config.tests.length} 个测试入口`,
         [],
         checkedAt,
-        { testEntries: createTestEntryChecks(toPublicTests(config.tests)) },
+        { testEntries: createTestEntryChecks(toPublicTestsFromConfig(config)) },
       );
 
       await this.verifyDevices(next, config, checkedAt);
@@ -843,6 +997,96 @@ function createTestEntryChecks(tests: ReturnType<typeof toPublicTests>): Project
     targetKeys: [...(test.targetKeys ?? [])],
     parameterLabels: test.parameters.map(parameter => parameter.label),
   }));
+}
+
+async function validateTestCommandPaths(root: string, test: TestDefinition): Promise<void> {
+  for (const command of Object.values(test.commands)) {
+    if (command?.cwd) await assertPathInsideProject(root, path.resolve(root, command.cwd));
+  }
+}
+
+async function assertPathInsideProject(root: string, candidate: string): Promise<void> {
+  const rootReal = await fs.realpath(root);
+  const absolute = path.resolve(candidate);
+  const relative = path.relative(root, absolute);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ConsoleError("PROJECT_TEST_ENTRY_PATH_OUTSIDE", `命令工作目录需要位于项目内: ${candidate}`, 409);
+  }
+  let existing = absolute;
+  while (!(await fs.stat(existing).catch(() => null))) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const existingReal = await fs.realpath(existing);
+  const resolved = path.resolve(existingReal, path.relative(existing, absolute));
+  const realRelative = path.relative(rootReal, resolved);
+  if (realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+    throw new ConsoleError("PROJECT_TEST_ENTRY_PATH_OUTSIDE", `命令工作目录解析后需要位于项目内: ${candidate}`, 409);
+  }
+}
+
+function buildTestEntryAiGuidance(
+  project: ProjectCatalogEntry,
+  config: LoadedProjectConfig,
+  request: PreviewProjectTestEntryRequest,
+): string {
+  const redacted = structuredClone(request.entry);
+  for (const command of Object.values(redacted.commands)) {
+    if (command?.env) command.env = Object.fromEntries(Object.keys(command.env).map(key => [key, "<redacted>"]));
+  }
+  return [
+    `请帮助我检查 ${project.name} 的 MTC 测试入口表单。`,
+    "命令由项目维护，请保持 executable、args、cwd、env 的结构化形式，不要合并成 shell 字符串。",
+    `可用运行目标：${(config.testing?.targets ?? []).map(target => `${target.key} (${target.runtime})`).join("、") || "无"}。`,
+    "页面重试由项目脚本读取 MTC_RETRY_TARGET_PAGES、MTC_RETRY_CASE_IDS、MTC_RETRY_CASE_RUN_IDS。",
+    "请只返回字段修正建议，所有环境变量值已脱敏：",
+    JSON.stringify(redacted, null, 2),
+  ].join("\n");
+}
+
+function materializeTestEntryCommandLine(input: PreviewProjectTestEntryRequest): PreviewProjectTestEntryRequest {
+  if (input.commandLine === undefined) return input;
+  try {
+    const parsed = parseTestCommandLine(input.commandLine);
+    const current = input.entry.commands.default;
+    return {
+      ...input,
+      commandLine: input.commandLine.trim(),
+      entry: {
+        ...input.entry,
+        commands: {
+          ...input.entry.commands,
+          default: {
+            executable: parsed.executable,
+            args: parsed.args,
+            cwd: current?.cwd ?? ".",
+            env: current?.env ?? {},
+          },
+        },
+      },
+    };
+  } catch (error) {
+    if (error instanceof TestCommandLineError) {
+      throw new ConsoleError("PROJECT_TEST_ENTRY_COMMAND_INVALID", error.message, 409);
+    }
+    throw error;
+  }
+}
+
+async function createTestEntryPlanId(
+  projectId: string,
+  configPath: string,
+  entriesPath: string,
+  request: PreviewProjectTestEntryRequest,
+): Promise<string> {
+  const [configContent, entriesContent] = await Promise.all([
+    fs.readFile(configPath, "utf8"),
+    fs.readFile(entriesPath, "utf8").catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? "" : Promise.reject(error)),
+  ]);
+  return createHash("sha256")
+    .update(projectId).update("\0").update(configContent).update("\0").update(entriesContent).update("\0").update(JSON.stringify(request))
+    .digest("hex");
 }
 
 function createCapabilityChecks(
