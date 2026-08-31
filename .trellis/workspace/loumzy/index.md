@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
+- **Total Sessions**: 21
 - **Last Active**: 2026-08-31
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~652 | Active |
+| `journal-1.md` | ~689 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-08-31 | 审核并提交测试入口命令链路 | `84fa480`, `23bbfd21` | `main` |
 | 20 | 2026-08-31 | 执行页自定义测试入口与命令预览 | `88c8da4` | `main` |
 | 19 | 2026-08-31 | 小程序页面重试与旧测试命令接入 | `0bfde1d` | `main` |
 | 18 | 2026-08-24 | 默认展示最近五条运行记录 | `119e6fc` | `main` |

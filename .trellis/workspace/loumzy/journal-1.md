@@ -650,3 +650,40 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 21: 审核并提交测试入口命令链路
+<!-- trellis-session: v=2 fp=f47c297abc54de56 -->
+
+**Date**: 2026-08-31
+**Task**: 审核并提交测试入口命令链路
+**Branch**: `main`
+
+### Summary
+
+审核 MTC 测试入口命令预览与 SaaS 取件码排序预制入口，修复计划响应脱敏、sidecar 路径边界、App 批量重试兼容和跨页排序回归覆盖，并分别形成独立提交。
+
+### Main Changes
+
+- MTC 预览与应用响应统一脱敏环境变量，sidecar 在读取和摘要前执行真实路径边界校验。
+- SaaS 增加员工取件码排序预制入口，并使用 53 条跨页逆序边界验证全量重排。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `84fa480` | fix(mtc): 加固测试入口预览与重试兼容 |
+| `23bbfd21` | 功能：增加员工取件码排序验证入口 |
+
+### Testing
+
+- [OK] MTC lint、typecheck、43 文件 396 项测试、build、schema 和 package 检查通过。
+- [OK] SaaS 定向 9 文件 65 项测试通过；范围 ESLint 通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 保留 MTC 重试任务改动及 SaaS 页面矩阵诊断任务改动，继续由各自任务处理。
