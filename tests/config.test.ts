@@ -109,6 +109,31 @@ describe("项目配置", () => {
     });
   });
 
+  it("拒绝通过符号链接读取项目外的独立测试入口文件", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-test-entries-symlink-"));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-test-entries-outside-"));
+    tempDirs.push(dir, outsideDir);
+    const configPath = path.join(dir, "mobile-test.config.cjs");
+    await fs.writeFile(configPath, `module.exports = {
+      schemaVersion: "mobile-test-console.config.v1",
+      project: { id: "mini-symlink", name: "Mini Symlink", root: ".", integrationType: "mini-program" },
+      deviceProviders: [],
+      testing: { targets: [{ key: "wechat", label: "微信", kind: "mini-program", platform: "wechat", runtime: "devtools", appId: "wx-test", concurrencyKey: "wechat" }] },
+      tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat"], commands: { default: { executable: "node", args: [] } } }],
+    };\n`);
+    const outsideEntriesPath = path.join(outsideDir, "entries.json");
+    await fs.writeFile(outsideEntriesPath, JSON.stringify({
+      schemaVersion: "mobile-test-console.test-entries.v1",
+      tests: [],
+    }));
+    await fs.symlink(outsideEntriesPath, path.join(dir, "mobile-test.entries.json"));
+
+    await expect(loadProjectConfig(configPath)).rejects.toMatchObject({
+      code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE",
+      message: expect.stringContaining("测试入口文件解析后需要位于项目内"),
+    });
+  });
+
   it("加载小程序运行目标并解析 target 命令模板", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-target-"));
     tempDirs.push(dir);

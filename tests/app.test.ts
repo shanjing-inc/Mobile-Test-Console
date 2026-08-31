@@ -371,8 +371,10 @@ describe("HTTP API", () => {
       });
       expect(preview.statusCode).toBe(200);
       expect(preview.json()).toMatchObject({ projectId: "api-mini", canApply: true, commandPreview: { args: ["qa/pages.cjs", "pages/example/index", "wechat", "preview-task"] } });
+      expect(preview.body).not.toContain("secret-value");
       const applied = await app.inject({ method: "POST", url: "/api/projects/api-mini/test-entries/apply", payload: { planId: preview.json().planId } });
       expect(applied.statusCode).toBe(200);
+      expect(applied.body).not.toContain("secret-value");
       expect(applied.json().editor.editableTests).toEqual([expect.objectContaining({ id: "page-tests", source: "custom" })]);
       const snapshot = await app.inject({ method: "GET", url: "/api/snapshot" });
       expect(snapshot.json().tests).toEqual(expect.arrayContaining([

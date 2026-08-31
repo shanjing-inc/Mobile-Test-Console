@@ -55,6 +55,9 @@ describe("项目目录与接入验证", () => {
     });
 
     expect(preview.commandPreview).toMatchObject({ executable: "node", args: ["qa/page-tests.cjs", "--pages", "all"], cwd: root });
+    expect(preview.commandPreview.env).toEqual({ PROJECT_TOKEN: "<redacted>" });
+    expect(preview.contentPreview).toContain('"PROJECT_TOKEN": "<redacted>"');
+    expect(preview.contentPreview).not.toContain("secret");
     expect(preview.aiGuidance).toContain('"PROJECT_TOKEN": "<redacted>"');
     expect(preview.aiGuidance).not.toContain("secret");
     await expect(fs.stat(preview.entriesPath)).rejects.toMatchObject({ code: "ENOENT" });
@@ -81,12 +84,14 @@ describe("项目目录与接入验证", () => {
         commands: { default: { executable: "node", args: ["qa/flow-tests.cjs"] } },
       },
     });
+    expect(secondPreview.contentPreview).not.toContain("secret");
     await service.applyTestEntry("manual-mini", { planId: secondPreview.planId });
     expect((await fs.stat(entriesPath)).mode & 0o777).toBe(0o640);
     expect(await fs.readFile(outsideFile, "utf8")).toBe("outside-content");
     expect((await fs.lstat(backupPath)).isSymbolicLink()).toBe(false);
     const backup = JSON.parse(await fs.readFile(backupPath, "utf8")) as { tests: Array<{ id: string }> };
     expect(backup.tests.map(test => test.id)).toEqual(["page-tests"]);
+    expect(await fs.readFile(entriesPath, "utf8")).toContain('"PROJECT_TOKEN": "secret"');
   });
 
   it("入口文件变化后拒绝应用旧预览计划", async () => {
@@ -109,6 +114,30 @@ describe("项目目录与接入验证", () => {
 
     await expect(service.applyTestEntry("stale-mini", { planId: preview.planId })).rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PLAN_STALE" });
     expect(await fs.readFile(path.join(root, "mobile-test.entries.json"), "utf8")).toBe(external);
+  });
+
+  it("预览后入口路径切换到项目外符号链接时拒绝应用", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-manual-test-entry-symlink-swap-"));
+    const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-manual-test-entry-symlink-outside-"));
+    tempDirs.push(root, outsideRoot);
+    await writeMiniProgramConfig(root, "symlink-swap-mini", "Symlink Swap Mini");
+    const configPath = path.join(root, "mobile-test.config.cjs");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+    await service.initialize(await loadProjectConfig(configPath));
+    const preview = await service.previewTestEntry("symlink-swap-mini", {
+      mode: "create",
+      entry: {
+        id: "flow-tests", label: "流程测试", testType: "", description: "", kind: "flow",
+        runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
+        commands: { default: { executable: "node", args: ["flow.cjs"] } },
+      },
+    });
+    const outsideEntriesPath = path.join(outsideRoot, "entries.json");
+    await fs.writeFile(outsideEntriesPath, JSON.stringify({ schemaVersion: "mobile-test-console.test-entries.v1", tests: [] }));
+    await fs.symlink(outsideEntriesPath, path.join(root, "mobile-test.entries.json"));
+
+    await expect(service.applyTestEntry("symlink-swap-mini", { planId: preview.planId }))
+      .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
   });
 
   it("服务端使用单行命令物化结构化命令并拒绝复合 shell 语法", async () => {

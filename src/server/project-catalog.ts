@@ -37,7 +37,7 @@ import {
 } from "../shared/contracts.js";
 import { parseTestCommandLine, TestCommandLineError } from "../shared/test-command-line.js";
 import { resolveDeviceExecutable, SystemCommandRunner, type CommandRunner } from "./command-runner.js";
-import { configSchema, loadProjectConfig, resolveTargetCommand, resolveTargetHealthCheckCommand, TEST_ENTRIES_SCHEMA_VERSION, toPublicTests, toPublicTestsFromConfig, type LoadedProjectConfig, type TestDefinition } from "./config.js";
+import { assertPathInsideProject, configSchema, loadProjectConfig, resolveTargetCommand, resolveTargetHealthCheckCommand, TEST_ENTRIES_FILE_NAME, TEST_ENTRIES_SCHEMA_VERSION, toPublicTests, toPublicTestsFromConfig, type LoadedProjectConfig, type TestDefinition } from "./config.js";
 import { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import { ResultBundleStore } from "./result-bundle-store.js";
@@ -114,6 +114,11 @@ interface BuiltSetupPlan {
   plan: ProjectSetupPlan;
   actions: InternalSetupAction[];
   projectId?: string;
+}
+
+interface BuiltTestEntryPlan {
+  plan: ProjectTestEntryPlan;
+  writeContent: string;
 }
 
 export class ProjectCatalogStore {
@@ -238,15 +243,15 @@ export class ProjectCatalogService {
       targets: structuredClone(config.testing?.targets ?? []),
       mainConfigTests: toPublicTests(config.mainConfigTests ?? config.tests, "preset"),
       editableTests: toPublicTests(config.sidecarTests ?? [], "custom"),
-      entriesPath: config.testEntriesPath ?? path.join(path.dirname(entry.configPath), "mobile-test.entries.json"),
+      entriesPath: config.testEntriesPath ?? path.join(path.dirname(entry.configPath), TEST_ENTRIES_FILE_NAME),
     };
   }
 
   async previewTestEntry(projectId: string, input: PreviewProjectTestEntryRequest): Promise<ProjectTestEntryPlan> {
     const built = await this.buildTestEntryPlan(projectId, input);
-    this.testEntryPlans.set(built.planId, structuredClone(input));
+    this.testEntryPlans.set(built.plan.planId, structuredClone(input));
     if (this.testEntryPlans.size > 100) this.testEntryPlans.delete(this.testEntryPlans.keys().next().value!);
-    return built;
+    return built.plan;
   }
 
   async applyTestEntry(projectId: string, input: ApplyProjectTestEntryRequest): Promise<ApplyProjectTestEntryResponse> {
@@ -255,31 +260,31 @@ export class ProjectCatalogService {
     const plan = await this.runExclusive(async () => {
       const entry = this.projects.get(projectId);
       if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
-      const entriesPath = path.join(path.dirname(entry.configPath), "mobile-test.entries.json");
+      const entriesPath = path.join(path.dirname(entry.configPath), TEST_ENTRIES_FILE_NAME);
+      await assertPathInsideProject(entry.root, entriesPath, "测试入口文件");
       const currentPlanId = await createTestEntryPlanId(projectId, entry.configPath, entriesPath, request);
       if (currentPlanId !== input.planId) {
         throw new ConsoleError("PROJECT_TEST_ENTRY_PLAN_STALE", "测试入口文件或项目配置已变化，请重新预览", 409);
       }
       const currentPlan = await this.buildTestEntryPlan(projectId, request);
-      if (currentPlan.planId !== input.planId) {
+      if (currentPlan.plan.planId !== input.planId) {
         throw new ConsoleError("PROJECT_TEST_ENTRY_PLAN_STALE", "测试入口文件或项目配置已变化，请重新预览", 409);
       }
-      await assertPathInsideProject(entry.root, currentPlan.entriesPath);
-      const nextPath = `${currentPlan.entriesPath}.next-${process.pid}-${Date.now()}`;
-      const backupPath = `${currentPlan.entriesPath}.bak`;
+      const nextPath = `${currentPlan.plan.entriesPath}.next-${process.pid}-${Date.now()}`;
+      const backupPath = `${currentPlan.plan.entriesPath}.bak`;
       const backupNextPath = `${nextPath}.bak`;
-      const existing = await fs.stat(currentPlan.entriesPath).catch(() => null);
+      const existing = await fs.stat(currentPlan.plan.entriesPath).catch(() => null);
       try {
-        await fs.writeFile(nextPath, currentPlan.contentPreview, {
+        await fs.writeFile(nextPath, currentPlan.writeContent, {
           flag: "wx",
           mode: existing?.isFile() ? existing.mode : 0o600,
         });
         if (existing?.isFile()) {
-          await fs.copyFile(currentPlan.entriesPath, backupNextPath, fsConstants.COPYFILE_EXCL);
+          await fs.copyFile(currentPlan.plan.entriesPath, backupNextPath, fsConstants.COPYFILE_EXCL);
           await fs.rm(backupPath, { force: true });
           await fs.rename(backupNextPath, backupPath);
         }
-        await fs.rename(nextPath, currentPlan.entriesPath);
+        await fs.rename(nextPath, currentPlan.plan.entriesPath);
       } catch (error) {
         await Promise.all([
           fs.rm(nextPath, { force: true }),
@@ -289,13 +294,13 @@ export class ProjectCatalogService {
       }
       entry.updatedAt = new Date().toISOString();
       await this.saveEntry(entry);
-      return currentPlan;
+      return currentPlan.plan;
     });
     this.testEntryPlans.delete(input.planId);
     return { plan, editor: await this.testEntryEditor(projectId) };
   }
 
-  private async buildTestEntryPlan(projectId: string, input: PreviewProjectTestEntryRequest): Promise<ProjectTestEntryPlan> {
+  private async buildTestEntryPlan(projectId: string, input: PreviewProjectTestEntryRequest): Promise<BuiltTestEntryPlan> {
     const entry = this.projects.get(projectId);
     if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
     if (entry.integrationType !== "mini-program") {
@@ -346,23 +351,32 @@ export class ProjectCatalogService {
       schemaVersion: TEST_ENTRIES_SCHEMA_VERSION,
       tests: [...(config.sidecarTests ?? []), test],
     };
-    const contentPreview = `${JSON.stringify(sidecar, null, 2)}\n`;
-    const planId = await createTestEntryPlanId(projectId, entry.configPath, config.testEntriesPath ?? path.join(path.dirname(entry.configPath), "mobile-test.entries.json"), input);
+    const writeContent = `${JSON.stringify(sidecar, null, 2)}\n`;
+    const contentPreview = `${JSON.stringify(redactTestEntryEnvironments(sidecar), null, 2)}\n`;
+    const planId = await createTestEntryPlanId(projectId, entry.configPath, config.testEntriesPath ?? path.join(path.dirname(entry.configPath), TEST_ENTRIES_FILE_NAME), input);
     return {
-      schemaVersion: "mobile-test-console.project-test-entry-plan.v1",
-      planId,
-      projectId,
-      entriesPath: config.testEntriesPath ?? path.join(path.dirname(entry.configPath), "mobile-test.entries.json"),
-      contentPreview,
-      commandPreview,
-      warnings: test.kind === "page" ? ["项目脚本需要读取 MTC_RETRY_TARGET_PAGES 等重试环境变量并映射到原有页面筛选参数。"] : [],
-      aiGuidance: buildTestEntryAiGuidance(entry, config, request),
-      canApply: true,
+      plan: {
+        schemaVersion: "mobile-test-console.project-test-entry-plan.v1",
+        planId,
+        projectId,
+        entriesPath: config.testEntriesPath ?? path.join(path.dirname(entry.configPath), TEST_ENTRIES_FILE_NAME),
+        contentPreview,
+        commandPreview: redactResolvedCommandEnvironment(commandPreview),
+        warnings: test.kind === "page" ? ["项目脚本需要读取 MTC_RETRY_TARGET_PAGES 等重试环境变量并映射到原有页面筛选参数。"] : [],
+        aiGuidance: buildTestEntryAiGuidance(entry, config, request),
+        canApply: true,
+      },
+      writeContent,
     };
   }
 
   private async loadEntryConfig(entry: ProjectCatalogEntry): Promise<LoadedProjectConfig> {
     try {
+      await assertPathInsideProject(
+        entry.root,
+        path.join(path.dirname(entry.configPath), TEST_ENTRIES_FILE_NAME),
+        "测试入口文件",
+      );
       const config = await loadProjectConfig(entry.configPath);
       if (config.project.id !== entry.id || config.project.root !== entry.root) {
         throw new ConsoleError("PROJECT_CONFIG_INVALID", "项目配置与登记信息不一致", 409);
@@ -1005,27 +1019,6 @@ async function validateTestCommandPaths(root: string, test: TestDefinition): Pro
   }
 }
 
-async function assertPathInsideProject(root: string, candidate: string): Promise<void> {
-  const rootReal = await fs.realpath(root);
-  const absolute = path.resolve(candidate);
-  const relative = path.relative(root, absolute);
-  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new ConsoleError("PROJECT_TEST_ENTRY_PATH_OUTSIDE", `命令工作目录需要位于项目内: ${candidate}`, 409);
-  }
-  let existing = absolute;
-  while (!(await fs.stat(existing).catch(() => null))) {
-    const parent = path.dirname(existing);
-    if (parent === existing) break;
-    existing = parent;
-  }
-  const existingReal = await fs.realpath(existing);
-  const resolved = path.resolve(existingReal, path.relative(existing, absolute));
-  const realRelative = path.relative(rootReal, resolved);
-  if (realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
-    throw new ConsoleError("PROJECT_TEST_ENTRY_PATH_OUTSIDE", `命令工作目录解析后需要位于项目内: ${candidate}`, 409);
-  }
-}
-
 function buildTestEntryAiGuidance(
   project: ProjectCatalogEntry,
   config: LoadedProjectConfig,
@@ -1043,6 +1036,23 @@ function buildTestEntryAiGuidance(
     "请只返回字段修正建议，所有环境变量值已脱敏：",
     JSON.stringify(redacted, null, 2),
   ].join("\n");
+}
+
+function redactTestEntryEnvironments<T extends { tests: TestDefinition[] }>(sidecar: T): T {
+  const redacted = structuredClone(sidecar);
+  for (const test of redacted.tests) {
+    for (const command of Object.values(test.commands)) {
+      if (command?.env) command.env = Object.fromEntries(Object.keys(command.env).map(key => [key, "<redacted>"]));
+    }
+  }
+  return redacted;
+}
+
+function redactResolvedCommandEnvironment(command: ProjectTestEntryPlan["commandPreview"]): ProjectTestEntryPlan["commandPreview"] {
+  return {
+    ...command,
+    env: Object.fromEntries(Object.keys(command.env).map(key => [key, "<redacted>"])),
+  };
 }
 
 function materializeTestEntryCommandLine(input: PreviewProjectTestEntryRequest): PreviewProjectTestEntryRequest {

@@ -935,10 +935,10 @@ The optional sidecar next to `mobile-test.config.cjs` has this file signature:
 - The quick form defaults to every configured mini-program target, `kind: "general"`, `testType: "自定义测试"`, project-root `cwd`, and empty environment/parameter collections. Advanced fields may override those defaults.
 - Mini-program entries select at least one key from `testing.targets`; every template token and parameter default must satisfy the shared config schema.
 - A page entry confirms that its project script consumes `MTC_RETRY_TARGET_PAGES`, `MTC_RETRY_CASE_IDS`, and `MTC_RETRY_CASE_RUN_IDS` before preview.
-- Preview resolves a representative command with default parameter values and retry metadata. It performs no command execution and no file write.
+- Preview resolves a representative command with default parameter values and retry metadata. It performs no command execution and no file write. Every browser-visible plan field, including `commandPreview`, `contentPreview`, `aiGuidance`, and the plan returned by apply, replaces environment values with `<redacted>`; the internal write payload preserves the original values and is never serialized into an API response.
 - `planId` covers project ID, main-config digest, sidecar digest, and normalized request. Apply rebuilds the plan inside the catalog operation queue and rejects stale or competing plans.
 - Apply writes the sidecar and backup through same-directory exclusive temporary files followed by atomic rename. It preserves an existing sidecar mode, creates a new sidecar with mode `0600`, and replaces a pre-existing `.bak` path without following its symlink target.
-- Both lexical paths and resolved symlink ancestors must remain under the project root. The exact parent value `..` is an escape, as are `../...`, absolute paths, and resolved symlink ancestors outside the root.
+- Both lexical paths and resolved symlink ancestors must remain under the project root. The exact parent value `..` is an escape, as are `../...`, absolute paths, and resolved symlink ancestors outside the root. Config loading and apply validate this boundary before reading sidecar content or computing its digest, including after a preview-to-apply symlink swap.
 - A successful apply refreshes the catalog editor response and the active in-memory config so the test appears in the current snapshot and run workspace.
 - AI guidance contains field rules, target keys, retry keys, template syntax, and the current draft. Environment values are replaced with `<redacted>`.
 - The execution workspace is the only UI surface that opens this flow. The project overview remains focused on onboarding status, runtime activation, and storage management.
@@ -970,8 +970,8 @@ The optional sidecar next to `mobile-test.config.cjs` has this file signature:
 
 - Config tests cover missing sidecar, valid merge order, source partitions, invalid JSON/schema, internal duplicate IDs, and cross-source duplicate diagnostics.
 - Command-line tests cover ordinary arguments, single/double quotes, empty arguments, Windows and UNC paths, every rejected shell operator, valid generated IDs, digit-leading commands, non-Latin fallback, and collision suffixes.
-- Catalog tests cover command-line materialization, preview immutability, apply, symlink-safe backup replacement, new and preserved file modes, main-config byte identity, concurrent plans, stale plans, unknown targets/templates, runner enforcement, exact-parent traversal, sibling traversal, and symlink boundaries.
-- HTTP tests cover all three endpoints and assert the active runtime config and returned editor snapshot contain the applied entry.
+- Catalog tests cover command-line materialization, preview immutability, apply, symlink-safe backup replacement, preview-to-apply symlink swaps, new and preserved file modes, main-config byte identity, concurrent plans, stale plans, unknown targets/templates, runner enforcement, exact-parent traversal, sibling traversal, and symlink boundaries.
+- HTTP tests cover all three endpoints, assert the active runtime config and returned editor snapshot contain the applied entry, and prove preview/apply response bodies contain no environment values while the persisted sidecar retains them.
 - Web tests cover the single-page quick fields, automatic defaults, advanced fields, page-retry confirmation, save error retention, AI redaction, apply refresh, execution-workspace ownership, and the absence of a project-overview action.
 - Browser verification uses a `390x844` viewport and asserts equal document `scrollWidth` and `clientWidth`.
 

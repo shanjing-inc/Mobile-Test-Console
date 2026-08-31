@@ -1558,6 +1558,7 @@ function OverviewResult({
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
   const visibleScreenshots = visibleRuns.reduce((total, run) => total + run.screenshots.length, 0);
   const failedTargetPages = [...new Set(visibleRuns.filter(run => run.status === "failed" && run.targetPage).map(run => run.targetPage))];
+  const failedCaseRunIds = visibleRuns.filter(run => run.status === "failed").map(run => run.caseRunId);
   const suiteOnly = result.runs.length > 0 && result.runs.every(isSuiteResultRun);
   const suiteTotals = result.runs.reduce((totals, run) => {
     const summary = suiteTestSummary(run);
@@ -1600,6 +1601,7 @@ function OverviewResult({
       <div className="analysis-run-toolbar-actions">
         {filter === "failed" && <button type="button" onClick={() => onFilterChange("all")}><List size={13} />查看全部</button>}
         {pageRetryEnabled && failedTargetPages.length > 0 && onRetryTask && <button type="button" title="重试全部失败页面" aria-label="重试全部失败页面" onClick={() => onRetryTask({ targetPages: failedTargetPages })} disabled={retryPending && retryingCaseRunId === "__pages__"}><RotateCcw size={13} />重试全部失败页面</button>}
+        {!pageRetryEnabled && failedCaseRunIds.length > 0 && onRetryTask && <button type="button" title="重试全部失败用例" aria-label="重试全部失败用例" onClick={() => onRetryTask({ caseRunIds: failedCaseRunIds })} disabled={retryPending && retryingCaseRunId === "__batch__"}><RotateCcw size={13} />重试全部失败用例</button>}
         {screenshots > 0 && <button
           type="button"
           aria-expanded={imagesVisible}

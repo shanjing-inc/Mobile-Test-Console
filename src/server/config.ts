@@ -259,6 +259,10 @@ const testSchema = z.object({
 export const TEST_ENTRIES_FILE_NAME = "mobile-test.entries.json";
 export const TEST_ENTRIES_SCHEMA_VERSION = "mobile-test-console.test-entries.v1" as const;
 
+const projectLocationSchema = z.object({
+  project: z.object({ root: z.string().trim().min(1) }),
+}).passthrough();
+
 export const testEntriesSchema = z.object({
   schemaVersion: z.literal(TEST_ENTRIES_SCHEMA_VERSION),
   tests: z.array(testSchema).default([]),
@@ -593,6 +597,20 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
   }
   const configDir = path.dirname(configPath);
   const testEntriesPath = path.join(configDir, TEST_ENTRIES_FILE_NAME);
+  const projectLocation = projectLocationSchema.safeParse(raw);
+  if (!projectLocation.success) {
+    throw new ConsoleError(
+      "CONFIG_INVALID",
+      `项目配置校验失败: ${projectLocation.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("; ")}`,
+    );
+  }
+  if (await fs.lstat(testEntriesPath).catch(() => null)) {
+    await assertPathInsideProject(
+      path.resolve(configDir, projectLocation.data.project.root),
+      testEntriesPath,
+      "测试入口文件",
+    );
+  }
   const sidecar = await loadTestEntries(testEntriesPath);
   const mainTests = Array.isArray((raw as { tests?: unknown }).tests) ? (raw as { tests: unknown[] }).tests : [];
   const mainIds = new Set(mainTests.flatMap(test => test && typeof test === "object" && typeof (test as { id?: unknown }).id === "string" ? [(test as { id: string }).id] : []));
@@ -692,6 +710,28 @@ async function loadTestEntries(entriesPath: string): Promise<z.infer<typeof test
     );
   }
   return parsed.data;
+}
+
+export async function assertPathInsideProject(root: string, candidate: string, label = "路径"): Promise<void> {
+  const absoluteRoot = path.resolve(root);
+  const absolute = path.resolve(candidate);
+  const relative = path.relative(absoluteRoot, absolute);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ConsoleError("PROJECT_TEST_ENTRY_PATH_OUTSIDE", `${label}需要位于项目内: ${candidate}`, 409);
+  }
+  const rootReal = await fs.realpath(absoluteRoot);
+  let existing = absolute;
+  while (!(await fs.stat(existing).catch(() => null))) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  const existingReal = await fs.realpath(existing);
+  const resolved = path.resolve(existingReal, path.relative(existing, absolute));
+  const realRelative = path.relative(rootReal, resolved);
+  if (realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+    throw new ConsoleError("PROJECT_TEST_ENTRY_PATH_OUTSIDE", `${label}解析后需要位于项目内: ${candidate}`, 409);
+  }
 }
 
 async function resolveLoadedProjectAdapter(
