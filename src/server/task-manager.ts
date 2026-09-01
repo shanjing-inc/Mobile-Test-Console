@@ -51,6 +51,7 @@ export class TaskManager {
   private readonly completionListeners = new Set<TaskCompletionListener>();
   private readonly retryWatchdogs = new Map<string, NodeJS.Timeout>();
   private readonly terminalFinalizations = new Map<string, Promise<void>>();
+  private readonly executingDeviceKeys = new Set<string>();
   private readonly runnerResolver: RunnerResolver;
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -178,8 +179,19 @@ export class TaskManager {
       if (!test.platforms.includes(device.platform)) {
         throw new ConsoleError("PLATFORM_UNSUPPORTED", `${test.label} 不支持 ${device.platform}`);
       }
-      const active = [...this.tasks.values()].find(task => task.device.key === key && ACTIVE_STATUSES.has(task.status));
-      if (active) throw new ConsoleError("DEVICE_BUSY", `${device.name} 正在执行 ${active.testLabel}`, 409);
+      const duplicate = [...this.tasks.values()].find(task => (
+        task.target?.kind === "app"
+        && task.device.key === device.key
+        && task.testId === test.id
+        && ACTIVE_STATUSES.has(task.status)
+      ));
+      if (duplicate) {
+        throw new ConsoleError(
+          "TASK_DUPLICATE",
+          `${device.name} 已有 ${test.label} 任务在等待或执行`,
+          409,
+        );
+      }
       return device;
     });
 
@@ -209,7 +221,46 @@ export class TaskManager {
       if (override) this.commandOverrides.set(task.id, override);
     }
     await this.persistNow();
-    for (const task of tasks) queueMicrotask(() => void this.execute(task.id, test));
+    for (const task of tasks) this.scheduleTask(task.id, test);
+  }
+
+  private scheduleTask(taskId: string, test: TestDefinition): void {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== "queued") return;
+    if (task.target?.kind !== "app") {
+      queueMicrotask(() => void this.execute(task.id, test));
+      return;
+    }
+
+    const deviceKey = task.device.key;
+    if (this.executingDeviceKeys.has(deviceKey) || this.nextQueuedAppTask(deviceKey)?.id !== task.id) return;
+    this.executingDeviceKeys.add(deviceKey);
+    queueMicrotask(() => void this.executeAppTask(task.id, test, deviceKey));
+  }
+
+  private async executeAppTask(taskId: string, test: TestDefinition, deviceKey: string): Promise<void> {
+    try {
+      await this.execute(taskId, test);
+    } finally {
+      this.executingDeviceKeys.delete(deviceKey);
+      const next = this.nextQueuedAppTask(deviceKey);
+      if (next) this.scheduleTask(next.id, this.testDefinitionFor(next));
+    }
+  }
+
+  private nextQueuedAppTask(deviceKey: string): TestTask | null {
+    let next: TestTask | null = null;
+    for (const task of this.tasks.values()) {
+      if (task.target?.kind !== "app" || task.device.key !== deviceKey || task.status !== "queued") continue;
+      if (!next || task.createdAt < next.createdAt) next = task;
+    }
+    return next;
+  }
+
+  private testDefinitionFor(task: TestTask): TestDefinition {
+    const test = this.config.tests.find(item => item.id === task.testId);
+    if (!test) throw new ConsoleError("TEST_UNKNOWN", `测试不存在: ${task.testId}`, 404);
+    return test;
   }
 
   async waitForTerminal(taskId: string, timeoutMs = 120_000): Promise<TestTask> {
@@ -231,6 +282,10 @@ export class TaskManager {
     this.cancelRequests.add(taskId);
     task.phase = "正在停止";
     this.appendLog(task, "[console] 收到停止请求");
+    if (task.status === "queued") {
+      await this.finalize(task, "cancelled", null, "");
+      return structuredClone(task);
+    }
     if (task.retryOf) {
       const finalization = this.finalize(task, "cancelled", null, "用户停止重试");
       this.runnerControllers.get(taskId)?.abort();
@@ -331,7 +386,9 @@ export class TaskManager {
   }
 
   async shutdown(): Promise<void> {
-    const activeIds = [...this.runnerControllers.keys()];
+    const activeIds = [...this.tasks.values()]
+      .filter(task => ACTIVE_STATUSES.has(task.status))
+      .map(task => task.id);
     await Promise.all(activeIds.map(taskId => this.stop(taskId)));
     const deadline = Date.now() + 3_500;
     while (this.runnerControllers.size > 0 && Date.now() < deadline) {
@@ -378,7 +435,7 @@ export class TaskManager {
 
   private async execute(taskId: string, test: TestDefinition): Promise<void> {
     const task = this.tasks.get(taskId);
-    if (!task || this.cancelRequests.has(taskId)) {
+    if (!task || TERMINAL_STATUSES.has(task.status) || this.cancelRequests.has(taskId)) {
       if (task) await this.finalize(task, "cancelled", null, "");
       return;
     }

@@ -960,6 +960,43 @@ describe("HTTP API", () => {
     }
   });
 
+  it("重复创建同一测试入口和设备的 App 任务返回 TASK_DUPLICATE", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-task-duplicate-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    const runner: CommandRunner = {
+      async capture() {
+        return { code: 0, stdout: "device-1 device model:Pixel_8\n", stderr: "" };
+      },
+    };
+    const devices = new DeviceDiscoveryService(runner, ["android"]);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({ config, devices, tasks });
+
+    try {
+      const discovery = await devices.discover();
+      const [created] = await tasks.start({
+        testId: "long",
+        deviceKeys: ["android:device-1"],
+        parameters: {},
+      }, discovery.devices);
+      await waitForStatus(tasks, created.id, "running");
+
+      const duplicate = await app.inject({
+        method: "POST",
+        url: "/api/tasks",
+        payload: { testId: "long", deviceKeys: ["android:device-1"], parameters: {} },
+      });
+      expect(duplicate.statusCode).toBe(409);
+      expect(duplicate.json().error.code).toBe("TASK_DUPLICATE");
+      expect(tasks.list()).toHaveLength(1);
+    } finally {
+      await tasks.shutdown();
+      await app.close();
+    }
+  });
+
   it("通过删除接口保护活动任务并清理终态记录", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-delete-"));
     tempDirs.push(dir);

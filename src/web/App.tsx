@@ -537,8 +537,7 @@ export default function App() {
 
   const toggleDevice = (device: Device) => {
     if (device.connectionState !== "available"
-      || device.preparations?.some(item => item.blocksTests && item.status !== "ready")
-      || taskByTarget.get(device.key) && ACTIVE_STATUSES.has(taskByTarget.get(device.key)!.status)) return;
+      || device.preparations?.some(item => item.blocksTests && item.status !== "ready")) return;
     setSelectedKeys(previous => previous.includes(device.key)
       ? previous.filter(key => key !== device.key)
       : [...previous, device.key]);
@@ -1927,11 +1926,12 @@ export function DeviceRow({ device, task, selected, onToggle, starting, onStart,
   const busy = Boolean(task && ACTIVE_STATUSES.has(task.status));
   const missingPreparation = device.preparations?.find(item => item.status !== "ready");
   const blockingPreparation = device.preparations?.find(item => item.blocksTests && item.status !== "ready");
-  const selectable = device.controlState === "ready" && device.connectionState === "available" && !busy && !blockingPreparation;
+  const selectable = device.controlState === "ready" && device.connectionState === "available" && !blockingPreparation;
   const startable = device.controlState === "startable";
   const availabilityLabel = device.controlState === "ready"
     ? connectionLabels[device.connectionState]
     : device.controlReason || device.detail || connectionLabels[device.connectionState];
+  const taskLabel = task?.status === "queued" ? "队列中" : busy ? "测试中" : "";
   return <div className={`device-row ${selected ? "selected" : ""} ${selectable ? "" : "disabled"}`}>
     <input type="checkbox" checked={selected} onChange={onToggle} disabled={!selectable} aria-label={`选择 ${device.name}`} />
     <span className={`device-status-dot ${device.connectionState}`} />
@@ -1947,7 +1947,7 @@ export function DeviceRow({ device, task, selected, onToggle, starting, onStart,
           {starting ? <LoaderCircle className="spin" size={13} /> : <Power size={13} />}
           {starting ? "启动中" : "启动"}
         </button>
-        : <span className={`connection-label ${device.connectionState}`}>{busy ? "测试中" : missingPreparation?.detail || availabilityLabel}</span>}
+        : <span className={`connection-label ${device.connectionState}`}>{taskLabel || missingPreparation?.detail || availabilityLabel}</span>}
       <small>{missingPreparation?.label || device.osVersion || device.id.slice(0, 12)}</small>
     </span>
   </div>;

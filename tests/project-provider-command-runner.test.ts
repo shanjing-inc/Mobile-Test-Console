@@ -94,6 +94,9 @@ describe("项目 Provider 命令 Runner", () => {
         { executable: process.execPath, args: ["-e", "process.exit(7)"] },
       ],
     }));
+    provider.cleanupRun = () => ({
+      commands: [{ executable: process.execPath, args: ["-e", "console.log('cleanup-after-preflight')"] }],
+    });
     const runner = new ProjectProviderCommandRunner(
       "project-runner",
       provider,
@@ -111,6 +114,7 @@ describe("项目 Provider 命令 Runner", () => {
 
     expect(result).toMatchObject({ status: "failed", exitCode: 7 });
     expect(messages).toContain("app-prepare");
+    expect(messages).toContain("cleanup-after-preflight");
     expect(messages).not.toContain("must-not-run");
   });
 
@@ -252,6 +256,9 @@ describe("项目 Provider 命令 Runner", () => {
       collected += 1;
       return { bundle: {} };
     };
+    provider.cleanupRun = () => ({
+      commands: [{ executable: process.execPath, args: ["-e", "console.log('cleanup-after-cancel')"] }],
+    });
     const runner = new ProjectProviderCommandRunner("project-runner", provider, ["app.build"], {
       async ingest() {
         throw new Error("取消任务不应摄取结果");
@@ -260,12 +267,16 @@ describe("项目 Provider 命令 Runner", () => {
     const controller = new AbortController();
     let started!: () => void;
     const commandStarted = new Promise<void>(resolve => { started = resolve; });
+    const events: RunnerEvent[] = [];
     const pending = runner.run(createPlan({
       executable: process.execPath,
       args: ["-e", "console.log('started'); setInterval(() => {}, 1000)"],
     }), {
       signal: controller.signal,
-      emit: event => { if (event.message === "started") started(); },
+      emit: event => {
+        events.push(event);
+        if (event.message === "started") started();
+      },
     });
 
     await commandStarted;
@@ -276,6 +287,32 @@ describe("项目 Provider 命令 Runner", () => {
     expect(result).toMatchObject({ status: "cancelled" });
     expect(result).not.toHaveProperty("resultUri");
     expect(collected).toBe(0);
+    expect(events.map(event => event.message)).toContain("cleanup-after-cancel");
+  });
+
+  it("资源清理失败时将最终结果标记为失败", async () => {
+    const provider = fakeProvider(async () => ({ commands: [] }));
+    provider.cleanupRun = request => {
+      expect(request.result).toMatchObject({ status: "passed", exitCode: 0 });
+      return {
+        commands: [{ executable: process.execPath, args: ["-e", "process.exit(9)"] }],
+      };
+    };
+    const runner = new ProjectProviderCommandRunner("project-runner", provider, ["app.build"]);
+
+    const result = await runner.run(createPlan({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+    }), {
+      signal: new AbortController().signal,
+      emit: () => undefined,
+    });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      exitCode: 0,
+      error: "项目资源清理失败: 测试进程退出码: 9",
+    });
   });
 
   it("结果摄取失败时将执行结果收敛为失败", async () => {

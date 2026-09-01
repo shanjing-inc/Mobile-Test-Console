@@ -217,6 +217,49 @@ describe("网页 iOS 模拟器启动", () => {
     }));
   });
 
+  it("设备已有任务时仍可选择并显示队列状态", () => {
+    const device = createSimulator({
+      key: "android:device-queue",
+      id: "device-queue",
+      name: "Android Queue Device",
+      platform: "android",
+      type: "physical",
+      connectionState: "available",
+      controlState: "ready",
+      detail: "",
+    });
+    const task: TestTask = {
+      id: "task-queue",
+      runId: "run-queue",
+      projectId: "demo",
+      testId: "smoke",
+      testLabel: "Smoke",
+      device,
+      parameters: {},
+      status: "queued",
+      phase: "等待执行",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      startedAt: "",
+      finishedAt: "",
+      exitCode: null,
+      error: "",
+      logs: [],
+    };
+
+    const html = renderToStaticMarkup(React.createElement(DeviceRow, {
+      device,
+      task,
+      selected: false,
+      starting: false,
+      onToggle: () => undefined,
+      onStart: () => undefined,
+    }));
+
+    expect(html).toContain("type=\"checkbox\"");
+    expect(html).not.toContain("disabled=\"\"");
+    expect(html).toContain("队列中");
+  });
+
   it("小程序单目标展示已绑定状态且不提供取消控件", () => {
     const target: MiniProgramRunTarget = {
       key: "wechat-devtools",

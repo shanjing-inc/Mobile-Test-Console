@@ -4,6 +4,7 @@ import {
   type ProjectProvider,
   validateProjectProvider,
   validateProjectProviderResultCollection,
+  validateProjectProviderRunCleanup,
   validateProjectProviderRunPreparation,
 } from "./project-provider.js";
 import {
@@ -65,24 +66,36 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
       return this.collect(plan, context, this.failed(plan.runId, context, error));
     }
 
-    context.emit(createRunnerEvent(plan.runId, "capability", {
-      source: "runner",
-      message: "项目能力准备开始",
-      data: { providerId: this.provider.id, capabilities: this.capabilities },
-    }));
-    for (const command of preparation.commands) {
-      const result = await this.commandRunner.run(this.withRetryEnvironment(plan, command), context);
-      if (result.status !== "passed") return this.collect(plan, context, result);
+    let result: RunnerResult | undefined;
+    try {
+      context.emit(createRunnerEvent(plan.runId, "capability", {
+        source: "runner",
+        message: "项目能力准备开始",
+        data: { providerId: this.provider.id, capabilities: this.capabilities },
+      }));
+      for (const command of preparation.commands) {
+        const commandResult = await this.commandRunner.run(this.withRetryEnvironment(plan, command), context);
+        if (commandResult.status !== "passed") {
+          result = await this.collect(plan, context, commandResult);
+          break;
+        }
+      }
+      if (!result) {
+        context.emit(createRunnerEvent(plan.runId, "capability", {
+          source: "runner",
+          message: "项目能力准备完成",
+          data: { providerId: this.provider.id, capabilities: this.capabilities },
+        }));
+        const testResult = plan.command
+          ? await this.commandRunner.run(this.withRetryEnvironment(plan, plan.command), context)
+          : await this.commandRunner.run(plan, context);
+        result = await this.collect(plan, context, testResult);
+      }
+    } finally {
+      // cleanup 使用独立信号，确保取消的任务仍能释放项目级资源。
+      result = await this.cleanup(plan, context, result ?? this.failed(plan.runId, context, new Error("项目运行未产生结果")));
     }
-    context.emit(createRunnerEvent(plan.runId, "capability", {
-      source: "runner",
-      message: "项目能力准备完成",
-      data: { providerId: this.provider.id, capabilities: this.capabilities },
-    }));
-    const testResult = plan.command
-      ? await this.commandRunner.run(this.withRetryEnvironment(plan, plan.command), context)
-      : await this.commandRunner.run(plan, context);
-    return this.collect(plan, context, testResult);
+    return result;
   }
 
   cancel(runId: string): void {
@@ -175,6 +188,49 @@ export class ProjectProviderCommandRunner implements InProcessRunner {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const message = `项目结果分析失败: ${detail}`;
+      context.emit(createRunnerEvent(plan.runId, "error", {
+        source: "runner",
+        level: "error",
+        message,
+      }));
+      return {
+        ...runnerResult,
+        status: "failed",
+        error: runnerResult.error ? `${runnerResult.error}; ${message}` : message,
+      };
+    }
+  }
+
+  private async cleanup(plan: RunPlan, context: RunnerContext, runnerResult: RunnerResult): Promise<RunnerResult> {
+    if (!this.provider.cleanupRun) return runnerResult;
+    try {
+      const cleanup = await this.provider.cleanupRun({
+        plan: Object.freeze(structuredClone(plan)),
+        result: Object.freeze(structuredClone(runnerResult)),
+      });
+      validateProjectProviderRunCleanup(cleanup);
+      for (const command of cleanup.commands) {
+        const result = await this.commandRunner.run(this.withRetryEnvironment(plan, command), {
+          signal: new AbortController().signal,
+          emit: context.emit,
+        });
+        if (result.status === "passed") continue;
+        const message = `项目资源清理失败: ${result.error ?? "命令已取消"}`;
+        context.emit(createRunnerEvent(plan.runId, "error", {
+          source: "runner",
+          level: "error",
+          message,
+        }));
+        return {
+          ...runnerResult,
+          status: "failed",
+          error: runnerResult.error ? `${runnerResult.error}; ${message}` : message,
+        };
+      }
+      return runnerResult;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = `项目资源清理失败: ${detail}`;
       context.emit(createRunnerEvent(plan.runId, "error", {
         source: "runner",
         level: "error",

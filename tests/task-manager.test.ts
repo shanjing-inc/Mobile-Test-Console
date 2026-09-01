@@ -572,48 +572,166 @@ describe("任务管理器", () => {
     expect(shutdown).toHaveBeenCalledTimes(1);
   });
 
-  it("同一设备保持互斥并支持停止任务", async () => {
-    const { manager } = await createManager();
-    const [created] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
-    await waitForStatus(manager, created.id, "running");
+  it("同一设备按 FIFO 执行，取消排队任务后继续调度后续任务", async () => {
+    const dir = await createTempDir("mtc-task-device-queue-");
+    const controlled = createControlledRunner("device-queue-runner");
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      controlled.runner,
+      { resolve: () => controlled.runner },
+    );
+    await manager.initialize();
 
-    await expect(manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]))
-      .rejects.toThrow("正在执行");
-    await manager.stop(created.id);
-    const cancelled = await waitForStatus(manager, created.id, "cancelled");
-    expect(cancelled.phase).toBe("已取消");
+    const [first] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, first.id, "running");
+    const [second] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const [third] = await manager.start({ testId: "pass-alt", deviceKeys: [device.key], parameters: {} }, [device]);
+
+    await expect(waitForStatus(manager, second.id, "queued")).resolves.toMatchObject({ startedAt: "" });
+    await expect(waitForStatus(manager, third.id, "queued")).resolves.toMatchObject({ startedAt: "" });
+    expect(controlled.startedRunIds).toEqual([first.runId]);
+
+    await manager.stop(second.id);
+    await waitForStatus(manager, second.id, "cancelled");
+    expect(controlled.startedRunIds).toEqual([first.runId]);
+
+    await manager.stop(first.id);
+    await waitForStatus(manager, first.id, "cancelled");
+    await waitForStatus(manager, third.id, "running");
+    expect(controlled.startedRunIds).toEqual([first.runId, third.runId]);
+
+    await manager.stop(third.id);
+    await waitForStatus(manager, third.id, "cancelled");
     await manager.shutdown();
   });
 
-  it("服务恢复时将活动任务标记为中断", async () => {
+  it("同测试入口与设备的运行任务拒绝重复创建，终态后允许再次启动", async () => {
+    const dir = await createTempDir("mtc-task-device-duplicate-running-");
+    const controlled = createControlledRunner("device-duplicate-running-runner");
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      controlled.runner,
+      { resolve: () => controlled.runner },
+    );
+    await manager.initialize();
+
+    const [first] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, first.id, "running");
+    await expect(manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]))
+      .rejects.toMatchObject({ code: "TASK_DUPLICATE", statusCode: 409 } satisfies Partial<ConsoleError>);
+    await expect(manager.start(
+      { testId: "long", deviceKeys: [device.key, secondDevice.key], parameters: {} },
+      [device, secondDevice],
+    )).rejects.toMatchObject({ code: "TASK_DUPLICATE", statusCode: 409 } satisfies Partial<ConsoleError>);
+    expect(manager.list()).toHaveLength(1);
+
+    await manager.stop(first.id);
+    await waitForStatus(manager, first.id, "cancelled");
+    const [next] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, next.id, "running");
+
+    await manager.stop(next.id);
+    await waitForStatus(manager, next.id, "cancelled");
+    await manager.shutdown();
+  });
+
+  it("同测试入口与设备的排队任务拒绝重复创建，其他入口保持 FIFO", async () => {
+    const dir = await createTempDir("mtc-task-device-duplicate-queued-");
+    const controlled = createControlledRunner("device-duplicate-queued-runner");
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      controlled.runner,
+      { resolve: () => controlled.runner },
+    );
+    await manager.initialize();
+
+    const [first] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, first.id, "running");
+    const [queued] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, queued.id, "queued");
+    await expect(manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]))
+      .rejects.toMatchObject({ code: "TASK_DUPLICATE", statusCode: 409 } satisfies Partial<ConsoleError>);
+    const [following] = await manager.start({ testId: "pass-alt", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, following.id, "queued");
+
+    await manager.stop(first.id);
+    await waitForStatus(manager, first.id, "cancelled");
+    await waitForStatus(manager, queued.id, "running");
+    expect(controlled.startedRunIds).toEqual([first.runId, queued.runId]);
+
+    await manager.stop(queued.id);
+    await waitForStatus(manager, queued.id, "cancelled");
+    await waitForStatus(manager, following.id, "running");
+
+    await manager.stop(following.id);
+    await waitForStatus(manager, following.id, "cancelled");
+    await manager.shutdown();
+  });
+
+  it("Android 与 HarmonyOS 设备同时进入运行态", async () => {
+    const dir = await createTempDir("mtc-task-cross-platform-parallel-");
+    const config = createConfig(dir);
+    config.tests.forEach(test => { test.platforms = ["android", "harmony"]; });
+    const harmonyDevice: Device = {
+      ...device,
+      key: "harmony:device-1",
+      id: "harmony-device-1",
+      name: "Harmony Device 1",
+      platform: "harmony",
+    };
+    const controlled = createControlledRunner("cross-platform-runner");
+    const manager = new TaskManager(config, new StateStore(dir), controlled.runner, { resolve: () => controlled.runner });
+    await manager.initialize();
+
+    const created = await manager.start({
+      testId: "long",
+      deviceKeys: [device.key, harmonyDevice.key],
+      parameters: {},
+    }, [device, harmonyDevice]);
+    await Promise.all(created.map(task => waitForStatus(manager, task.id, "running")));
+    await waitForRunnerStarts(controlled, created.length);
+    expect(controlled.startedRunIds).toEqual(expect.arrayContaining(created.map(task => task.runId)));
+
+    await Promise.all(created.map(task => manager.stop(task.id)));
+    await Promise.all(created.map(task => waitForStatus(manager, task.id, "cancelled")));
+    await manager.shutdown();
+  });
+
+  it("服务恢复时将执行中和排队任务标记为中断", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-state-"));
     tempDirs.push(dir);
     const store = new StateStore(dir);
-    await store.save([{
-      id: "old-task",
-      runId: "old-run",
+    const createdAt = new Date().toISOString();
+    await store.save(["running", "queued"].map((status, index) => ({
+      id: `old-task-${index}`,
+      runId: `old-run-${index}`,
       projectId: "demo",
       testId: "long",
       testLabel: "Long",
       device,
       parameters: {},
-      status: "running",
-      phase: "执行中",
-      createdAt: new Date().toISOString(),
-      startedAt: new Date().toISOString(),
+      status: status as TaskStatus,
+      phase: status === "queued" ? "等待执行" : "执行中",
+      createdAt,
+      startedAt: status === "queued" ? "" : createdAt,
       finishedAt: "",
       exitCode: null,
       error: "",
       logs: [],
-    }]);
+    })));
     const manager = new TaskManager(createConfig(dir), store);
     await manager.initialize();
 
-    expect(manager.list()[0]).toMatchObject({
-      status: "interrupted",
-      phase: "服务重启，任务已中断",
+    const recovered = manager.list();
+    expect(recovered).toHaveLength(2);
+    expect(recovered.every(task => task.status === "interrupted" && task.phase === "服务重启，任务已中断")).toBe(true);
+    expect(recovered.find(task => task.id === "old-task-0")).toMatchObject({
       target: { key: device.key, kind: "app", label: device.name },
     });
+    expect(recovered.find(task => task.id === "old-task-1")).toMatchObject({ startedAt: "" });
     await manager.shutdown();
   });
 
@@ -1094,6 +1212,14 @@ function createConfig(stateDir: string): LoadedProjectConfig {
         parameters: [],
         commands: { default: { executable: process.execPath, args: ["-e", "setInterval(() => console.log('tick'), 20)"] } },
       },
+      {
+        id: "pass-alt",
+        label: "Pass Alt",
+        description: "",
+        platforms: ["android"],
+        parameters: [],
+        commands: { default: { executable: process.execPath, args: ["-e", "console.log('runner output')"] } },
+      },
     ],
   };
 }
@@ -1138,18 +1264,31 @@ async function waitForLog(manager: TaskManager, taskId: string, expected: string
   throw new Error(`等待任务日志超时: ${expected}`);
 }
 
+async function waitForRunnerStarts(runner: { startedRunIds: string[] }, count: number) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (runner.startedRunIds.length >= count) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`Runner 启动数量不足: ${count}`);
+}
+
 function createControlledRunner(id: string): {
   runner: InProcessRunner;
   cancelledRunIds: string[];
+  startedRunIds: string[];
 } {
   const pending = new Map<string, (result: RunnerResult) => void>();
   const cancelledRuns = new Set<string>();
   const cancelledRunIds: string[] = [];
+  const startedRunIds: string[] = [];
   return {
     cancelledRunIds,
+    startedRunIds,
     runner: {
       id,
       run(plan) {
+        startedRunIds.push(plan.runId);
         if (cancelledRuns.has(plan.runId)) {
           return Promise.resolve({ runId: plan.runId, status: "cancelled", exitCode: null });
         }

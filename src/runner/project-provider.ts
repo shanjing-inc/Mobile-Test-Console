@@ -36,6 +36,9 @@ export interface ProjectProvider {
   collectResult?(
     request: ProjectProviderResultCollectionRequest,
   ): ProjectProviderResultCollection | Promise<ProjectProviderResultCollection>;
+  cleanupRun?(
+    request: ProjectProviderRunCleanupRequest,
+  ): ProjectProviderRunCleanup | Promise<ProjectProviderRunCleanup>;
 }
 
 export interface ProjectProviderRunPreparationRequest {
@@ -55,6 +58,16 @@ export interface ProjectProviderResultCollectionRequest {
 
 export interface ProjectProviderResultCollection {
   bundle: unknown;
+}
+
+/** 任务终态后的项目级资源回收命令。 */
+export interface ProjectProviderRunCleanupRequest {
+  plan: Readonly<RunPlan>;
+  result: Readonly<RunnerResult>;
+}
+
+export interface ProjectProviderRunCleanup {
+  commands: RunnerCommand[];
 }
 
 export interface ProjectProviderPluginContext {
@@ -135,6 +148,9 @@ export function validateProjectProvider(value: unknown): asserts value is Projec
   if (provider.collectResult !== undefined && typeof provider.collectResult !== "function") {
     throw new Error(`项目 Provider collectResult 无效: ${provider.id}`);
   }
+  if (provider.cleanupRun !== undefined && typeof provider.cleanupRun !== "function") {
+    throw new Error(`项目 Provider cleanupRun 无效: ${provider.id}`);
+  }
   const hasResultAnalysis = provider.manifest.capabilities.some(capability => capability.id === "result.analysis");
   if (hasResultAnalysis && typeof provider.collectResult !== "function") {
     throw new Error(`项目 Provider 缺少 collectResult(): ${provider.id}`);
@@ -170,6 +186,15 @@ export function validateProjectProviderResultCollection(
   if (!value || typeof value !== "object" || !("bundle" in value)) {
     throw new Error("项目 Provider 结果收集输出无效");
   }
+}
+
+export function validateProjectProviderRunCleanup(
+  value: unknown,
+): asserts value is ProjectProviderRunCleanup {
+  if (!value || typeof value !== "object") throw new Error("项目 Provider 清理结果无效");
+  const cleanup = value as Partial<ProjectProviderRunCleanup>;
+  if (!Array.isArray(cleanup.commands)) throw new Error("项目 Provider 清理命令必须为数组");
+  for (const command of cleanup.commands) validateRunnerCommand(command);
 }
 
 export function validateProjectProviderManifest(

@@ -263,11 +263,13 @@ DELETE /api/tasks/:taskId
 - One task is created per selected target. Each task freezes the target, runner selection, parameters, command, project ID, and run ID.
 - `TestTask.target` is authoritative for rendering, command templates, concurrency, and Runner plans.
 - `TestTask.device` remains required during the v1 compatibility period. Mini-program tasks receive a virtual device derived from the target; new code does not use this placeholder for runtime decisions.
-- Active App tasks lock by device key. Active mini-program tasks lock by `target.concurrencyKey`.
+- App targets use a FIFO queue keyed by device key. The queue head executes immediately when its device is idle; later App tasks for that device remain `queued`. Queues for different devices execute independently.
+- An App task in `queued`, `preparing`, or `running` reserves its pair of `testId` and device key. A repeated start for that pair returns `TASK_DUPLICATE`, HTTP 409. A request containing any duplicate pair creates no tasks. A different App test may join the same device queue.
+- Active mini-program tasks lock by `target.concurrencyKey`.
 - One `TaskManager` instance establishes the mini-program lock before its first asynchronous persistence boundary. Concurrent `start()` calls therefore observe the first registered active task and only one call can acquire a given `concurrencyKey`.
 - Busy mini-program starts fail immediately with `TARGET_BUSY`; task queuing and cross-process locking are separate capabilities.
-- Cancellation aborts the Runner signal, calls optional Runner cancellation, persists the request, and finalizes the task as `cancelled`.
-- State loading adds `appRunTargetOf(task.device)` to legacy tasks without a target. Tasks persisted as active become `interrupted` after service restart.
+- Cancellation aborts the Runner signal, calls optional Runner cancellation, persists the request, and finalizes the task as `cancelled`. Cancelling an App task that is still queued starts no Runner and leaves the next queued task eligible to run after the current task reaches a terminal state.
+- State loading adds `appRunTargetOf(task.device)` to legacy tasks without a target. Tasks persisted as `queued`, `preparing`, or `running` become `interrupted` after service restart.
 - A terminal Runner result may set `resultUri`. MTC persists the URI before result analysis is requested.
 
 ### 4. Validation & Error Matrix
@@ -284,6 +286,8 @@ DELETE /api/tasks/:taskId
 | Target is absent from the selected test | `TARGET_UNSUPPORTED` |
 | Active task holds the concurrency key | `TARGET_BUSY`, HTTP 409 |
 | Two concurrent starts request the same concurrency key | One start succeeds and one returns `TARGET_BUSY`, HTTP 409 |
+| App device already has an executing task | Create a `queued` App task for that device; its queue position does not block tasks on other devices |
+| Active App task has the same test ID and device key | `TASK_DUPLICATE`, HTTP 409; no new task is created |
 | Service restarts with an active persisted task | Recover it as `interrupted` with a finished timestamp |
 
 ### 5. Good / Base / Bad Cases
@@ -300,7 +304,10 @@ DELETE /api/tasks/:taskId
 - Start App and mini-program tasks through HTTP and assert the frozen target in state and Runner plans.
 - Reject mixed, empty, unknown, unsupported, unavailable, and busy selections with exact codes.
 - Start two shared-key mini-program requests through `Promise.allSettled()`. Assert one fulfilled result, one `TARGET_BUSY` rejection, and one matching active task in `TaskManager.list()`.
+- Start App tasks on two devices and assert both runners enter `running`; start three App tasks for one device and assert FIFO execution, queued cancellation, and continued scheduling.
+- Reject repeated App starts for the same test ID and device in both `running` and `queued` states; assert a batch duplicate request remains atomic; allow a new task after the original reaches a terminal state and allow another test ID to join the device queue.
 - Assert mini-program cancellation, concurrency locking, persistence, and service-restart recovery.
+- Assert persisted App `queued` tasks recover as `interrupted` and never resume after restart.
 - Assert old state without `target` migrates to an App target.
 - Assert template resolution and UI labels prefer `target` over the compatibility device.
 
@@ -547,6 +554,18 @@ interface RunPlan {
   command?: RunnerCommand;
   requiredCapabilities?: string[];
 }
+
+interface ProjectProvider {
+  prepareRun?(request: { plan: Readonly<RunPlan>; capabilities: readonly string[] }): {
+    commands: RunnerCommand[];
+  };
+  cleanupRun?(request: {
+    plan: Readonly<RunPlan>;
+    result: Readonly<RunnerResult>;
+  }): {
+    commands: RunnerCommand[];
+  };
+}
 ```
 
 ### 3. Contracts
@@ -557,6 +576,9 @@ interface RunPlan {
 - Provider scope accepts platform strings beyond device platforms and remains bounded by target kind and runtime.
 - `prepareRun()` returns validated commands. The Provider command Runner executes them before the test command and forwards stdout, stderr, cancellation, and exit status.
 - `collectResult()` is required when the Provider declares `result.analysis`. Providers without that capability omit result collection.
+- `cleanupRun()` returns validated commands for resources registered during `prepareRun()`. After a prepared run reaches a pass, failure, or cancellation result, MTC executes cleanup with an independent signal so a user cancellation still releases project resources.
+- Cleanup receives the final pre-cleanup `RunnerResult`. A cleanup command failure changes the task result to `failed` and appends `项目资源清理失败: ...`; the original result error remains attached.
+- A shared QA coordinator participant ID derives from `plan.runId`. Provider cleanup releases that same ID and forwards the Runner exit code, allowing the coordinator to restore standard resources after the last successful participant leaves.
 - Command templates support `projectRoot`, `configPath`, `task.id`, `task.runId`, `params.*`, and mini-program `target.key`, `target.label`, `target.kind`, `target.platform`, `target.runtime`, `target.appId`, and `target.concurrencyKey`.
 - App commands retain the `device.*` template contract.
 - Cleanup accepts only the current task run ID and removes project-owned resources for that run. It runs as part of terminal task deletion.
@@ -575,12 +597,16 @@ interface RunPlan {
 | Provider declares `result.analysis` without `collectResult()` | Provider validation fails |
 | Provider implements `collectResult()` without `result.analysis` | Provider validation fails |
 | Preparation command is malformed | Runner fails before test execution |
+| `cleanupRun()` output is malformed | Runner marks the result failed and records the cleanup error |
+| Cleanup command exits nonzero | Runner marks the final task failed while preserving the preceding result error |
+| User cancellation arrives before cleanup | Cleanup still runs with a fresh, unaborted signal |
 | Cleanup receives an unsafe run ID | Project cleanup exits before touching files |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: a mini-program project wraps its existing Vitest and E2E commands and emits one Result Bundle shape.
 - Good: a project health check reports missing tools with actionable guidance.
+- Good: a QA Provider registers `mobile-test-console-${plan.runId}` and releases that exact participant during `cleanupRun()`.
 - Base: a legacy App uses `legacy-command-runner` and platform command definitions.
 - Bad: MTC core imports a project's page IDs, environment file, or fixture implementation.
 - Bad: a project changes its ordinary test command to satisfy MTC and breaks direct local usage.
@@ -588,7 +614,8 @@ interface RunPlan {
 ### 6. Tests Required
 
 - Load plugins through production config/runtime boundaries and assert API versions, IDs, scopes, and capabilities.
-- Assert Provider preparation order, command cwd/env/template values, cancellation, and result collection.
+- Assert Provider preparation order, command cwd/env/template values, cancellation, result collection, and cleanup execution after successful, failed, and cancelled commands.
+- Assert cleanup uses an unaborted signal after cancellation and cleanup failure changes the final result to `failed`.
 - Assert malformed plugins, duplicate IDs, missing capabilities, and result-analysis contract mismatches fail before execution.
 - Run project adapter tests for runtime diagnostics, Result Bundle conversion, run-ID cleanup, and credential/path sanitization.
 - Keep ordinary project test commands runnable outside MTC.
@@ -601,10 +628,22 @@ interface RunPlan {
 if (plan.projectId === "example") return runExampleSuite(plan);
 ```
 
+#### Wrong
+
+```ts
+prepareRun: request => ({
+  commands: [{ args: ["prepare", "--id", process.pid] }],
+}),
+```
+
 #### Correct
 
 ```js
-runnerPlugins: [{ module: "./tests/mtc/runner-plugin.cjs" }]
+cleanupRun: request => ({
+  commands: [{
+    args: ["cleanup", "--id", `mobile-test-console-${request.plan.runId}`],
+  }],
+})
 ```
 
 ## Scenario: Platform-neutral Result Bundle and artifacts

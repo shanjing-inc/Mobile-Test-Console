@@ -1,0 +1,2 @@
+{"id":"task-manager-device-fifo","kind":"spec","path":"src/server/task-manager.ts","summary":"设备维度 FIFO 调度：跨设备并行、同设备单活动任务、排队取消与终态后续调度。","acceptance":["不同 device.key 同时进入 running","同一 device.key 按 createdAt 顺序执行","排队任务可取消并触发后续任务"]}
+{"id":"fanli-provider-participant","kind":"research","path":"/Users/loumzy/workspace/app/fanli/packages/lynx/scripts/qa/mtc-lynx-project-provider.cjs","summary":"Provider 当前使用 process.pid 作为 prepare participantId，跨设备任务会复用标识；改为 task runId 派生唯一标识。","acceptance":["Android 与 HarmonyOS 生成不同 participantId","共享 fingerprint 可复用 QA Bundle"]}
