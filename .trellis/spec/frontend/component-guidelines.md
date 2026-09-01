@@ -38,6 +38,37 @@ Questions to answer:
 
 ## Styling Patterns
 
+### Mini-program run-target binding
+
+**Problem**: A test entry with one compatible run target still exposed a checkbox, allowing the user to clear the only executable environment. Collapsed retry rows could also hide an active descendant from the start-button busy check.
+
+**Contract**:
+
+- Filter configured targets through the selected test entry before choosing the interaction mode.
+- One visible compatible target is automatically bound through `initializeSelectedTargetKeys()`. `TargetRow` renders a fixed accessible bound indicator and omits the checkbox.
+- Two or more visible compatible targets keep explicit checkbox selection.
+- Target status and start-button availability derive busy execution resources from raw `snapshot.tasks`, keyed by `target.concurrencyKey`. This includes active retry descendants hidden by the run-list projection.
+- The start button disables while any selected target owns a busy concurrency key. `TARGET_BUSY` remains the server-side authority for stale browser snapshots.
+
+```tsx
+const autoBoundTarget = visibleTargets.length === 1;
+const selectedTargetBusy = hasBusySelectedTarget(
+  selectedKeys,
+  configuredTargets,
+  snapshot?.tasks ?? [],
+);
+
+<TargetRow autoBound={autoBoundTarget} />
+<button disabled={selectedTargetBusy}>启动测试</button>
+```
+
+**Required regression checks**:
+
+- A single target renders its label, platform, runtime, bound indicator, and current state without a checkbox.
+- Multiple targets render operable checkboxes; a busy target keeps its checkbox disabled.
+- An active retry descendant sharing the selected target's concurrency key disables start even when the run monitor collapses it into the source row.
+- Empty selection and terminal retry tasks keep the busy predicate false.
+
 ### Viewport-owned application shell
 
 **Problem**: A document-level scrollbar moves the top bar and project sidebar together with long workspace content.

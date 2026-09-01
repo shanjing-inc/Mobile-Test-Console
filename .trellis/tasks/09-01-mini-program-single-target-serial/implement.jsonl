@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"核对小程序运行目标、concurrencyKey 互斥和测试入口契约"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"遵循执行工作台组件交互与响应式布局约定"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"验证前端选择状态到后端任务互斥的完整数据流"}

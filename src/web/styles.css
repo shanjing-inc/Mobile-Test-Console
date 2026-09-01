@@ -113,6 +113,8 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
 .platform-filter button.active { color: var(--teal); background: white; box-shadow: 0 1px 3px rgba(24, 35, 40, .12); }
 .device-list { display: grid; gap: 8px; max-height: max(380px, calc(100vh - 310px)); overflow-y: auto; padding-right: 3px; scrollbar-width: thin; }
 .target-row { cursor: pointer; }
+.target-row.auto-bound { cursor: default; }
+.target-bound-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; color: var(--teal); }
 .device-row { min-height: 72px; display: grid; grid-template-columns: 20px 8px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 11px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-muted); transition: border-color .15s, background .15s; }
 .device-row:hover, .device-row.selected { border-color: #8ccbc6; background: #f1fbfa; }
 .device-row.disabled { background: #fafbfb; }

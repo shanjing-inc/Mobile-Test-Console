@@ -264,6 +264,8 @@ DELETE /api/tasks/:taskId
 - `TestTask.target` is authoritative for rendering, command templates, concurrency, and Runner plans.
 - `TestTask.device` remains required during the v1 compatibility period. Mini-program tasks receive a virtual device derived from the target; new code does not use this placeholder for runtime decisions.
 - Active App tasks lock by device key. Active mini-program tasks lock by `target.concurrencyKey`.
+- One `TaskManager` instance establishes the mini-program lock before its first asynchronous persistence boundary. Concurrent `start()` calls therefore observe the first registered active task and only one call can acquire a given `concurrencyKey`.
+- Busy mini-program starts fail immediately with `TARGET_BUSY`; task queuing and cross-process locking are separate capabilities.
 - Cancellation aborts the Runner signal, calls optional Runner cancellation, persists the request, and finalizes the task as `cancelled`.
 - State loading adds `appRunTargetOf(task.device)` to legacy tasks without a target. Tasks persisted as active become `interrupted` after service restart.
 - A terminal Runner result may set `resultUri`. MTC persists the URI before result analysis is requested.
@@ -281,11 +283,13 @@ DELETE /api/tasks/:taskId
 | Unknown configured target | `TARGET_UNKNOWN`, HTTP 404 |
 | Target is absent from the selected test | `TARGET_UNSUPPORTED` |
 | Active task holds the concurrency key | `TARGET_BUSY`, HTTP 409 |
+| Two concurrent starts request the same concurrency key | One start succeeds and one returns `TARGET_BUSY`, HTTP 409 |
 | Service restarts with an active persisted task | Recover it as `interrupted` with a finished timestamp |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: two independent mini-program targets use different concurrency keys and execute concurrently.
+- Good: two simultaneous starts share one concurrency key; one task is registered and the competing start receives `TARGET_BUSY`.
 - Good: a legacy App task gains an App target during state loading and continues to render normally.
 - Base: stopping an already terminal task returns the terminal snapshot.
 - Bad: account-profile selection runs against the mini-program virtual device.
@@ -295,9 +299,30 @@ DELETE /api/tasks/:taskId
 
 - Start App and mini-program tasks through HTTP and assert the frozen target in state and Runner plans.
 - Reject mixed, empty, unknown, unsupported, unavailable, and busy selections with exact codes.
+- Start two shared-key mini-program requests through `Promise.allSettled()`. Assert one fulfilled result, one `TARGET_BUSY` rejection, and one matching active task in `TaskManager.list()`.
 - Assert mini-program cancellation, concurrency locking, persistence, and service-restart recovery.
 - Assert old state without `target` migrates to an App target.
 - Assert template resolution and UI labels prefer `target` over the compatibility device.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+await persist(task);
+tasks.set(task.id, task);
+```
+
+This yields execution before the in-memory lock exists, so a concurrent start can acquire the same execution resource.
+
+#### Correct
+
+```ts
+tasks.set(task.id, task);
+await persist(task);
+```
+
+The synchronous registration makes the active task visible to every later `start()` call in the same `TaskManager` instance.
 
 ## Scenario: Manual re-test from terminal results
 

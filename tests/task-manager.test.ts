@@ -688,6 +688,62 @@ describe("任务管理器", () => {
     await manager.shutdown();
   });
 
+  it("并发启动共享执行环境的小程序目标时只创建一个活动任务", async () => {
+    const dir = await createTempDir("mtc-mini-target-concurrent-start-");
+    const config = createConfig(dir);
+    config.project.integrationType = "mini-program";
+    config.deviceProviders = [];
+    config.tests = [{
+      id: "mini-long",
+      label: "小程序 Smoke",
+      description: "",
+      platforms: [],
+      targetKeys: ["wechat-devtools"],
+      parameters: [],
+      commands: {
+        default: {
+          executable: process.execPath,
+          args: ["-e", "setInterval(() => {}, 1000)"],
+        },
+      },
+    }];
+    const target: MiniProgramRunTarget = {
+      key: "wechat-devtools",
+      kind: "mini-program",
+      label: "微信开发者工具",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-demo",
+      concurrencyKey: "mini-wechat",
+    };
+    const manager = new TaskManager(config, new StateStore(dir));
+    await manager.initialize();
+
+    const results = await Promise.allSettled([
+      manager.start(
+        { testId: "mini-long", targetKeys: [target.key], parameters: {} },
+        [], undefined, undefined, undefined, [target],
+      ),
+      manager.start(
+        { testId: "mini-long", targetKeys: [target.key], parameters: {} },
+        [], undefined, undefined, undefined, [target],
+      ),
+    ]);
+    const fulfilled = results.filter((result): result is PromiseFulfilledResult<TestTask[]> => result.status === "fulfilled");
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toMatchObject({ code: "TARGET_BUSY" });
+    expect(manager.list().filter(task => (
+      task.target?.concurrencyKey === target.concurrencyKey
+        && ["queued", "preparing", "running"].includes(task.status)
+    ))).toHaveLength(1);
+
+    await manager.stop(fulfilled[0]!.value[0]!.id);
+    await manager.shutdown();
+  });
+
   it("删除终态任务并立即持久化结果", async () => {
     const dir = await createTempDir("mtc-task-delete-");
     const config = createConfig(dir);

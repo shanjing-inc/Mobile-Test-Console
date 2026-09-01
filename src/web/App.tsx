@@ -507,20 +507,26 @@ export default function App() {
 
   const activeTaskByConcurrencyKey = useMemo(() => {
     const map = new Map<string, TestTask>();
-    for (const task of tasks) {
+    for (const task of snapshot?.tasks ?? []) {
       const concurrencyKey = task.target?.concurrencyKey;
       if (!concurrencyKey || !ACTIVE_STATUSES.has(task.status)) continue;
       const current = map.get(concurrencyKey);
       if (!current || task.createdAt > current.createdAt) map.set(concurrencyKey, task);
     }
     return map;
-  }, [tasks]);
+  }, [snapshot?.tasks]);
 
   const connectedDevices = (snapshot?.devices || []).filter(device => device.connectionState === "available");
   const configuredTargets = snapshot?.targets ?? [];
   const visibleTargets = configuredTargets.filter(target => (
     !selectedTest?.targetKeys?.length || selectedTest.targetKeys.includes(target.key)
   ));
+  const autoBoundTarget = visibleTargets.length === 1;
+  const selectedTargetBusy = selectedProjectFamily === "mini-program" && hasBusySelectedTarget(
+    selectedKeys,
+    configuredTargets,
+    snapshot?.tasks ?? [],
+  );
   const selectedDevicePlatforms = [...new Set((snapshot?.devices || [])
     .filter(device => selectedKeys.includes(device.key))
     .map(device => device.platform))];
@@ -1059,6 +1065,7 @@ export default function App() {
                 target={target}
                 task={activeTaskByConcurrencyKey.get(target.concurrencyKey) ?? taskByTarget.get(target.key)}
                 selected={selectedKeys.includes(target.key)}
+                autoBound={autoBoundTarget}
                 onToggle={() => toggleTarget(target)}
               />)}
               {selectedProjectFamily === "app" && visibleDevices.map(device => (
@@ -1141,7 +1148,7 @@ export default function App() {
                   </label>;
                 })}
               </div>
-              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每个运行目标独立记录结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0 || !commandPreviewReady}><Play size={16} fill="currentColor" />启动测试</button></div>
+              <div className="test-actions"><span className="action-hint"><Copy size={14} /> 每个运行目标独立记录结果</span><button className="primary-button" type="button" onClick={() => void handleStart()} disabled={actionPending || selectedKeys.length === 0 || !selectedTest || selectedTestMissingCapabilities.length > 0 || !commandPreviewReady || selectedTargetBusy}><Play size={16} fill="currentColor" />启动测试</button></div>
             </section>
 
             <section className="section-panel runs-panel">
@@ -1946,14 +1953,20 @@ export function DeviceRow({ device, task, selected, onToggle, starting, onStart,
   </div>;
 }
 
-export function TargetRow({ target, task, selected, onToggle }: { target: RunTarget; task?: TestTask; selected: boolean; onToggle: () => void }) {
+export function TargetRow({ target, task, selected, autoBound = false, onToggle }: { target: RunTarget; task?: TestTask; selected: boolean; autoBound?: boolean; onToggle: () => void }) {
   const busy = Boolean(task && ACTIVE_STATUSES.has(task.status));
-  return <label className={`device-row target-row ${selected ? "selected" : ""} ${busy ? "disabled" : ""}`}>
-    <input type="checkbox" checked={selected} onChange={onToggle} disabled={busy} aria-label={`选择 ${target.label}`} />
+  const content = <>
+    {autoBound
+      ? <span className="target-bound-icon" role="img" aria-label={`已绑定 ${target.label}`} title="已自动绑定"><CheckCircle2 size={16} /></span>
+      : <input type="checkbox" checked={selected} onChange={onToggle} disabled={busy} aria-label={`选择 ${target.label}`} />}
     <span className={`device-status-dot ${busy ? "offline" : "available"}`} />
     <span className="device-main"><strong>{target.label}</strong><span>{target.platform} · {target.runtime}</span></span>
-    <span className="device-side"><span className="connection-label available">{busy ? "测试中" : "可运行"}</span><small>{target.key}</small></span>
-  </label>;
+    <span className="device-side"><span className={`connection-label ${busy ? "offline" : "available"}`}>{busy ? "测试中" : "可运行"}</span><small>{target.key}</small></span>
+  </>;
+  const className = `device-row target-row ${selected || autoBound ? "selected" : ""} ${autoBound ? "auto-bound" : ""} ${busy ? "disabled" : ""}`;
+  return autoBound
+    ? <div className={className}>{content}</div>
+    : <label className={className}>{content}</label>;
 }
 
 export function RunRow({ task, focused, retrying = false, onFocus, onStop, onRetain, onDelete, pending }: { task: TestTask; focused: boolean; retrying?: boolean; onFocus: () => void; onStop: () => void; onRetain?: () => void; onDelete: () => void; pending: boolean }) {
@@ -2111,6 +2124,23 @@ export function initializeSelectedTargetKeys(
   return reconciled.length === 0 && supportedTargetKeys.length === 1
     ? supportedTargetKeys
     : reconciled;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function hasBusySelectedTarget(
+  selectedKeys: string[],
+  targets: RunTarget[],
+  tasks: TestTask[],
+): boolean {
+  const selectedConcurrencyKeys = new Set(targets
+    .filter(target => selectedKeys.includes(target.key))
+    .map(target => target.concurrencyKey));
+  return tasks.some(task => {
+    const concurrencyKey = task.target?.concurrencyKey;
+    return Boolean(concurrencyKey
+      && selectedConcurrencyKeys.has(concurrencyKey)
+      && ACTIVE_STATUSES.has(task.status));
+  });
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

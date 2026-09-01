@@ -2,7 +2,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Device, MiniProgramRunTarget, PublicTestDefinition, TestCommandPreview, TestTask } from "../src/shared/contracts.js";
-import { DeviceRow, formatCommandLine, initializeSelectedTargetKeys, materializeTestParameters, reconcileSelectedKeysForTest, resolveCommandPreviewTargetKeys, TargetRow, TestCommandDetailsDialog, TestCommandPreviewPanel, TestEntryDescription, testEntryOptionLabel } from "../src/web/App.js";
+import { DeviceRow, formatCommandLine, hasBusySelectedTarget, initializeSelectedTargetKeys, materializeTestParameters, reconcileSelectedKeysForTest, resolveCommandPreviewTargetKeys, TargetRow, TestCommandDetailsDialog, TestCommandPreviewPanel, TestEntryDescription, testEntryOptionLabel } from "../src/web/App.js";
 import { installDevicePreparation, startDevice } from "../src/web/api.js";
 
 afterEach(() => {
@@ -217,7 +217,32 @@ describe("网页 iOS 模拟器启动", () => {
     }));
   });
 
-  it("小程序运行目标展示运行时并在任务执行时锁定选择", () => {
+  it("小程序单目标展示已绑定状态且不提供取消控件", () => {
+    const target: MiniProgramRunTarget = {
+      key: "wechat-devtools",
+      kind: "mini-program",
+      label: "微信开发者工具",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-test",
+      concurrencyKey: "mini-wechat",
+    };
+    const html = renderToStaticMarkup(React.createElement(TargetRow, {
+      target,
+      selected: true,
+      autoBound: true,
+      onToggle: () => undefined,
+    }));
+    expect(html).toContain("微信开发者工具");
+    expect(html).toContain("wechat · wechat-devtools");
+    expect(html).toContain("已自动绑定");
+    expect(html).toContain("role=\"img\"");
+    expect(html).toContain("aria-label=\"已绑定 微信开发者工具\"");
+    expect(html).toContain("可运行");
+    expect(html).not.toContain("type=\"checkbox\"");
+  });
+
+  it("小程序单目标执行时展示测试中且不提供取消控件", () => {
     const target: MiniProgramRunTarget = {
       key: "wechat-devtools",
       kind: "mini-program",
@@ -232,11 +257,78 @@ describe("网页 iOS 模拟器启动", () => {
       target, device: { key: "target:wechat-devtools", id: "wechat-devtools", name: "微信开发者工具", platform: "android", type: "emulator", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "" },
       parameters: {}, status: "running" as const, phase: "running", createdAt: "", startedAt: "", finishedAt: "", exitCode: null, error: "", logs: [],
     };
-    const html = renderToStaticMarkup(React.createElement(TargetRow, { target, task, selected: true, onToggle: () => undefined }));
+    const html = renderToStaticMarkup(React.createElement(TargetRow, { target, task, selected: true, autoBound: true, onToggle: () => undefined }));
     expect(html).toContain("微信开发者工具");
     expect(html).toContain("wechat · wechat-devtools");
     expect(html).toContain("测试中");
-    expect(html).toContain("disabled=\"\"");
+    expect(html).not.toContain("type=\"checkbox\"");
+  });
+
+  it("小程序多目标继续提供可操作选择框", () => {
+    const target: MiniProgramRunTarget = {
+      key: "wechat-devtools",
+      kind: "mini-program",
+      label: "微信开发者工具",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-test",
+      concurrencyKey: "mini-wechat",
+    };
+    const html = renderToStaticMarkup(React.createElement(TargetRow, {
+      target,
+      selected: false,
+      autoBound: false,
+      onToggle: () => undefined,
+    }));
+    expect(html).toContain("type=\"checkbox\"");
+    expect(html).toContain("aria-label=\"选择 微信开发者工具\"");
+    expect(html).not.toContain("disabled=\"\"");
+
+    const busyHtml = renderToStaticMarkup(React.createElement(TargetRow, {
+      target,
+      task: {
+        id: "task-busy", runId: "run-busy", projectId: "mini", testId: "smoke", testLabel: "Smoke",
+        target, device: { key: "target:wechat-devtools", id: "wechat-devtools", name: "微信开发者工具", platform: "android", type: "emulator", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "" },
+        parameters: {}, status: "running", phase: "running", createdAt: "", startedAt: "", finishedAt: "", exitCode: null, error: "", logs: [],
+      },
+      selected: true,
+      autoBound: false,
+      onToggle: () => undefined,
+    }));
+    expect(busyHtml).toContain("type=\"checkbox\"");
+    expect(busyHtml).toContain("disabled=\"\"");
+    expect(busyHtml).toContain("测试中");
+  });
+
+  it("运行列表归并隐藏活动重试时仍阻止共享执行环境启动", () => {
+    const target: MiniProgramRunTarget = {
+      key: "wechat-devtools",
+      kind: "mini-program",
+      label: "微信开发者工具",
+      platform: "wechat",
+      runtime: "wechat-devtools",
+      appId: "wx-test",
+      concurrencyKey: "mini-wechat",
+    };
+    const targets = [target];
+    const source: TestTask = {
+      id: "task-source", runId: "run-source", projectId: "mini", testId: "smoke", testLabel: "Smoke",
+      target, device: { key: "target:wechat-devtools", id: "wechat-devtools", name: "微信开发者工具", platform: "android", type: "emulator", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "" },
+      parameters: {}, status: "failed", phase: "failed", createdAt: "2026-09-01T00:00:00.000Z", startedAt: "", finishedAt: "", exitCode: 1, error: "failed", logs: [],
+    };
+    const retry: TestTask = {
+      ...source,
+      id: "task-retry",
+      runId: "run-retry",
+      status: "running",
+      phase: "running",
+      createdAt: "2026-09-01T00:01:00.000Z",
+      retryOf: { taskId: source.id, runId: source.runId, scope: "task", attempt: 1 },
+    };
+
+    expect(hasBusySelectedTarget([target.key], targets, [source, retry])).toBe(true);
+    expect(hasBusySelectedTarget([target.key], targets, [source, { ...retry, status: "passed" }])).toBe(false);
+    expect(hasBusySelectedTarget([], targets, [source, retry])).toBe(false);
   });
 
   it("切换小程序测试入口时保留共享目标并移除失效目标", () => {
