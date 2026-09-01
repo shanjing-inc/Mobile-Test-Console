@@ -687,3 +687,26 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Next Steps
 
 - 保留 MTC 重试任务改动及 SaaS 页面矩阵诊断任务改动，继续由各自任务处理。
+
+
+## Session 22: 加固重试终态并简化小程序单目标运行
+<!-- trellis-session: v=2 fp=70a26fcee0b16383 -->
+
+**Date**: 2026-09-01
+**Task**: 加固重试终态并简化小程序单目标运行
+**Branch**: `main`
+
+### Summary
+
+修复任务终态竞态、取消容错和状态写入恢复；小程序唯一运行目标改为自动绑定，并通过 concurrencyKey 并发回归测试保证单实例串行执行。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1d5efb2` | fix(mtc): 加固重试终态与状态持久化 |
+| `2075606` | feat(mtc): 简化小程序单目标运行交互 |
+
+### Status
+
+[OK] **Completed**
