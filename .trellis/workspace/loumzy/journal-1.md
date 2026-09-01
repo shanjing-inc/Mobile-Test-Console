@@ -710,3 +710,25 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 23: App 多设备并行测试
+<!-- trellis-session: v=2 fp=6accefe7e2acbe70 -->
+
+**Date**: 2026-09-01
+**Task**: App 多设备并行测试
+**Branch**: `main`
+
+### Summary
+
+实现按设备 FIFO 的 App 调度、跨设备并行、同入口同设备活动任务去重；Fanli 仓库的关联提交为 af758000a，负责释放任务级 QA 准备参与者。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5961319` | feat(mtc): 支持 App 多设备并行测试 |
+
+### Status
+
+[OK] **Completed**
