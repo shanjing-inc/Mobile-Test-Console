@@ -21,6 +21,16 @@ export function taskResultRunKey(run: Pick<TaskResultRun, "runId" | "caseId">): 
   return `${run.runId}:${run.caseId}`;
 }
 
+export function uniqueFailedTargetPages(
+  runs: ReadonlyArray<Pick<TaskResultRun, "status" | "targetPage">>,
+): string[] {
+  const pages = new Set<string>();
+  for (const run of runs) {
+    if (run.status === "failed" && run.targetPage) pages.add(run.targetPage);
+  }
+  return [...pages];
+}
+
 export function isFailedApiCall(call: Pick<TaskResultApiCall, "result" | "status">): boolean {
   const result = String(call.result || "").toLowerCase();
   if (result && !["success", "passed", "ok"].includes(result)) return true;

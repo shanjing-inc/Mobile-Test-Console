@@ -8,3 +8,4 @@ coverage/
 .mtc-state/
 __pycache__/
 *.pyc
+examples/com.shanjing.example/android/build/

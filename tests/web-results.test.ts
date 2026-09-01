@@ -1,10 +1,10 @@
-import { createElement } from "react";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskResult } from "../src/shared/contracts.js";
-import { ResultPanel } from "../src/web/App.js";
+import { OverviewResult, ResultPanel } from "../src/web/App.js";
 import { fetchSnapshot, fetchTaskResult, retryTask, taskArtifactUrl } from "../src/web/api.js";
-import { diagnoseTaskResultRun, isFailedApiCall, suiteTestSummary } from "../src/web/result-analysis.js";
+import { diagnoseTaskResultRun, isFailedApiCall, suiteTestSummary, uniqueFailedTargetPages } from "../src/web/result-analysis.js";
 
 describe("QA 结果分析界面", () => {
   it("概览展示用例、截图和接口统计", () => {
@@ -101,7 +101,7 @@ describe("QA 结果分析界面", () => {
       onCopy: vi.fn(),
     }));
 
-    expect(markup).toContain("重试全部失败用例");
+    expect(markup).toContain("重试全部失败页面");
     expect(markup).toContain("重新测试");
     expect(markup).toContain('aria-label="重新测试 case-one"');
   });
@@ -121,8 +121,7 @@ describe("QA 结果分析界面", () => {
       onCopy: vi.fn(),
     }));
 
-    expect(markup).not.toContain("重试全部失败用例");
-    expect(markup).not.toContain("重试全部失败用例");
+    expect(markup).not.toContain("重试全部失败页面");
     expect(markup).toContain("重新测试");
   });
 
@@ -132,6 +131,52 @@ describe("QA 结果分析界面", () => {
     expect(markup).toContain("当前用例：");
     expect(markup).toContain("查看全部用例");
     expect(markup).toContain("DemoQuery");
+  });
+
+  it("失败结果按首次出现顺序生成唯一页面重试范围", () => {
+    const duplicatePageResult: TaskResult = {
+      ...result,
+      total: 4,
+      caseRunCount: 4,
+      runs: [
+        result.runs[0],
+        { ...result.runs[0], runId: "run-one-case-two", caseRunId: "run-one-case-two", caseId: "case-two" },
+        { ...result.runs[0], runId: "run-two-case-three", caseRunId: "run-two-case-three", caseId: "case-three", targetPage: "pages/second/index" },
+        { ...result.runs[0], runId: "run-three-case-four", caseRunId: "run-three-case-four", caseId: "case-four", status: "passed", targetPage: "pages/passed/index" },
+      ],
+    };
+    expect(uniqueFailedTargetPages(duplicatePageResult.runs)).toEqual([
+      "pageDemo",
+      "pages/second/index",
+    ]);
+
+    const onRetryTask = vi.fn();
+    const overview = OverviewResult({
+      taskId: "task-one",
+      result: duplicatePageResult,
+      filter: "all",
+      onFilterChange: vi.fn(),
+      selectedRunKey: "",
+      onSelectRun: vi.fn(),
+      imagesVisible: true,
+      onToggleImages: vi.fn(),
+      onCopy: vi.fn(),
+      repairJobs: [],
+      codexRepairEnabled: false,
+      repairPending: false,
+      retryPending: false,
+      pageRetryEnabled: true,
+      onRetryTask,
+    });
+    const retryButton = findElement(overview, element => (
+      element.type === "button" && element.props["aria-label"] === "重试全部失败页面"
+    ));
+    expect(retryButton).toBeDefined();
+    (retryButton?.props.onClick as (() => void) | undefined)?.();
+    expect(onRetryTask).toHaveBeenCalledOnce();
+    expect(onRetryTask).toHaveBeenCalledWith({
+      targetPages: ["pageDemo", "pages/second/index"],
+    });
   });
 
   it("历史结果缺少参数字段时明确提示未记录", () => {
@@ -309,6 +354,22 @@ function renderResult(tab: "overview" | "screenshots" | "api" | "evidence", init
     onTab: vi.fn(),
     onCopy: vi.fn(),
   }));
+}
+
+function findElement(
+  node: ReactNode,
+  predicate: (element: ReactElement<Record<string, unknown>>) => boolean,
+): ReactElement<Record<string, unknown>> | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const match = findElement(child, predicate);
+      if (match) return match;
+    }
+    return undefined;
+  }
+  if (!isValidElement<Record<string, unknown>>(node)) return undefined;
+  if (predicate(node)) return node;
+  return findElement(node.props.children as ReactNode, predicate);
 }
 
 const result: TaskResult = {

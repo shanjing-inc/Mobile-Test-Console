@@ -275,6 +275,186 @@ describe("任务管理器", () => {
     await manager.shutdown();
   });
 
+  it("重试任务超时后终止 Runner 并进入失败终态", async () => {
+    const dir = await createTempDir("mtc-task-retry-watchdog-");
+    let cancelCalls = 0;
+    const runner: InProcessRunner = {
+      id: "retry-watchdog-runner",
+      run: () => new Promise(() => undefined),
+      cancel() {
+        cancelCalls += 1;
+        return new Promise(() => undefined);
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      undefined,
+      10,
+    );
+    await manager.initialize();
+    const [created] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { taskId: "source-task", runId: "source-run", scope: "task", attempt: 1 },
+    );
+    const finished = await waitForStatus(manager, created.id, "failed");
+    expect(cancelCalls).toBe(1);
+    expect(finished.error).toContain("重试超时");
+    await manager.shutdown();
+  });
+
+  it("Runner 取消抛错时重试超时仍进入失败终态并记录诊断", async () => {
+    const dir = await createTempDir("mtc-task-retry-watchdog-cancel-error-");
+    const runner: InProcessRunner = {
+      id: "retry-watchdog-cancel-error-runner",
+      run: () => new Promise(() => undefined),
+      cancel() {
+        throw new Error("cancel exploded");
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      undefined,
+      10,
+    );
+    await manager.initialize();
+    const [created] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { taskId: "source-task", runId: "source-run", scope: "task", attempt: 1 },
+    );
+
+    await expect(waitForStatus(manager, created.id, "failed")).resolves.toMatchObject({
+      error: expect.stringContaining("重试超时"),
+    });
+    const diagnosed = await waitForLog(manager, created.id, "终止超时重试失败: cancel exploded");
+    expect(diagnosed.status).toBe("failed");
+    await manager.shutdown();
+  });
+
+  it("重试超时与 Runner 返回竞争时保持失败终态并只通知一次", async () => {
+    const dir = await createTempDir("mtc-task-retry-watchdog-race-");
+    const completed = vi.fn();
+    let finishRun: ((result: RunnerResult) => void) | undefined;
+    const runner: InProcessRunner = {
+      id: "retry-watchdog-race-runner",
+      run() {
+        return new Promise(resolve => {
+          finishRun = resolve;
+        });
+      },
+      cancel(runId) {
+        finishRun?.({ runId, status: "passed", exitCode: 0 });
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      completed,
+      10,
+    );
+    await manager.initialize();
+    const [created] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { taskId: "source-task", runId: "source-run", scope: "task", attempt: 1 },
+    );
+
+    const finished = await waitForStatus(manager, created.id, "failed");
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(finished.error).toContain("重试超时");
+    expect(manager.get(created.id)?.status).toBe("failed");
+    expect(completed).toHaveBeenCalledTimes(1);
+    expect(completed).toHaveBeenCalledWith(expect.objectContaining({ id: created.id, status: "failed" }));
+    await manager.shutdown();
+  });
+
+  it("终态持久化同步重入时由首个提交唯一完成", async () => {
+    const dir = await createTempDir("mtc-task-finalize-reentry-");
+    const completed = vi.fn();
+    let reenterOnSave = false;
+    let stopRequest: Promise<TestTask> | undefined;
+    const callbacks: { stopTask?: () => Promise<TestTask> } = {};
+    let createdTaskId = "";
+    const store = {
+      async load() {
+        return [];
+      },
+      async save() {
+        if (!reenterOnSave) return;
+        reenterOnSave = false;
+        stopRequest = callbacks.stopTask?.();
+      },
+    } as unknown as StateStore;
+    let finish: ((result: RunnerResult) => void) | undefined;
+    const runner: InProcessRunner = {
+      id: "finalize-reentry-runner",
+      run: () => new Promise(resolve => {
+        finish = resolve;
+      }),
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      store,
+      runner,
+      { resolve: () => runner },
+      completed,
+      5_000,
+    );
+    callbacks.stopTask = () => manager.stop(createdTaskId);
+    await manager.initialize();
+    const [created] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { taskId: "source-task", runId: "source-run", scope: "task", attempt: 1 },
+    );
+    createdTaskId = created.id;
+    await waitForStatus(manager, created.id, "running");
+
+    reenterOnSave = true;
+    finish?.({ runId: created.runId, status: "passed", exitCode: 0 });
+
+    await expect(waitForStatus(manager, created.id, "passed")).resolves.toMatchObject({ status: "passed" });
+    await expect(stopRequest).resolves.toMatchObject({ status: "passed" });
+    expect(completed).toHaveBeenCalledTimes(1);
+    await manager.shutdown();
+  });
+
+  it("状态写入失败后允许后续保存重试", async () => {
+    const dir = await createTempDir("mtc-state-store-retry-");
+    const store = new StateStore(dir);
+    const writeFile = vi.spyOn(fs, "writeFile").mockRejectedValueOnce(new Error("temporary write failure"));
+
+    await expect(store.save([])).rejects.toThrow("temporary write failure");
+    writeFile.mockRestore();
+    await expect(store.save([])).resolves.toBeUndefined();
+    await expect(store.load()).resolves.toEqual([]);
+  });
+
   it("任务终态持久化后通知接入进度监听器", async () => {
     const dir = await createTempDir("mtc-task-completion-listener-");
     const completed: Array<{ status: TaskStatus; resultUri?: string }> = [];
@@ -614,6 +794,145 @@ describe("任务管理器", () => {
     await manager.shutdown();
   });
 
+  it("重试 Runner 超时后持久化失败并解除来源锁定", async () => {
+    const dir = await createTempDir("mtc-task-retry-timeout-");
+    const cancelledRunIds: string[] = [];
+    const runner: InProcessRunner = {
+      id: "retry-timeout-runner",
+      async run(plan) {
+        if (!plan.metadata?.retry) return { runId: plan.runId, status: "passed", exitCode: 0 };
+        return new Promise<RunnerResult>(() => undefined);
+      },
+      async cancel(runId) {
+        cancelledRunIds.push(runId);
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      undefined,
+      20,
+    );
+    await manager.initialize();
+    const [source] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(manager, source.id, "passed");
+    const [retry] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device], undefined, undefined, undefined, [],
+      { taskId: source.id, runId: source.runId, scope: "cases", attempt: 1, caseRunIds: ["case-one"] },
+    );
+
+    const finished = await waitForStatus(manager, retry.id, "failed");
+    expect(finished.error).toContain("重试超时");
+    expect(finished.logs.join("\n")).toContain("重试超过");
+    expect(cancelledRunIds).toContain(retry.runId);
+    await expect(manager.delete(source.id)).resolves.toMatchObject({ id: source.id });
+    await manager.shutdown();
+  });
+
+  it("停止重试立即结束任务并解除来源锁定", async () => {
+    const dir = await createTempDir("mtc-task-retry-stop-");
+    const { runner, cancelledRunIds } = createControlledRunner("retry-stop-runner");
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      undefined,
+      5_000,
+    );
+    await manager.initialize();
+    const [source] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const sourceRunning = await waitForStatus(manager, source.id, "running");
+    await manager.stop(source.id);
+    await waitForStatus(manager, source.id, "cancelled");
+    const [retry] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device], undefined, undefined, undefined, [],
+      { taskId: source.id, runId: sourceRunning.runId, scope: "cases", attempt: 1, caseRunIds: ["case-one"] },
+    );
+    await waitForStatus(manager, retry.id, "running");
+    const stopped = await manager.stop(retry.id);
+    expect(stopped.status).toBe("cancelled");
+    expect(manager.get(source.id)?.retained).toBe(true);
+    expect(cancelledRunIds).toContain(retry.runId);
+    await expect(manager.setRetained(source.id, false)).resolves.toMatchObject({ id: source.id, retained: false });
+    await manager.shutdown();
+  });
+
+  it("Runner 取消永久挂起时停止重试仍立即返回取消终态", async () => {
+    const dir = await createTempDir("mtc-task-retry-stop-hanging-cancel-");
+    let cancelCalls = 0;
+    const runner: InProcessRunner = {
+      id: "retry-stop-hanging-cancel-runner",
+      run: () => new Promise(() => undefined),
+      cancel() {
+        cancelCalls += 1;
+        return new Promise(() => undefined);
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      undefined,
+      5_000,
+    );
+    await manager.initialize();
+    const [retry] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { taskId: "source-task", runId: "source-run", scope: "task", attempt: 1 },
+    );
+    await waitForStatus(manager, retry.id, "running");
+
+    await expect(manager.stop(retry.id)).resolves.toMatchObject({ status: "cancelled" });
+    expect(cancelCalls).toBe(1);
+    await manager.shutdown();
+  });
+
+  it("Runner 取消抛错时停止重试仍返回取消终态并记录诊断", async () => {
+    const dir = await createTempDir("mtc-task-retry-stop-cancel-error-");
+    const runner: InProcessRunner = {
+      id: "retry-stop-cancel-error-runner",
+      run: () => new Promise(() => undefined),
+      async cancel() {
+        throw new Error("stop cancel exploded");
+      },
+    };
+    const manager = new TaskManager(
+      createConfig(dir),
+      new StateStore(dir),
+      runner,
+      { resolve: () => runner },
+      undefined,
+      5_000,
+    );
+    await manager.initialize();
+    const [retry] = await manager.start(
+      { testId: "pass", deviceKeys: [device.key], parameters: {} },
+      [device],
+      undefined,
+      undefined,
+      undefined,
+      [],
+      { taskId: "source-task", runId: "source-run", scope: "task", attempt: 1 },
+    );
+    await waitForStatus(manager, retry.id, "running");
+
+    await expect(manager.stop(retry.id)).resolves.toMatchObject({ status: "cancelled" });
+    const diagnosed = await waitForLog(manager, retry.id, "停止重试 Runner 失败: stop cancel exploded");
+    expect(diagnosed.status).toBe("cancelled");
+    await manager.shutdown();
+  });
+
   it("本地文件清理失败时保留任务记录", async () => {
     const dir = await createTempDir("mtc-task-delete-failure-");
     const config = createConfig(dir);
@@ -751,6 +1070,16 @@ async function waitForStatus(manager: TaskManager, taskId: string, expected: Tas
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error(`等待任务状态超时: ${expected}`);
+}
+
+async function waitForLog(manager: TaskManager, taskId: string, expected: string) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const task = manager.get(taskId);
+    if (task?.logs.some(line => line.includes(expected))) return task;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`等待任务日志超时: ${expected}`);
 }
 
 function createControlledRunner(id: string): {

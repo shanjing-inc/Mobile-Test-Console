@@ -37,6 +37,7 @@ const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
 const MAX_TASKS = 100;
 const MAX_LOG_LINES = 500;
 const MAX_LOG_LINE_LENGTH = 4_000;
+export const RETRY_WATCHDOG_TIMEOUT_MS = 45 * 60 * 1_000;
 
 export type TaskCompletionListener = (task: TestTask) => void | Promise<void>;
 
@@ -48,6 +49,8 @@ export class TaskManager {
   private readonly commandOverrides = new Map<string, ResolvedCommand>();
   private readonly cancelRequests = new Set<string>();
   private readonly completionListeners = new Set<TaskCompletionListener>();
+  private readonly retryWatchdogs = new Map<string, NodeJS.Timeout>();
+  private readonly terminalFinalizations = new Map<string, Promise<void>>();
   private readonly runnerResolver: RunnerResolver;
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -57,6 +60,7 @@ export class TaskManager {
     runner: InProcessRunner = new LegacyTaskRunner(),
     runnerResolver?: RunnerResolver,
     onTaskCompleted?: TaskCompletionListener,
+    private readonly retryWatchdogTimeoutMs = RETRY_WATCHDOG_TIMEOUT_MS,
   ) {
     this.runnerResolver = runnerResolver ?? { resolve: () => runner };
     if (!runnerResolver) this.managedRunners.add(runner);
@@ -227,6 +231,18 @@ export class TaskManager {
     this.cancelRequests.add(taskId);
     task.phase = "正在停止";
     this.appendLog(task, "[console] 收到停止请求");
+    if (task.retryOf) {
+      const finalization = this.finalize(task, "cancelled", null, "用户停止重试");
+      this.runnerControllers.get(taskId)?.abort();
+      this.cancelRunnerBestEffort(task, "停止重试 Runner 失败", finalization);
+      await finalization;
+      this.runnerControllers.delete(taskId);
+      this.taskRunners.delete(taskId);
+      this.commandOverrides.delete(taskId);
+      return structuredClone(task);
+    }
+
+    this.clearRetryWatchdog(taskId);
     this.runnerControllers.get(taskId)?.abort();
     await this.taskRunners.get(taskId)?.cancel?.(task.runId);
     await this.persistNow();
@@ -392,6 +408,7 @@ export class TaskManager {
       this.runnerControllers.set(taskId, controller);
       this.taskRunners.set(taskId, runner);
       this.managedRunners.add(runner);
+      this.scheduleRetryWatchdog(task);
       task.status = "running";
       task.phase = "执行中";
       await this.persistNow();
@@ -400,12 +417,20 @@ export class TaskManager {
         signal: controller.signal,
         emit: event => this.handleRunnerEvent(task, event),
       });
+      if (TERMINAL_STATUSES.has(task.status)) {
+        this.clearRetryWatchdog(taskId);
+        this.runnerControllers.delete(taskId);
+        this.taskRunners.delete(taskId);
+        this.commandOverrides.delete(taskId);
+        return;
+      }
       if (result.resultUri && result.status !== "cancelled" && !this.cancelRequests.has(taskId)) {
         task.resultUri = result.resultUri;
       }
       this.runnerControllers.delete(taskId);
       this.taskRunners.delete(taskId);
       this.commandOverrides.delete(taskId);
+      if (!ACTIVE_STATUSES.has(task.status)) return;
       if (this.cancelRequests.has(taskId)) {
         await this.finalize(task, "cancelled", result.exitCode, "");
       } else if (result.status === "cancelled") {
@@ -416,9 +441,17 @@ export class TaskManager {
         await this.finalize(task, "failed", result.exitCode, result.error ?? `测试进程退出码: ${result.exitCode ?? "unknown"}`);
       }
     } catch (error) {
+      if (TERMINAL_STATUSES.has(task.status)) {
+        this.clearRetryWatchdog(taskId);
+        this.runnerControllers.delete(taskId);
+        this.taskRunners.delete(taskId);
+        this.commandOverrides.delete(taskId);
+        return;
+      }
       this.runnerControllers.delete(taskId);
       this.taskRunners.delete(taskId);
       this.commandOverrides.delete(taskId);
+      if (!ACTIVE_STATUSES.has(task.status)) return;
       const message = error instanceof Error ? error.message : String(error);
       await this.finalize(task, this.cancelRequests.has(taskId) ? "cancelled" : "failed", null, message);
     }
@@ -463,6 +496,27 @@ export class TaskManager {
     exitCode: number | null,
     error: string,
   ): Promise<void> {
+    const pending = this.terminalFinalizations.get(task.id);
+    if (pending) return pending;
+    if (TERMINAL_STATUSES.has(task.status)) return;
+    const finalization = Promise.resolve().then(() => this.commitTerminalState(task, status, exitCode, error));
+    this.terminalFinalizations.set(task.id, finalization);
+    try {
+      await finalization;
+    } finally {
+      if (this.terminalFinalizations.get(task.id) === finalization) {
+        this.terminalFinalizations.delete(task.id);
+      }
+    }
+  }
+
+  private async commitTerminalState(
+    task: TestTask,
+    status: "passed" | "failed" | "cancelled",
+    exitCode: number | null,
+    error: string,
+  ): Promise<void> {
+    this.clearRetryWatchdog(task.id);
     const next = structuredClone(task);
     next.status = status;
     next.phase = status === "passed" ? "测试通过" : status === "cancelled" ? "已取消" : "测试失败";
@@ -471,15 +525,67 @@ export class TaskManager {
     next.error = error;
     if (error) this.appendLog(next, `[console] ${error}`);
     this.appendLog(next, `[console] 任务结束: ${status}`);
-    this.cancelRequests.delete(task.id);
     await this.persistNow(next);
     Object.assign(task, next);
+    this.cancelRequests.delete(task.id);
     for (const listener of this.completionListeners) {
       try {
         await listener(structuredClone(next));
       } catch (listenerError) {
         console.error("[task] 任务完成监听器执行失败", listenerError);
       }
+    }
+  }
+
+  private scheduleRetryWatchdog(task: TestTask): void {
+    if (!task.retryOf || this.retryWatchdogTimeoutMs <= 0) return;
+    this.clearRetryWatchdog(task.id);
+    const timer = setTimeout(() => {
+      void this.handleRetryTimeout(task.id);
+    }, this.retryWatchdogTimeoutMs);
+    timer.unref?.();
+    this.retryWatchdogs.set(task.id, timer);
+  }
+
+  private clearRetryWatchdog(taskId: string): void {
+    const timer = this.retryWatchdogs.get(taskId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.retryWatchdogs.delete(taskId);
+  }
+
+  private async handleRetryTimeout(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task || !task.retryOf || !ACTIVE_STATUSES.has(task.status)) return;
+    this.cancelRequests.add(taskId);
+    task.phase = "重试超时";
+    this.appendLog(task, `[console] 重试超过 ${Math.round(this.retryWatchdogTimeoutMs / 60_000)} 分钟，已终止执行`);
+    const finalization = this.finalize(task, "failed", null, `重试超时（超过 ${Math.round(this.retryWatchdogTimeoutMs / 60_000)} 分钟）`);
+    this.runnerControllers.get(taskId)?.abort();
+    this.cancelRunnerBestEffort(task, "终止超时重试失败", finalization);
+    await finalization;
+    this.runnerControllers.delete(taskId);
+    this.taskRunners.delete(taskId);
+    this.commandOverrides.delete(taskId);
+  }
+
+  private cancelRunnerBestEffort(task: TestTask, failureLabel: string, finalization: Promise<void>): void {
+    const runner = this.taskRunners.get(task.id);
+    if (!runner?.cancel) return;
+    const recordFailure = (error: unknown) => {
+      void finalization.then(async () => {
+        this.appendLog(task, `[console] ${failureLabel}: ${error instanceof Error ? error.message : String(error)}`);
+        try {
+          await this.persistNow();
+        } catch (persistError) {
+          console.error("[task] Runner 取消诊断日志持久化失败", persistError);
+        }
+      }).catch(() => undefined);
+    };
+    try {
+      void Promise.resolve(runner.cancel(task.runId)).catch(recordFailure);
+    } catch (error) {
+      recordFailure(error);
     }
   }
 

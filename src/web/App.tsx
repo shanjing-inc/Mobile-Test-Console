@@ -82,7 +82,7 @@ import {
   workspaceDisabledReason,
   type WorkspaceView,
 } from "./project-workspaces";
-import { diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey } from "./result-analysis";
+import { diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey, uniqueFailedTargetPages } from "./result-analysis";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
 const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
@@ -1506,7 +1506,7 @@ export function ResultPanel({
   />;
 }
 
-function OverviewResult({
+export function OverviewResult({
   taskId,
   result,
   filter,
@@ -1557,7 +1557,7 @@ function OverviewResult({
   const screenshots = result.runs.reduce((total, run) => total + run.screenshots.length, 0);
   const apiCalls = result.runs.reduce((total, run) => total + run.apiCalls.length, 0);
   const visibleScreenshots = visibleRuns.reduce((total, run) => total + run.screenshots.length, 0);
-  const failedTargetPages = [...new Set(visibleRuns.filter(run => run.status === "failed" && run.targetPage).map(run => run.targetPage))];
+  const failedTargetPages = uniqueFailedTargetPages(visibleRuns);
   const failedCaseRunIds = visibleRuns.filter(run => run.status === "failed").map(run => run.caseRunId);
   const suiteOnly = result.runs.length > 0 && result.runs.every(isSuiteResultRun);
   const suiteTotals = result.runs.reduce((totals, run) => {

@@ -42,7 +42,7 @@ export class StateStore {
 
   async save(tasks: TestTask[]): Promise<void> {
     const snapshot = structuredClone(tasks);
-    this.writeQueue = this.writeQueue.then(async () => {
+    const write = this.writeQueue.then(async () => {
       await fs.mkdir(path.dirname(this.statePath), { recursive: true });
       const nextPath = `${this.statePath}.next`;
       await fs.writeFile(nextPath, `${JSON.stringify({
@@ -51,6 +51,7 @@ export class StateStore {
       }, null, 2)}\n`);
       await fs.rename(nextPath, this.statePath);
     });
-    await this.writeQueue;
+    this.writeQueue = write.catch(() => undefined);
+    await write;
   }
 }

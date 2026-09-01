@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"依据项目后端集成契约验证任务状态与取消行为"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"复核异步状态转换与跨层消费者的一致性"}
+{"file":".trellis/spec/frontend/index.md","reason":"复核页面去重辅助函数、组件接线与回归测试"}

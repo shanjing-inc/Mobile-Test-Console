@@ -344,6 +344,9 @@ POST /api/tasks/:taskId/retry
 - Retry execution passes through storage capacity, device preparation, account profile, platform support, and target concurrency gates.
 - A Runner or project adapter may ignore `metadata.retry`; this produces a complete execution of the original test while retaining the requested range for audit.
 - Retry tasks have a bounded watchdog. Timeout aborts and cancels the Runner, persists a failed terminal task with the timeout diagnosis, and releases the source retry lock.
+- A task terminal transition is at most once. The first transition owns persistence; concurrent stop, watchdog, and Runner-result paths await the same transition, and completion listeners run exactly once.
+- Retry cancellation is best effort. `AbortSignal` and optional `Runner.cancel()` are both invoked, while terminal persistence never waits for the cancellation Promise. Synchronous and asynchronous cancellation failures become diagnostic logs after the terminal transition.
+- Task-state writes are serialized. A failed write rejects its current caller while resetting the internal queue so a later terminal transition or diagnostic save can retry.
 - The run monitor collapses retry tasks into their root source task. While any descendant retry has an active status, the root row and detail header expose `正在重试`, all retry actions remain disabled, and run-group mutations such as deletion or retention changes remain locked.
 - After every retry descendant reaches a terminal status, `/api/snapshot` projects a failed or interrupted root task to `passed` only when the merged root `TaskResult` has at least one run and `failed === 0`. The projected response sets `status: "passed"`, `phase: "重试后通过"`, `exitCode: 0`, and clears the display error. `TaskManager` keeps the original root status, exit code, error, and logs for diagnostics, retention, and audit.
 - Retry lineage, scheduling locks, result merging, retention locks, deletion, and state persistence traverse the complete internal task collection. The public run list may cap recent rows, but it must include the ancestors of every visible retry and must never become the source of truth for persistence or internal operations.
@@ -369,6 +372,9 @@ POST /api/tasks/:taskId/retry
 | Retry fallback matches more than one source item | Preserve every ambiguous source item and append no replacement |
 | Nested retry direct-source IDs are absent from the root | Restrict candidates by the stable case/page scope, then apply ordinary identity matching |
 | Public run history exceeds its display limit | Persist the complete task collection and cap only `/api/snapshot` output |
+| Retry `Runner.cancel()` throws, rejects, or never settles | Preserve the stop/watchdog terminal status, release retry locks, and record any observable cancellation error |
+| Watchdog, stop, and Runner completion overlap | The first registered terminal transition wins; persist and notify exactly once |
+| A state write fails | Reject the current transition without poisoning later writes; allow a subsequent save attempt |
 
 ### 5. Good / Base / Bad Cases
 
@@ -377,6 +383,8 @@ POST /api/tasks/:taskId/retry
 - Good: the final retry replaces the last failed root case; the run monitor and detail header show `重试后通过`, while raw task logs retain the first failure.
 - Good: two runs share a page and case ID while using different parameter profiles; reversed retry output still replaces the matching invocation.
 - Base: a terminal retry restores deletion and retention controls on the source row.
+- Base: cancellation never settles; the retry still reaches its stop or watchdog terminal status and releases the source lock.
+- Bad: terminal persistence waits for `Runner.cancel()` or notifies completion listeners from two competing terminal paths.
 - Bad: the source row enables deletion while an active retry still belongs to its lineage.
 
 ### 6. Tests Required
@@ -391,6 +399,9 @@ POST /api/tasks/:taskId/retry
 - Cover `/api/snapshot` with a terminal retry lineage whose merged result is all passed. Assert only the response projection changes to `passed`, `重试后通过`, exit code zero, and no display error; assert persisted source state remains failed.
 - Cover `TaskManager.delete(rootTaskId)` returning `TASK_ACTIVE` during retry and removing the full lineage after completion.
 - Cover sequential sibling and nested retries, partial batch success, failed retry preservation, stable source `caseRunId`, and unavailable retry analysis.
+- Cover hanging, synchronously throwing, and asynchronously rejecting cancellation hooks. Assert stop/watchdog terminal status is timely and cancellation diagnostics persist when available.
+- Cover synchronous persistence re-entry and watchdog/Runner-result races. Assert the first terminal status wins and the completion listener runs once.
+- Force one state write to fail, then assert a later save succeeds and can be loaded.
 
 ### 7. Wrong vs Correct
 
@@ -455,6 +466,22 @@ await stateStore.save(taskManager.listVisible());
 ```ts
 await stateStore.save(taskManager.list());
 snapshot.tasks = taskManager.listVisible();
+```
+
+#### Wrong
+
+```ts
+await runner.cancel(task.runId);
+await finalize(task, "failed", null, timeoutMessage);
+```
+
+#### Correct
+
+```ts
+const finalization = finalize(task, "failed", null, timeoutMessage);
+controller.abort();
+cancelRunnerBestEffort(task, finalization);
+await finalization;
 ```
 
 ## Scenario: Project Provider and Runner ownership
