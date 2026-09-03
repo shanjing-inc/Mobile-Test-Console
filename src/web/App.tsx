@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock3,
+  Columns2,
   Copy,
   ChevronDown,
   Download,
@@ -55,6 +56,7 @@ import type {
   Platform,
   TaskResult,
   TaskResultApiCall,
+  ScreenshotComparisonRef,
   TaskResultRun,
   TaskStatus,
   TestTask,
@@ -70,10 +72,11 @@ import type {
 import { ACTIVE_TASK_STATUSES, CURRENT_ACCOUNT_SESSION, PROJECT_EXECUTION_PREREQUISITE_STEP_IDS, TERMINAL_TASK_STATUSES, projectFamilyOf } from "../shared/contracts";
 import { supportsAccountProfileProvider } from "../shared/account-profile-compatibility";
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults";
-import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, previewTestCommands, registerProject, retryRepairTest, retryTask, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding, waitForProjectActivation } from "./api";
+import { activateProject, ApiError, applyProjectInitialization, applyProjectSetup, cancelRepairJob, createRepairJob, deleteProject, deleteTask, fetchAccountProfiles, fetchProjectCatalog, fetchRepairJobPreview, fetchSnapshot, fetchTaskResult, installDevicePreparation, openRepairTask, previewProjectInitialization, previewProjectSetup, previewTestCommands, registerProject, retryRepairTest, retryTask, selectProjectCatalogDirectory, selectProjectConfigFile, selectRepairProjectDirectory, setApiProjectId, setTaskRetained, startDevice, startTasks, stopTask, taskArtifactUrl, verifyProjectOnboarding } from "./api";
 import { PageParametersWorkspace } from "./PageParametersWorkspace";
 import { PageSelectionField } from "./PageSelectionField";
 import { AccountProfilesWorkspace } from "./AccountProfilesWorkspace";
+import { readSelectedProjectId, saveSelectedProjectId } from "./project-selection";
 import { BusinessScriptsWorkspace } from "./BusinessScriptsWorkspace";
 import { ProjectCatalogWorkspace, ProjectTestEntryWizard } from "./ProjectCatalogWorkspace";
 import {
@@ -83,6 +86,7 @@ import {
   type WorkspaceView,
 } from "./project-workspaces";
 import { diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey, uniqueFailedTargetPages } from "./result-analysis";
+import { ScreenshotComparisonWorkspace } from "./ScreenshotComparisonWorkspace";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
 const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
@@ -131,6 +135,7 @@ const platformLabels: Record<Platform, string> = {
 const workspaceLabels: Record<WorkspaceView, string> = {
   projects: "项目",
   tests: "执行测试",
+  "screenshot-compare": "截图对比",
   "page-parameters": "页面列表",
   "business-scripts": "业务脚本",
   "account-profiles": "账号画像",
@@ -184,9 +189,11 @@ export function resolveAccountProfileOptions(
 export default function App() {
   const [projectFamily, setProjectFamily] = useState<ProjectFamily>("app");
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("projects");
+  const [comparisonLeft, setComparisonLeft] = useState<ScreenshotComparisonRef | null>(null);
+  const [comparisonRight, setComparisonRight] = useState<ScreenshotComparisonRef | null>(null);
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
   const [projectCatalog, setProjectCatalog] = useState<ProjectCatalogResponse | null>(null);
-  const [selectedCatalogProjectId, setSelectedCatalogProjectId] = useState("");
+  const [selectedCatalogProjectId, setSelectedCatalogProjectId] = useState(readSelectedProjectId);
   const [addingCatalogProject, setAddingCatalogProject] = useState(false);
   const [accountProfiles, setAccountProfiles] = useState<AccountProfilesResponse | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -207,7 +214,6 @@ export default function App() {
   const [platformFilter, setPlatformFilter] = useState<"all" | Platform>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [switchingProjectId, setSwitchingProjectId] = useState("");
   const [actionPending, setActionPending] = useState(false);
   const [retryingCaseRunId, setRetryingCaseRunId] = useState<string | null>(null);
   const [startingDeviceKeys, setStartingDeviceKeys] = useState<Set<string>>(() => new Set());
@@ -227,11 +233,11 @@ export default function App() {
   const deletedTaskIds = useRef(new Set<string>());
   const initializedTargetSelectionContext = useRef("");
 
-  const load = useCallback(async (showSpinner = false) => {
+  const load = useCallback(async (showSpinner = false, projectId = "") => {
     if (showSpinner) setRefreshing(true);
     try {
       const [snapshotResponse, accountProfileResponse, projectCatalogResponse] = await Promise.all([
-        fetchSnapshot(showSpinner),
+        fetchSnapshot(showSpinner, projectId),
         fetchAccountProfiles().catch(() => null),
         fetchProjectCatalog().catch(() => null),
       ]);
@@ -246,15 +252,13 @@ export default function App() {
       setFocusedTaskId(previous => reconcileFocusedTaskId(previous, next.tasks));
       return next;
     } catch (error) {
-      if (!switchingProjectId) {
-        setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法读取控制服务" });
-      }
+      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "无法读取控制服务" });
       return null;
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [switchingProjectId]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -263,15 +267,41 @@ export default function App() {
   }, [load]);
 
   useEffect(() => {
+    if (!projectCatalog) return;
     const projects = projectCatalog?.projects ?? [];
     setSelectedCatalogProjectId(current => {
       if (projects.some(project => project.id === current)) return current;
-      const activeProjectId = projects.some(project => project.id === projectCatalog?.activeProjectId)
-        ? projectCatalog?.activeProjectId ?? ""
-        : "";
-      return activeProjectId || projects[0]?.id || "";
+      return projects[0]?.id || "";
     });
   }, [projectCatalog]);
+
+  useEffect(() => {
+    if (projectCatalog) saveSelectedProjectId(selectedCatalogProjectId);
+  }, [projectCatalog, selectedCatalogProjectId]);
+
+  const selectedProjectConfigReady = projectCatalog?.projects
+    .find(project => project.id === selectedCatalogProjectId)
+    ?.onboarding.find(step => step.id === "template")?.status === "verified";
+
+  useEffect(() => {
+    const runtimeProjectId = selectedProjectConfigReady ? selectedCatalogProjectId : "";
+    setApiProjectId(runtimeProjectId);
+    if (!runtimeProjectId) return;
+    let cancelled = false;
+    void activateProject(runtimeProjectId)
+      .then(async response => {
+        if (cancelled) return;
+        setProjectCatalog(response.catalog);
+        await load(true, response.projectId);
+        if (!cancelled) setMessage({ kind: "info", text: `已加载项目 ${response.projectId}` });
+      })
+      .catch(error => {
+        if (!cancelled) setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "加载项目失败" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCatalogProjectId, selectedProjectConfigReady, load]);
 
   const handleSelectCatalogProject = useCallback((projectId: string) => {
     const project = projectCatalog?.projects.find(item => item.id === projectId);
@@ -286,8 +316,7 @@ export default function App() {
     setProjectFamily(family);
     setSelectedKeys([]);
     const projects = projectCatalog?.projects.filter(project => projectFamilyOf(project.integrationType) === family) ?? [];
-    const active = projects.find(project => project.id === projectCatalog?.activeProjectId);
-    setSelectedCatalogProjectId(active?.id ?? projects[0]?.id ?? "");
+    setSelectedCatalogProjectId(projects[0]?.id ?? "");
     setAddingCatalogProject(false);
     setWorkspaceView("projects");
   }, [projectCatalog]);
@@ -392,7 +421,7 @@ export default function App() {
       return;
     }
     if (!TERMINAL_STATUSES.has(focusedResultTaskStatus as TaskStatus)) {
-      setDetailTab("logs");
+      setDetailTab(current => current === "screenshots" ? current : "logs");
       setResultState({ taskId: focusedResultTaskId, loading: false, result: null, error: "" });
       return;
     }
@@ -731,22 +760,8 @@ export default function App() {
   }, [projectDeleteCandidate]);
 
   const handleActivateProject = useCallback(async (projectId: string) => {
-    setSwitchingProjectId(projectId);
-    try {
-      const response = await activateProject(projectId);
-      setMessage({ kind: "info", text: `正在切换到 ${response.projectId}，控制台将自动重启` });
-      const restarted = await waitForProjectActivation(response.projectId);
-      if (restarted) {
-        window.location.reload();
-        return;
-      }
-      setSwitchingProjectId("");
-      setMessage({ kind: "error", text: "项目切换请求已提交，但 API 重启超时，请刷新页面或检查服务端日志" });
-    } catch (error) {
-      setSwitchingProjectId("");
-      setMessage({ kind: "error", text: error instanceof ApiError ? error.message : "切换项目失败" });
-    }
-  }, []);
+    handleSelectCatalogProject(projectId);
+  }, [handleSelectCatalogProject]);
 
   const handleStartDevice = async (device: Device) => {
     setStartingDeviceKeys(previous => new Set(previous).add(device.key));
@@ -781,6 +796,22 @@ export default function App() {
       });
     }
   };
+
+  const handleJoinComparison = useCallback((task: TestTask) => {
+    if (!snapshot?.project.id) {
+      setMessage({ kind: "error", text: "请先加载项目再加入对比" });
+      return;
+    }
+    const ref = { projectId: snapshot.project.id, taskId: task.id };
+    if (!comparisonLeft || (comparisonLeft.projectId === ref.projectId && comparisonLeft.taskId === ref.taskId)) {
+      setComparisonLeft(ref);
+      setMessage({ kind: "info", text: `已将 ${task.testLabel} 加入对比左侧，再选另一个运行作为右侧` });
+      return;
+    }
+    setComparisonRight(ref);
+    setWorkspaceView("screenshot-compare");
+    setMessage({ kind: "info", text: `已开始对比 ${comparisonLeft.taskId.slice(0, 8)} 与 ${task.id.slice(0, 8)}` });
+  }, [comparisonLeft, snapshot?.project.id]);
 
   const handleStop = async (task: TestTask) => {
     setActionPending(true);
@@ -975,7 +1006,6 @@ export default function App() {
           catalog={projectCatalog}
           family={selectedProjectFamily}
           selectedProjectId={addingCatalogProject ? "" : selectedCatalogProjectId}
-          runtimeProjectId={snapshot?.project.id ?? ""}
           addingProject={addingCatalogProject}
           onSelect={handleSelectCatalogProject}
           onSelectFamily={handleSelectProjectFamily}
@@ -1152,7 +1182,7 @@ export default function App() {
 
             <section className="section-panel runs-panel">
               <div className="section-heading"><div><p className="eyebrow">RUN MONITOR</p><h2>运行状态</h2></div><span className="run-monitor-heading-actions"><span className="count-label">{tasks.length} 条记录</span>{tasks.length > 0 && <button className={`run-list-toggle ${runListCollapsed ? "collapsed" : ""}`} type="button" onClick={() => setRunListCollapsed(previous => !previous)} aria-expanded={!runListCollapsed} aria-controls="run-monitor-list" aria-label={runListCollapsed ? "展开运行记录" : "折叠运行记录"} title={runListCollapsed ? "展开运行记录" : "折叠运行记录"}><ChevronDown size={16} /></button>}</span></div>
-              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : !runListCollapsed && <div className="run-list" id="run-monitor-list">{(runListExpanded ? tasks : tasks.slice(0, 5)).map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} retrying={retryingRootTaskIds.has(task.id)} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}{tasks.length > 5 && <button className="run-list-more" type="button" onClick={() => setRunListExpanded(previous => !previous)} aria-expanded={runListExpanded} aria-controls="run-monitor-list" title={runListExpanded ? "收起较早的运行记录" : "查看更多运行记录"}>{runListExpanded ? <ChevronDown size={15} /> : <ChevronDown size={15} />}{runListExpanded ? "收起" : `查看更多（还有 ${tasks.length - 5} 条）`}</button>}</div>}
+              {tasks.length === 0 ? <EmptyState icon={<Clock3 size={21} />} text="还没有运行记录" /> : !runListCollapsed && <div className="run-list" id="run-monitor-list">{(runListExpanded ? tasks : tasks.slice(0, 5)).map(task => <RunRow key={task.id} task={task} focused={task.id === focusedTask?.id} retrying={retryingRootTaskIds.has(task.id)} onFocus={() => setFocusedTaskId(task.id)} onStop={() => void handleStop(task)} onRetain={() => void handleRetain(task)} onCompare={() => handleJoinComparison(task)} onDelete={() => setDeleteCandidate(task)} pending={actionPending} />)}{tasks.length > 5 && <button className="run-list-more" type="button" onClick={() => setRunListExpanded(previous => !previous)} aria-expanded={runListExpanded} aria-controls="run-monitor-list" title={runListExpanded ? "收起较早的运行记录" : "查看更多运行记录"}>{runListExpanded ? <ChevronDown size={15} /> : <ChevronDown size={15} />}{runListExpanded ? "收起" : `查看更多（还有 ${tasks.length - 5} 条）`}</button>}</div>}
             </section>
 
             {focusedTask && <TaskDetail
@@ -1177,7 +1207,15 @@ export default function App() {
             />}
           </div>
         </div>
-        </> : workspaceView === "page-parameters"
+        </> : workspaceView === "screenshot-compare"
+          ? <ScreenshotComparisonWorkspace
+            catalog={projectCatalog}
+            currentProjectId={snapshot?.project.id ?? selectedCatalogProjectId}
+            initialLeft={comparisonLeft}
+            initialRight={comparisonRight}
+            onMessage={setMessage}
+          />
+          : workspaceView === "page-parameters"
           ? <PageParametersWorkspace
             devices={snapshot?.devices ?? []}
             targets={snapshot?.targets?.filter((target): target is Extract<RunTarget, { kind: "mini-program" }> => target.kind === "mini-program") ?? []}
@@ -1211,6 +1249,7 @@ export default function App() {
 
 function WorkspaceViewIcon({ view }: { view: WorkspaceView }) {
   if (view === "projects") return <FolderKanban size={14} />;
+  if (view === "screenshot-compare") return <Columns2 size={14} />;
   if (view === "page-parameters") return <SlidersHorizontal size={14} />;
   if (view === "business-scripts") return <Clapperboard size={14} />;
   if (view === "account-profiles") return <UserRoundCheck size={14} />;
@@ -1221,7 +1260,6 @@ export function ProjectSidebar({
   catalog,
   family = "app",
   selectedProjectId,
-  runtimeProjectId = "",
   addingProject = false,
   onSelect,
   onSelectFamily = () => undefined,
@@ -1231,7 +1269,6 @@ export function ProjectSidebar({
   catalog: ProjectCatalogResponse | null;
   family?: ProjectFamily;
   selectedProjectId: string;
-  runtimeProjectId?: string;
   addingProject?: boolean;
   onSelect: (projectId: string) => void;
   onSelectFamily?: (family: ProjectFamily) => void;
@@ -1252,8 +1289,7 @@ export function ProjectSidebar({
       {projects.map(project => <div className="app-project-row" key={project.id}>
         <button className={`app-project-item ${project.id === selectedProjectId ? "selected" : ""}`} type="button" onClick={() => onSelect(project.id)}>
           <span className="app-project-item-icon">{family === "mini-program" ? <PanelsTopLeft size={15} /> : <Smartphone size={15} />}</span>
-          <span><strong>{project.name}</strong><small>{projectIntegrationLabels[project.integrationType]}</small></span>
-          {project.id === runtimeProjectId && <span className="project-sidebar-active" title="当前运行项目" />}
+          <span><strong>{project.name}</strong><small>{projectIntegrationLabels[project.integrationType]}</small><small className="app-project-directory" title={projectDirectoryName(project.root)}>{projectDirectoryName(project.root)}</small></span>
         </button>
         <button className="app-project-delete" type="button" title={`删除项目：${project.name}`} aria-label={`删除项目：${project.name}`} onClick={() => onDelete(project)}><Trash2 size={13} /></button>
       </div>)}
@@ -1261,6 +1297,11 @@ export function ProjectSidebar({
       {catalog && projects.length === 0 && <div className="app-project-sidebar-empty">当前终端类型还没有登记项目</div>}
     </div>
   </aside>;
+}
+
+function projectDirectoryName(root: string): string {
+  const segments = root.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return segments.at(-1) || root;
 }
 
 function TaskDetail({
@@ -1311,6 +1352,7 @@ function TaskDetail({
     { id: "evidence", label: "证据", icon: <Files size={14} /> },
     { id: "logs", label: "日志", icon: <Terminal size={14} /> },
   ] : [
+    { id: "screenshots", label: "截图", icon: <ImageIcon size={14} /> },
     { id: "logs", label: "日志", icon: <Terminal size={14} /> },
   ];
   return <section className="section-panel detail-panel">
@@ -1329,6 +1371,8 @@ function TaskDetail({
     </div>
     {tab === "logs"
       ? <TaskLog task={task} />
+      : !terminal
+        ? <LiveScreenshotResult task={task} />
       : <ResultPanel
           key={task.id}
           taskId={task.id}
@@ -1411,6 +1455,26 @@ function TaskLog({ task }: { task: TestTask }) {
     <div className="log-toolbar"><span><Terminal size={14} /> 最近日志</span><span>{task.logs.length} 行</span></div>
     {task.logs.length > 0 ? <pre>{task.logs.join("\n")}</pre> : <div className="log-empty">等待测试输出</div>}
   </div>;
+}
+
+export function LiveScreenshotResult({ task }: { task: Pick<TestTask, "id" | "artifacts"> }) {
+  const screenshots = task.artifacts?.filter(artifact => artifact.role === "screenshot") ?? [];
+  if (screenshots.length === 0) {
+    return <div className="result-empty"><LoaderCircle className="spin" size={18} /><strong>等待首张截图</strong><span>Runner 发布截图后会在这里实时展示</span></div>;
+  }
+  return <div className="screenshot-gallery">
+    {screenshots.map(artifact => <LiveScreenshotItem key={artifact.id} taskId={task.id} artifact={artifact} />)}
+  </div>;
+}
+
+function LiveScreenshotItem({ taskId, artifact }: { taskId: string; artifact: NonNullable<TestTask["artifacts"]>[number] }) {
+  const [failed, setFailed] = useState(false);
+  const url = taskArtifactUrl(taskId, artifact.id);
+  return <a className={`screenshot-item ${failed ? "artifact-error" : ""}`} href={failed ? undefined : url} target="_blank" rel="noreferrer">
+    {failed
+      ? <span><strong>截图无法读取</strong><small>{artifact.label} · {artifact.uri}</small></span>
+      : <><img src={url} alt={artifact.label} loading="lazy" onError={() => setFailed(true)} /><span><strong>{artifact.label}</strong><small>运行中截图</small></span></>}
+  </a>;
 }
 
 export function ResultPanel({
@@ -1969,7 +2033,7 @@ export function TargetRow({ target, task, selected, autoBound = false, onToggle 
     : <label className={className}>{content}</label>;
 }
 
-export function RunRow({ task, focused, retrying = false, onFocus, onStop, onRetain, onDelete, pending }: { task: TestTask; focused: boolean; retrying?: boolean; onFocus: () => void; onStop: () => void; onRetain?: () => void; onDelete: () => void; pending: boolean }) {
+export function RunRow({ task, focused, retrying = false, onFocus, onStop, onRetain, onCompare, onDelete, pending }: { task: TestTask; focused: boolean; retrying?: boolean; onFocus: () => void; onStop: () => void; onRetain?: () => void; onCompare?: () => void; onDelete: () => void; pending: boolean }) {
   const active = ACTIVE_STATUSES.has(task.status);
   const deletable = TERMINAL_STATUSES.has(task.status);
   return <div className={`run-row ${focused ? "focused" : ""}`}>
@@ -1980,6 +2044,7 @@ export function RunRow({ task, focused, retrying = false, onFocus, onStop, onRet
     </button>
     {active && <span className="run-row-action"><button type="button" className="stop-button" onClick={onStop} disabled={pending} title="停止此测试" aria-label={`停止 ${taskTargetLabel(task)} 测试`}><Square size={14} fill="currentColor" />停止</button></span>}
     {deletable && <span className="run-row-action">
+      {onCompare && <button type="button" className="compare-button" onClick={onCompare} disabled={pending || retrying} title={retrying ? "正在重试，完成后可加入对比" : "加入截图对比"} aria-label={retrying ? `${taskTargetLabel(task)} 正在重试，完成后可加入对比` : `将 ${taskTargetLabel(task)} 加入截图对比`}><Columns2 size={15} /></button>}
       <button type="button" className={`retain-button ${task.retained ? "active" : ""}`} onClick={onRetain} disabled={pending || retrying} title={retrying ? "正在重试，完成后可修改保留策略" : task.retained ? "恢复按策略管理" : "长期保留此运行"} aria-label={retrying ? `${taskTargetLabel(task)} 正在重试，完成后可修改保留策略` : task.retained ? "取消长期保留" : "长期保留此运行"}><Bookmark size={15} fill={task.retained ? "currentColor" : "none"} /></button>
       <button type="button" className="delete-button" onClick={onDelete} disabled={pending || retrying} title={retrying ? "正在重试，完成后可删除" : "删除此运行记录"} aria-label={retrying ? `${taskTargetLabel(task)} 正在重试，完成后可删除` : `删除 ${taskTargetLabel(task)} 的运行记录`}><Trash2 size={15} /></button>
     </span>}

@@ -2,11 +2,53 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskResult } from "../src/shared/contracts.js";
-import { OverviewResult, ResultPanel } from "../src/web/App.js";
+import { LiveScreenshotResult, OverviewResult, ResultPanel } from "../src/web/App.js";
 import { fetchSnapshot, fetchTaskResult, retryTask, taskArtifactUrl } from "../src/web/api.js";
 import { diagnoseTaskResultRun, isFailedApiCall, suiteTestSummary, uniqueFailedTargetPages } from "../src/web/result-analysis.js";
 
 describe("QA 结果分析界面", () => {
+  it("活动任务等待 Runner 发布首张截图", () => {
+    const markup = renderToStaticMarkup(createElement(LiveScreenshotResult, {
+      task: { id: "task-live", artifacts: [] },
+    }));
+
+    expect(markup).toContain("等待首张截图");
+    expect(markup).toContain("Runner 发布截图后会在这里实时展示");
+    expect(markup).not.toContain("<img");
+  });
+
+  it("活动任务按任务附件 URL 展示 Runner 截图", () => {
+    const markup = renderToStaticMarkup(createElement(LiveScreenshotResult, {
+      task: {
+        id: "task/live",
+        artifacts: [
+          {
+            id: "artifact/one",
+            uri: "project://demo/.test/results/live/one.jpg",
+            role: "screenshot",
+            label: "one.jpg",
+            mimeType: "image/jpeg",
+            createdAt: "2026-09-01T00:00:00.000Z",
+          },
+          {
+            id: "artifact-two",
+            uri: "project://demo/.test/results/live/two.png",
+            role: "screenshot",
+            label: "two.png",
+            mimeType: "image/png",
+            createdAt: "2026-09-01T00:00:01.000Z",
+          },
+        ],
+      },
+    }));
+
+    expect(markup).toContain("/api/tasks/task%2Flive/artifacts/artifact%2Fone");
+    expect(markup).toContain("/api/tasks/task%2Flive/artifacts/artifact-two");
+    expect(markup).toContain('alt="one.jpg"');
+    expect(markup).toContain('alt="two.png"');
+    expect(markup).toContain("运行中截图");
+  });
+
   it("概览展示用例、截图和接口统计", () => {
     const markup = renderResult("overview");
 

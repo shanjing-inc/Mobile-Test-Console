@@ -49,6 +49,36 @@ export interface RunnerEvent {
   data?: unknown;
 }
 
+export const RUNNER_ARTIFACT_EVENT_SCHEMA_VERSION = "mobile-test-console.runner-artifact.v1" as const;
+
+export interface RunnerArtifactEventData {
+  schemaVersion: typeof RUNNER_ARTIFACT_EVENT_SCHEMA_VERSION;
+  uri: string;
+  role: "screenshot";
+  label: string;
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+}
+
+export function validateRunnerArtifactEventData(value: unknown): asserts value is RunnerArtifactEventData {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Runner artifact 事件数据必须为对象");
+  }
+  const data = value as Partial<RunnerArtifactEventData>;
+  if (data.schemaVersion !== RUNNER_ARTIFACT_EVENT_SCHEMA_VERSION) {
+    throw new Error(`Runner artifact 事件协议不兼容: ${String(data.schemaVersion ?? "unknown")}`);
+  }
+  if (typeof data.uri !== "string" || !data.uri.startsWith("project://") || data.uri.length > 2_048) {
+    throw new Error("Runner artifact 事件 URI 无效");
+  }
+  if (data.role !== "screenshot") throw new Error(`Runner artifact 事件角色无效: ${String(data.role ?? "")}`);
+  if (typeof data.label !== "string" || data.label.trim().length === 0 || data.label.length > 200) {
+    throw new Error("Runner artifact 事件标签无效");
+  }
+  if (!(["image/jpeg", "image/png", "image/webp"] as const).includes(data.mimeType as RunnerArtifactEventData["mimeType"])) {
+    throw new Error(`Runner artifact 事件媒体类型无效: ${String(data.mimeType ?? "")}`);
+  }
+}
+
 export interface RunnerCommand {
   executable: string;
   args: string[];

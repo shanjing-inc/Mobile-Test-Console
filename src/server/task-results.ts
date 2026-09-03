@@ -551,7 +551,7 @@ function bundleArtifactReference(
   artifact: ResultBundleArtifact,
   warnings: string[],
 ): z.infer<typeof artifactReferenceSchema> | null {
-  const prefix = `project://${config.project.id}/`;
+  const prefix = `project://${task.projectId}/`;
   if (!artifact.uri.startsWith(prefix)) {
     warnings.push(`忽略无法映射到项目产物的截图: ${artifact.uri}`);
     return null;

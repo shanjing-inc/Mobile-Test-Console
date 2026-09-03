@@ -1,5 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fsSync from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   ACTIVE_TASK_STATUSES,
   TERMINAL_TASK_STATUSES,
@@ -9,6 +12,7 @@ import {
   type RunTarget,
   type StartTasksRequest,
   type TaskRetrySource,
+  type TaskLiveArtifact,
   type TestTask,
 } from "../shared/contracts.js";
 import {
@@ -21,6 +25,7 @@ import {
 } from "./config.js";
 import { ConsoleError } from "./errors.js";
 import { StateStore } from "./state-store.js";
+import { TaskExecutionCoordinator } from "./task-execution-coordinator.js";
 import {
   LegacyTaskRunner,
 } from "../runner/legacy-task-runner.js";
@@ -30,6 +35,7 @@ import {
   type InProcessRunner,
   type RunnerEvent,
   type RunnerResolver,
+  validateRunnerArtifactEventData,
 } from "../runner/sdk.js";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
@@ -37,6 +43,14 @@ const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
 const MAX_TASKS = 100;
 const MAX_LOG_LINES = 500;
 const MAX_LOG_LINE_LENGTH = 4_000;
+const MAX_LIVE_ARTIFACTS = 100;
+const MAX_LIVE_ARTIFACT_BYTES = 20 * 1024 * 1024;
+const IMAGE_MIME_BY_EXTENSION = new Map<string, TaskLiveArtifact["mimeType"]>([
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
 export const RETRY_WATCHDOG_TIMEOUT_MS = 45 * 60 * 1_000;
 
 export type TaskCompletionListener = (task: TestTask) => void | Promise<void>;
@@ -51,7 +65,6 @@ export class TaskManager {
   private readonly completionListeners = new Set<TaskCompletionListener>();
   private readonly retryWatchdogs = new Map<string, NodeJS.Timeout>();
   private readonly terminalFinalizations = new Map<string, Promise<void>>();
-  private readonly executingDeviceKeys = new Set<string>();
   private readonly runnerResolver: RunnerResolver;
   private persistTimer: NodeJS.Timeout | null = null;
 
@@ -62,6 +75,7 @@ export class TaskManager {
     runnerResolver?: RunnerResolver,
     onTaskCompleted?: TaskCompletionListener,
     private readonly retryWatchdogTimeoutMs = RETRY_WATCHDOG_TIMEOUT_MS,
+    private readonly executionCoordinator = new TaskExecutionCoordinator(),
   ) {
     this.runnerResolver = runnerResolver ?? { resolve: () => runner };
     if (!runnerResolver) this.managedRunners.add(runner);
@@ -121,6 +135,66 @@ export class TaskManager {
     return task ? structuredClone(task) : null;
   }
 
+  async artifact(taskId: string, artifactId: string): Promise<{
+    absolutePath: string;
+    mimeType: string;
+    sizeBytes: number;
+  }> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new ConsoleError("TASK_UNKNOWN", `任务不存在: ${taskId}`, 404);
+    const artifact = task.artifacts?.find(item => item.id === artifactId);
+    if (!artifact) throw new ConsoleError("TASK_ARTIFACT_UNKNOWN", `运行截图不存在: ${artifactId}`, 404);
+    const prefix = `project://${task.projectId}/`;
+    if (!artifact.uri.startsWith(prefix)) {
+      throw new ConsoleError("TASK_ARTIFACT_INVALID", `运行截图 URI 与任务项目不一致: ${artifact.uri}`, 409);
+    }
+    const relativePath = artifact.uri.slice(prefix.length);
+    if (!relativePath || path.isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes("..")) {
+      throw new ConsoleError("TASK_ARTIFACT_INVALID", `运行截图路径无效: ${artifact.uri}`, 409);
+    }
+    const workspaceRoot = task.workspaceRoot ?? this.config.project.root;
+    const candidate = path.resolve(workspaceRoot, relativePath);
+    const lexicalRelative = path.relative(path.resolve(workspaceRoot), candidate);
+    if (lexicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lexicalRelative)) {
+      throw new ConsoleError("TASK_ARTIFACT_INVALID", `运行截图超出项目目录: ${artifact.label}`, 409);
+    }
+    let realRoot: string;
+    let realCandidate: string;
+    try {
+      [realRoot, realCandidate] = await Promise.all([fs.realpath(workspaceRoot), fs.realpath(candidate)]);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        throw new ConsoleError("TASK_ARTIFACT_MISSING", `运行截图文件缺失: ${artifact.label} (${relativePath})`, 404);
+      }
+      throw error;
+    }
+    const realRelative = path.relative(realRoot, realCandidate);
+    if (realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+      throw new ConsoleError("TASK_ARTIFACT_INVALID", `运行截图真实路径超出项目目录: ${artifact.label}`, 409);
+    }
+    const stat = await fs.stat(realCandidate);
+    if (!stat.isFile()) throw new ConsoleError("TASK_ARTIFACT_MISSING", `运行截图不是文件: ${artifact.label}`, 404);
+    try {
+      validateImageArtifactMetadata(relativePath, artifact.mimeType, stat.size);
+      const handle = await fs.open(realCandidate, "r");
+      try {
+        const header = Buffer.alloc(12);
+        const { bytesRead } = await handle.read(header, 0, header.length, 0);
+        validateImageArtifactSignature(header.subarray(0, bytesRead), artifact.mimeType);
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      throw new ConsoleError(
+        "TASK_ARTIFACT_INVALID",
+        `运行截图文件无效: ${artifact.label} (${error instanceof Error ? error.message : String(error)})`,
+        409,
+      );
+    }
+    return { absolutePath: realCandidate, mimeType: artifact.mimeType, sizeBytes: stat.size };
+  }
+
   addCompletionListener(listener: TaskCompletionListener): () => void {
     this.completionListeners.add(listener);
     return () => this.completionListeners.delete(listener);
@@ -159,8 +233,15 @@ export class TaskManager {
           throw new ConsoleError("TARGET_BUSY", `${target.label} 与本次选择的其他运行目标共享执行环境`, 409);
         }
         selectedConcurrencyKeys.add(target.concurrencyKey);
-        const active = [...this.tasks.values()].find(task => task.target?.concurrencyKey === target.concurrencyKey && ACTIVE_STATUSES.has(task.status));
-        if (active) throw new ConsoleError("TARGET_BUSY", `${target.label} 正在执行 ${active.testLabel}`, 409);
+        const duplicate = [...this.tasks.values()].find(task => (
+          task.target?.kind === "mini-program"
+          && task.target.concurrencyKey === target.concurrencyKey
+          && task.testId === test.id
+          && ACTIVE_STATUSES.has(task.status)
+        ));
+        if (duplicate) {
+          throw new ConsoleError("TARGET_BUSY", `${target.label} 已有 ${test.label} 任务在等待或执行`, 409);
+        }
         return target;
       });
       const createdAt = new Date().toISOString();
@@ -227,40 +308,11 @@ export class TaskManager {
   private scheduleTask(taskId: string, test: TestDefinition): void {
     const task = this.tasks.get(taskId);
     if (!task || task.status !== "queued") return;
-    if (task.target?.kind !== "app") {
-      queueMicrotask(() => void this.execute(task.id, test));
-      return;
-    }
-
-    const deviceKey = task.device.key;
-    if (this.executingDeviceKeys.has(deviceKey) || this.nextQueuedAppTask(deviceKey)?.id !== task.id) return;
-    this.executingDeviceKeys.add(deviceKey);
-    queueMicrotask(() => void this.executeAppTask(task.id, test, deviceKey));
-  }
-
-  private async executeAppTask(taskId: string, test: TestDefinition, deviceKey: string): Promise<void> {
-    try {
-      await this.execute(taskId, test);
-    } finally {
-      this.executingDeviceKeys.delete(deviceKey);
-      const next = this.nextQueuedAppTask(deviceKey);
-      if (next) this.scheduleTask(next.id, this.testDefinitionFor(next));
-    }
-  }
-
-  private nextQueuedAppTask(deviceKey: string): TestTask | null {
-    let next: TestTask | null = null;
-    for (const task of this.tasks.values()) {
-      if (task.target?.kind !== "app" || task.device.key !== deviceKey || task.status !== "queued") continue;
-      if (!next || task.createdAt < next.createdAt) next = task;
-    }
-    return next;
-  }
-
-  private testDefinitionFor(task: TestTask): TestDefinition {
-    const test = this.config.tests.find(item => item.id === task.testId);
-    if (!test) throw new ConsoleError("TEST_UNKNOWN", `测试不存在: ${task.testId}`, 404);
-    return test;
+    this.executionCoordinator.schedule(
+      this.resourceKey(task),
+      this.coordinatorTaskId(task.id),
+      () => this.execute(task.id, test),
+    );
   }
 
   async waitForTerminal(taskId: string, timeoutMs = 120_000): Promise<TestTask> {
@@ -280,6 +332,7 @@ export class TaskManager {
     if (!ACTIVE_STATUSES.has(task.status)) return structuredClone(task);
 
     this.cancelRequests.add(taskId);
+    this.executionCoordinator.cancel(this.coordinatorTaskId(taskId));
     task.phase = "正在停止";
     this.appendLog(task, "[console] 收到停止请求");
     if (task.status === "queued") {
@@ -302,6 +355,16 @@ export class TaskManager {
     await this.taskRunners.get(taskId)?.cancel?.(task.runId);
     await this.persistNow();
     return structuredClone(task);
+  }
+
+  private resourceKey(task: TestTask): string {
+    return task.target?.kind === "mini-program"
+      ? `target:${task.target.concurrencyKey}`
+      : `device:${task.device.key}`;
+  }
+
+  private coordinatorTaskId(taskId: string): string {
+    return `${this.config.project.id}:${taskId}`;
   }
 
   async delete(taskId: string): Promise<TestTask> {
@@ -515,10 +578,66 @@ export class TaskManager {
   }
 
   private handleRunnerEvent(task: TestTask, event: RunnerEvent): void {
-    if (event.type !== "log" || !event.message) return;
-    this.appendLog(task, event.source === "stderr" ? `[stderr] ${event.message}` : event.message);
-    this.schedulePersist();
+    if (event.runId !== task.runId) {
+      this.appendLog(task, `[console] 忽略 runId 不匹配的 Runner 事件: ${event.runId}`);
+      this.schedulePersist();
+      return;
+    }
+    if (event.type === "artifact") {
+      try {
+        if (!event.timestamp || Number.isNaN(Date.parse(event.timestamp))) {
+          throw new Error("Runner artifact 事件时间无效");
+        }
+        validateRunnerArtifactEventData(event.data);
+        const data = event.data;
+        const prefix = `project://${task.projectId}/`;
+        if (!data.uri.startsWith(prefix)) throw new Error(`截图 URI 与任务项目不一致: ${data.uri}`);
+        const relativePath = data.uri.slice(prefix.length);
+        if (!relativePath || path.isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes("..")) {
+          throw new Error(`截图路径无效: ${data.uri}`);
+        }
+        const workspaceRoot = task.workspaceRoot ?? this.config.project.root;
+        const realRoot = fsSync.realpathSync(workspaceRoot);
+        const realCandidate = fsSync.realpathSync(path.resolve(workspaceRoot, relativePath));
+        const realRelative = path.relative(realRoot, realCandidate);
+        if (realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+          throw new Error(`截图真实路径超出项目目录: ${data.label}`);
+        }
+        const stat = fsSync.statSync(realCandidate);
+        if (!stat.isFile()) throw new Error(`截图不是文件: ${data.label}`);
+        validateImageArtifactMetadata(relativePath, data.mimeType, stat.size);
+        const descriptor = fsSync.openSync(realCandidate, "r");
+        try {
+          const header = Buffer.alloc(12);
+          const bytesRead = fsSync.readSync(descriptor, header, 0, header.length, 0);
+          validateImageArtifactSignature(header.subarray(0, bytesRead), data.mimeType);
+        } finally {
+          fsSync.closeSync(descriptor);
+        }
+        const artifacts = task.artifacts ?? (task.artifacts = []);
+        if (artifacts.some(artifact => artifact.uri === data.uri)) return;
+        const artifact: TaskLiveArtifact = {
+          id: `live-${createHash("sha1").update(data.uri).digest("hex").slice(0, 12)}`,
+          uri: data.uri,
+          role: data.role,
+          label: data.label.trim(),
+          mimeType: data.mimeType,
+          createdAt: event.timestamp,
+        };
+        artifacts.push(artifact);
+        if (artifacts.length > MAX_LIVE_ARTIFACTS) artifacts.splice(0, artifacts.length - MAX_LIVE_ARTIFACTS);
+        this.schedulePersist();
+      } catch (error) {
+        this.appendLog(task, `[console] 忽略无效截图事件: ${error instanceof Error ? error.message : String(error)}`);
+        this.schedulePersist();
+      }
+      return;
+    }
+    if (event.type === "log" && event.message) {
+      this.appendLog(task, event.source === "stderr" ? `[stderr] ${event.message}` : event.message);
+      this.schedulePersist();
   }
+}
 
   private async runTaskDeletionCleanup(task: TestTask, command: ResolvedCommand): Promise<void> {
     const child = spawn(command.executable, command.args, {
@@ -667,6 +786,26 @@ export class TaskManager {
     await this.store.save(tasks);
   }
 
+}
+
+function validateImageArtifactMetadata(relativePath: string, mimeType: TaskLiveArtifact["mimeType"], sizeBytes: number): void {
+  const extension = path.extname(relativePath).toLowerCase();
+  const expectedMimeType = IMAGE_MIME_BY_EXTENSION.get(extension);
+  if (!expectedMimeType || expectedMimeType !== mimeType) {
+    throw new Error(`截图扩展名与媒体类型不匹配: ${extension || "无扩展名"}/${mimeType}`);
+  }
+  if (sizeBytes <= 0 || sizeBytes > MAX_LIVE_ARTIFACT_BYTES) {
+    throw new Error(`截图大小无效: ${sizeBytes} bytes`);
+  }
+}
+
+function validateImageArtifactSignature(header: Buffer, mimeType: TaskLiveArtifact["mimeType"]): void {
+  const valid = mimeType === "image/jpeg"
+    ? header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff
+    : mimeType === "image/png"
+      ? header.length >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      : header.length >= 12 && header.toString("ascii", 0, 4) === "RIFF" && header.toString("ascii", 8, 12) === "WEBP";
+  if (!valid) throw new Error(`截图文件签名与媒体类型不匹配: ${mimeType}`);
 }
 
 function waitForProcess(child: ChildProcess): Promise<{ code: number | null; error: Error | null }> {

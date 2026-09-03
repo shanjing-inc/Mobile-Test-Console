@@ -1,26 +1,16 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import open from "open";
 import { createApp } from "./app.js";
 import { applyDeviceToolEnv, SystemCommandRunner } from "./command-runner.js";
-import { DeviceDiscoveryService } from "./devices.js";
-import { ProjectLifecycle } from "./lifecycle.js";
-import { StateStore } from "./state-store.js";
-import { TaskManager } from "./task-manager.js";
-import { RepairJobStore } from "./repair-job-store.js";
-import { RepairJobManager } from "./repair-job-manager.js";
-import { TaskResultService } from "./task-results.js";
-import { ResultBundleStore } from "./result-bundle-store.js";
-import { loadRunnerRuntime } from "./runner-runtime.js";
 import { ProjectCatalogService, ProjectCatalogStore } from "./project-catalog.js";
+import { createProjectRuntime, ProjectRuntimeRegistry } from "./project-runtime.js";
+import { TaskExecutionCoordinator } from "./task-execution-coordinator.js";
 import { DirectoryPicker } from "./directory-picker.js";
 import { isConfiguredProject, resolveProjectCatalogPath, resolveStartupProject } from "./startup-project.js";
-import { ArtifactRetentionService, ArtifactRetentionStore } from "./artifact-retention.js";
 import { loadMtcConfig } from "./mtc-config.js";
 
 applyDeviceToolEnv();
@@ -66,55 +56,35 @@ const runner = new SystemCommandRunner();
 const directoryPicker = new DirectoryPicker(runner);
 const projectCatalog = new ProjectCatalogService(projectCatalogStore, runner);
 await projectCatalog.initialize(isConfiguredProject(startupProject) ? config : undefined);
-const devices = new DeviceDiscoveryService(runner, config.deviceProviders, config.iosSimulator, config);
-const resultBundles = new ResultBundleStore(config.stateDir);
-const runnerRuntime = await loadRunnerRuntime(config, [], resultBundles);
-const tasks = new TaskManager(
-  config,
-  new StateStore(config.stateDir),
-  runnerRuntime.compatibilityRunner,
-  runnerRuntime.resolver,
-);
-await tasks.initialize();
-const taskResults = new TaskResultService(config, tasks, resultBundles);
-const repairs = config.codexRepair?.enabled
-  ? new RepairJobManager(config, new RepairJobStore(config.stateDir), tasks, taskResults, devices, runner)
-  : undefined;
-if (repairs) await repairs.initialize();
-const artifacts = new ArtifactRetentionService(
-  config,
-  tasks,
-  new ArtifactRetentionStore(config.stateDir),
-  repairs,
-  runner,
-);
-await artifacts.initialize();
-const lifecycle = new ProjectLifecycle(config);
 const lifecycleManaged = process.env.MTC_LIFECYCLE_MANAGED === "1";
-if (!lifecycleManaged && isConfiguredProject(startupProject)) await lifecycle.startup();
+const executionCoordinator = new TaskExecutionCoordinator();
+const createRuntime = (runtimeConfig: typeof config) => createProjectRuntime(runtimeConfig, {
+  commandRunner: runner,
+  executionCoordinator,
+  lifecycleManaged: false,
+  startLifecycle: true,
+});
+const defaultRuntime = await createProjectRuntime(config, {
+  commandRunner: runner,
+  executionCoordinator,
+  lifecycleManaged,
+  startLifecycle: isConfiguredProject(startupProject),
+});
+const runtimes = new ProjectRuntimeRegistry(defaultRuntime, projectCatalog, createRuntime);
 
 const staticDir = productionBuild ? path.resolve(currentDir, "../web") : undefined;
 const app = await createApp({
   config,
-  devices,
-  tasks,
-  taskResults,
-  repairs,
-  artifacts,
-  resultBundles,
-  projectProviders: runnerRuntime.providers.manifests(),
+  devices: defaultRuntime.devices,
+  tasks: defaultRuntime.tasks,
+  taskResults: defaultRuntime.taskResults,
+  repairs: defaultRuntime.repairs,
+  artifacts: defaultRuntime.artifacts,
+  resultBundles: defaultRuntime.resultBundles,
+  projectProviders: defaultRuntime.projectProviders,
+  runtimes,
   projectCatalog,
   directoryPicker,
-  onProjectSwitch: async configPathToSwitch => {
-    restartConfigPath = configPathToSwitch;
-    const developmentSwitchFile = process.env.MTC_DEV_SWITCH_FILE;
-    if (developmentSwitchFile) {
-      await fs.writeFile(developmentSwitchFile, `${JSON.stringify({ configPath: configPathToSwitch })}\n`);
-      setTimeout(() => void close(), 0).unref?.();
-      return;
-    }
-    setTimeout(() => void close(), 0).unref?.();
-  },
   staticDir,
 });
 let address: string;
@@ -122,7 +92,7 @@ try {
   address = await app.listen({ host, port });
 } catch (error) {
   try {
-    await lifecycle.shutdown();
+    await runtimes.shutdown();
   } catch (cleanupError) {
     process.stderr.write(`[lifecycle] ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
   }
@@ -144,17 +114,13 @@ process.stdout.write(isConfiguredProject(startupProject)
 if (values.open) await open(webAddress);
 
 let closing = false;
-let restartConfigPath = "";
 const close = async (requestedExitCode = 0) => {
   if (closing) return;
   closing = true;
   let exitCode = requestedExitCode;
   for (const [label, action] of [
-    ...(repairs ? [["停止 Codex 修复", () => repairs.shutdown()]] as const : []),
-    ["停止产物治理", () => artifacts.shutdown()],
-    ["停止任务", () => tasks.shutdown()],
     ["关闭 HTTP 服务", () => app.close()],
-    ["清理项目", () => lifecycleManaged ? Promise.resolve() : lifecycle.shutdown()],
+    ["停止项目 Runtime", () => runtimes.shutdown()],
   ] as const) {
     try {
       await action();
@@ -163,40 +129,7 @@ const close = async (requestedExitCode = 0) => {
       process.stderr.write(`[shutdown] ${label}失败: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
-  if (restartConfigPath && !process.env.MTC_DEV_SWITCH_FILE) {
-    const child = spawn(process.execPath, replaceConfigArgument(restartConfigPath), {
-      detached: true,
-      stdio: "ignore",
-      env: { ...process.env, MTC_CONFIG: restartConfigPath },
-    });
-    child.once("error", error => process.stderr.write(`[switch] 项目重启失败: ${error.message}\n`));
-    child.unref();
-  }
-  if (restartConfigPath && process.env.MTC_DEV_SWITCH_FILE && process.ppid > 1) {
-    // tsx watch 会继续驻留等待文件变化，主动结束它才能让 dev.mjs 接管重启。
-    try {
-      process.kill(process.ppid, "SIGTERM");
-    } catch {
-      // 父进程已经退出时，当前进程仍按原有退出流程结束。
-    }
-  }
   process.exit(exitCode);
 };
 process.once("SIGINT", () => void close());
 process.once("SIGTERM", () => void close());
-
-function replaceConfigArgument(nextConfigPath: string): string[] {
-  const args = process.argv.slice(1);
-  const longIndex = args.indexOf("--config");
-  if (longIndex >= 0) {
-    args[longIndex + 1] = nextConfigPath;
-    return args;
-  }
-  const shortIndex = args.indexOf("-c");
-  if (shortIndex >= 0) {
-    args[shortIndex + 1] = nextConfigPath;
-    return args;
-  }
-  args.push("--config", nextConfigPath);
-  return args;
-}

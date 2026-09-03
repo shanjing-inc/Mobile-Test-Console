@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -23,6 +24,8 @@ import type { ResultBundleStore } from "./result-bundle-store.js";
 import { resolveProjectConfigSelection, scanProjectDirectory, type ProjectCatalogService } from "./project-catalog.js";
 import { DirectoryPicker } from "./directory-picker.js";
 import type { ArtifactRetentionService } from "./artifact-retention.js";
+import type { ProjectRuntime, ProjectRuntimeRegistry } from "./project-runtime.js";
+import { createScreenshotComparison, listScreenshotComparisonCandidates, type ScreenshotComparisonRuntime } from "./screenshot-comparison.js";
 
 const startRequestSchema = z.object({
   testId: z.string().min(1),
@@ -43,6 +46,19 @@ const retryTaskRequestSchema = z.object({
 });
 
 const accountProfileProviderSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
+
+const screenshotComparisonRequestSchema = z.object({
+  left: z.object({
+    projectId: z.string().min(1),
+    taskId: z.string().min(1),
+  }),
+  right: z.object({
+    projectId: z.string().min(1),
+    taskId: z.string().min(1),
+  }),
+}).refine(value => value.left.projectId !== value.right.projectId || value.left.taskId !== value.right.taskId, {
+  message: "请选择两个不同的历史结果",
+});
 
 const startDeviceRequestSchema = z.object({
   deviceKey: z.string().min(1),
@@ -304,27 +320,54 @@ export interface CreateAppOptions {
   projectCatalog?: ProjectCatalogService;
   directoryPicker?: DirectoryPicker;
   artifacts?: ArtifactRetentionService;
+  runtimes?: ProjectRuntimeRegistry;
   onProjectSwitch?: (configPath: string) => void | Promise<void>;
   staticDir?: string;
 }
 
-export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
+export async function createApp(baseOptions: CreateAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  const runtimeContext = new AsyncLocalStorage<ProjectRuntime>();
+  const options = new Proxy(baseOptions, {
+    get(target, property, receiver) {
+      const runtime = runtimeContext.getStore();
+      if (runtime && property in runtime) return Reflect.get(runtime, property, runtime);
+      return Reflect.get(target, property, receiver);
+    },
+  });
   const directoryPicker = options.directoryPicker ?? new DirectoryPicker();
-  const taskResults = options.taskResults
+  const defaultTaskResults = options.taskResults
     ?? new TaskResultService(options.config, options.tasks, options.resultBundles);
-  const pageParameters = new PageParameterService(
+  const defaultPageParameters = new PageParameterService(
     options.config,
     new PageParameterStore(options.config.stateDir),
   );
-  const accountProfiles = new AccountProfileService(
+  const defaultAccountProfiles = new AccountProfileService(
     options.config,
     new AccountProfileStore(options.config.stateDir, options.config.adapter),
   );
-  const businessScripts = new BusinessScriptService(
+  const defaultBusinessScripts = new BusinessScriptService(
     options.config,
     new BusinessScriptStore(options.config.stateDir),
   );
+  const taskResults = requestScopedService(defaultTaskResults, runtime => runtime.taskResults, runtimeContext);
+  const pageParameters = requestScopedService(defaultPageParameters, runtime => runtime.pageParameters, runtimeContext);
+  const accountProfiles = requestScopedService(defaultAccountProfiles, runtime => runtime.accountProfiles, runtimeContext);
+  const businessScripts = requestScopedService(defaultBusinessScripts, runtime => runtime.businessScripts, runtimeContext);
+
+  app.addHook("onRequest", (request, _reply, done) => {
+    if (!baseOptions.runtimes || !request.url.startsWith("/api/") || request.url.startsWith("/api/projects") || request.url.startsWith("/api/health")) {
+      done();
+      return;
+    }
+    const header = request.headers["x-mtc-project-id"];
+    const headerProjectId = Array.isArray(header) ? header[0] : header;
+    const queryProjectId = new URL(request.url, "http://localhost").searchParams.get("projectId") ?? "";
+    void baseOptions.runtimes.resolve(String(headerProjectId || queryProjectId).trim()).then(
+      runtime => runtimeContext.run(runtime, done),
+      error => done(error instanceof Error ? error : new Error(String(error))),
+    );
+  });
 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("Cache-Control", "no-store");
@@ -350,6 +393,27 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/detail", async request => (
     requireProjectCatalog(options).detail(request.params.projectId)
   ));
+
+  app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/screenshot-comparison/candidates", async request => {
+    const runtime = await resolveScreenshotComparisonRuntime(baseOptions, request.params.projectId);
+    return { candidates: await listScreenshotComparisonCandidates(runtime) };
+  });
+
+  app.post<{ Body: unknown }>("/api/screenshot-comparisons", async request => {
+    const parsed = screenshotComparisonRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ConsoleError(
+        "SCREENSHOT_COMPARISON_INVALID",
+        parsed.error.issues.map(issue => issue.message).join("; ") || "请选择两个历史结果",
+        400,
+      );
+    }
+    const [leftRuntime, rightRuntime] = await Promise.all([
+      resolveScreenshotComparisonRuntime(baseOptions, parsed.data.left.projectId),
+      resolveScreenshotComparisonRuntime(baseOptions, parsed.data.right.projectId),
+    ]);
+    return createScreenshotComparison(leftRuntime, rightRuntime, parsed.data);
+  });
 
   app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/test-entry-editor", async request => (
     requireProjectCatalog(options).testEntryEditor(request.params.projectId)
@@ -438,9 +502,10 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   ));
 
   app.post<{ Params: { projectId: string } }>("/api/projects/:projectId/activate", async (request, reply) => {
+    if (baseOptions.runtimes) await baseOptions.runtimes.resolve(request.params.projectId);
     const activeTaskCount = options.tasks.list().filter(task => ACTIVE_TASK_STATUSES.includes(task.status)).length;
     const activation = await requireProjectCatalog(options).activate(request.params.projectId, activeTaskCount);
-    if (options.onProjectSwitch && activation.projectId !== options.config.project.id) {
+    if (!baseOptions.runtimes && options.onProjectSwitch && activation.projectId !== options.config.project.id) {
       const switchProject = () => {
         void Promise.resolve(options.onProjectSwitch!(activation.configPath)).catch(error => {
           console.error("[server] 项目切换失败", error);
@@ -817,7 +882,11 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   app.get<{ Params: { taskId: string; artifactId: string } }>(
     "/api/tasks/:taskId/artifacts/:artifactId",
     async (request, reply) => {
-      const artifact = await taskResults.artifact(request.params.taskId, request.params.artifactId);
+      const task = options.tasks.get(request.params.taskId);
+      const live = task?.artifacts?.some(artifact => artifact.id === request.params.artifactId);
+      const artifact = live
+        ? await options.tasks.artifact(request.params.taskId, request.params.artifactId)
+        : await taskResults.artifact(request.params.taskId, request.params.artifactId);
       reply.type(artifact.mimeType);
       reply.header("Content-Length", artifact.sizeBytes);
       reply.header("Content-Disposition", "inline");
@@ -859,6 +928,20 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   }
 
   return app;
+}
+
+function requestScopedService<T extends object>(
+  fallback: T,
+  select: (runtime: ProjectRuntime) => T,
+  context: AsyncLocalStorage<ProjectRuntime>,
+): T {
+  return new Proxy(fallback, {
+    get(_target, property) {
+      const service = context.getStore() ? select(context.getStore()!) : fallback;
+      const value = Reflect.get(service, property, service);
+      return typeof value === "function" ? value.bind(service) : value;
+    },
+  });
 }
 
 async function projectRetryTaskStatuses(
@@ -1072,4 +1155,28 @@ function requireProjectCatalog(options: CreateAppOptions): ProjectCatalogService
     throw new ConsoleError("PROJECT_CATALOG_UNAVAILABLE", "项目目录服务尚未初始化", 503);
   }
   return options.projectCatalog;
+}
+
+async function resolveScreenshotComparisonRuntime(
+  options: CreateAppOptions,
+  projectId: string,
+): Promise<ScreenshotComparisonRuntime> {
+  if (options.runtimes) {
+    const runtime = await options.runtimes.resolve(projectId);
+    return {
+      config: runtime.config,
+      tasks: runtime.tasks,
+      taskResults: runtime.taskResults,
+      resultBundles: runtime.resultBundles,
+    };
+  }
+  if (projectId && projectId !== options.config.project.id) {
+    throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
+  }
+  return {
+    config: options.config,
+    tasks: options.tasks,
+    taskResults: options.taskResults ?? new TaskResultService(options.config, options.tasks, options.resultBundles),
+    resultBundles: options.resultBundles,
+  };
 }

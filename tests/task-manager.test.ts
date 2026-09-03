@@ -13,6 +13,7 @@ import type { Device, MiniProgramRunTarget, TaskStatus, TestTask } from "../src/
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { ConsoleError } from "../src/server/errors.js";
 import { StateStore } from "../src/server/state-store.js";
+import { TaskExecutionCoordinator } from "../src/server/task-execution-coordinator.js";
 import { TaskManager } from "../src/server/task-manager.js";
 
 const tempDirs: string[] = [];
@@ -95,6 +96,105 @@ describe("任务管理器", () => {
     expect(finished.logs).toContain("[stderr] custom runner warning");
     await manager.shutdown();
     expect(fallbackShutdown).not.toHaveBeenCalled();
+  });
+
+  it("接收、去重并安全读取 Runner 执行中截图", async () => {
+    const dir = await createTempDir("mtc-task-live-artifact-");
+    const relativePath = ".test/results/live/screen.jpg";
+    const absolutePath = path.join(dir, relativePath);
+    const invalidSignaturePath = path.join(dir, ".test/results/live/fake.jpg");
+    const mismatchedExtensionPath = path.join(dir, ".test/results/live/wrong.png");
+    const oversizedPath = path.join(dir, ".test/results/live/large.jpg");
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const runner: InProcessRunner = {
+      id: "artifact-runner",
+      async run(plan, context) {
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, jpeg);
+        await fs.writeFile(invalidSignaturePath, "not-an-image");
+        await fs.writeFile(mismatchedExtensionPath, jpeg);
+        await fs.writeFile(oversizedPath, jpeg);
+        await fs.truncate(oversizedPath, 20 * 1024 * 1024 + 1);
+        const data = {
+          schemaVersion: "mobile-test-console.runner-artifact.v1" as const,
+          uri: `project://${plan.projectId}/${relativePath}`,
+          role: "screenshot" as const,
+          label: "screen.jpg",
+          mimeType: "image/jpeg" as const,
+        };
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data }));
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data }));
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data: { ...data, uri: `project://${plan.projectId}/../outside.jpg` } }));
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data: { ...data, uri: `project://${plan.projectId}/.test/results/live/fake.jpg`, label: "fake.jpg" } }));
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data: { ...data, uri: `project://${plan.projectId}/.test/results/live/wrong.png`, label: "wrong.png" } }));
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data: { ...data, uri: `project://${plan.projectId}/.test/results/live/large.jpg`, label: "large.jpg" } }));
+        context.emit(createRunnerEvent(plan.runId, "artifact", { data: { ...data, uri: `project://${plan.projectId}/.test/results/live/missing.jpg`, label: "missing.jpg" } }));
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), runner, { resolve: () => runner });
+    await manager.initialize();
+
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const finished = await waitForStatus(manager, created.id, "passed");
+
+    expect(finished.artifacts).toEqual([expect.objectContaining({
+      uri: `project://demo/${relativePath}`,
+      label: "screen.jpg",
+      mimeType: "image/jpeg",
+    })]);
+    expect(finished.logs.join("\n")).toContain("截图文件签名与媒体类型不匹配");
+    expect(finished.logs.join("\n")).toContain("截图扩展名与媒体类型不匹配");
+    expect(finished.logs.join("\n")).toContain("截图大小无效");
+    const artifact = await manager.artifact(created.id, finished.artifacts![0]!.id);
+    expect(artifact).toMatchObject({ absolutePath: await fs.realpath(absolutePath), mimeType: "image/jpeg", sizeBytes: jpeg.length });
+    const stored = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8")) as { tasks: TestTask[] };
+    expect(stored.tasks[0]?.artifacts).toEqual(finished.artifacts);
+
+    await fs.writeFile(absolutePath, "replaced");
+    await expect(manager.artifact(created.id, finished.artifacts![0]!.id)).rejects.toMatchObject({
+      code: "TASK_ARTIFACT_INVALID",
+      statusCode: 409,
+    });
+    await fs.rm(absolutePath);
+    await expect(manager.artifact(created.id, finished.artifacts![0]!.id)).rejects.toMatchObject({
+      code: "TASK_ARTIFACT_MISSING",
+      statusCode: 404,
+    });
+    await manager.shutdown();
+  });
+
+  it("限制单个任务持久化的执行中截图数量", async () => {
+    const dir = await createTempDir("mtc-task-live-artifact-limit-");
+    const runner: InProcessRunner = {
+      id: "artifact-limit-runner",
+      async run(plan, context) {
+        const screenshotRoot = path.join(dir, ".test/results", plan.runId);
+        await fs.mkdir(screenshotRoot, { recursive: true });
+        for (let index = 0; index < 105; index += 1) {
+          await fs.writeFile(path.join(screenshotRoot, `screen-${index}.png`), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+          context.emit(createRunnerEvent(plan.runId, "artifact", {
+            data: {
+              schemaVersion: "mobile-test-console.runner-artifact.v1",
+              uri: `project://${plan.projectId}/.test/results/${plan.runId}/screen-${index}.png`,
+              role: "screenshot",
+              label: `screen-${index}.png`,
+              mimeType: "image/png",
+            },
+          }));
+        }
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const manager = new TaskManager(createConfig(dir), new StateStore(dir), runner, { resolve: () => runner });
+    await manager.initialize();
+    const [created] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
+    const finished = await waitForStatus(manager, created.id, "passed");
+
+    expect(finished.artifacts).toHaveLength(100);
+    expect(finished.artifacts?.[0]?.label).toBe("screen-5.png");
+    expect(finished.artifacts?.at(-1)?.label).toBe("screen-104.png");
+    await manager.shutdown();
   });
 
   it("持久化手动重试来源并传入 Runner metadata", async () => {
@@ -585,6 +685,7 @@ describe("任务管理器", () => {
 
     const [first] = await manager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
     await waitForStatus(manager, first.id, "running");
+    await waitForRunnerStarts(controlled, 1);
     const [second] = await manager.start({ testId: "pass", deviceKeys: [device.key], parameters: {} }, [device]);
     const [third] = await manager.start({ testId: "pass-alt", deviceKeys: [device.key], parameters: {} }, [device]);
 
@@ -599,11 +700,62 @@ describe("任务管理器", () => {
     await manager.stop(first.id);
     await waitForStatus(manager, first.id, "cancelled");
     await waitForStatus(manager, third.id, "running");
+    await waitForRunnerStarts(controlled, 2);
     expect(controlled.startedRunIds).toEqual([first.runId, third.runId]);
 
     await manager.stop(third.id);
     await waitForStatus(manager, third.id, "cancelled");
     await manager.shutdown();
+  });
+
+  it("多个项目共享资源队列，同时运行不同设备", async () => {
+    const firstDir = await createTempDir("mtc-task-project-a-");
+    const secondDir = await createTempDir("mtc-task-project-b-");
+    const coordinator = new TaskExecutionCoordinator();
+    const firstRunner = createControlledRunner("project-a-runner");
+    const secondRunner = createControlledRunner("project-b-runner");
+    const firstConfig = createConfig(firstDir);
+    const secondConfig = createConfig(secondDir);
+    firstConfig.project.id = "project-a";
+    secondConfig.project.id = "project-b";
+    const firstManager = new TaskManager(
+      firstConfig,
+      new StateStore(firstDir),
+      firstRunner.runner,
+      { resolve: () => firstRunner.runner },
+      undefined,
+      undefined,
+      coordinator,
+    );
+    const secondManager = new TaskManager(
+      secondConfig,
+      new StateStore(secondDir),
+      secondRunner.runner,
+      { resolve: () => secondRunner.runner },
+      undefined,
+      undefined,
+      coordinator,
+    );
+    await Promise.all([firstManager.initialize(), secondManager.initialize()]);
+
+    const [first] = await firstManager.start({ testId: "long", deviceKeys: [device.key], parameters: {} }, [device]);
+    const [independent] = await secondManager.start({ testId: "long", deviceKeys: [secondDevice.key], parameters: {} }, [secondDevice]);
+    await Promise.all([
+      waitForStatus(firstManager, first.id, "running"),
+      waitForStatus(secondManager, independent.id, "running"),
+    ]);
+    const [shared] = await secondManager.start({ testId: "pass-alt", deviceKeys: [device.key], parameters: {} }, [device]);
+    await waitForStatus(secondManager, shared.id, "queued");
+    expect(secondRunner.startedRunIds).toEqual([independent.runId]);
+
+    await firstManager.stop(first.id);
+    await waitForStatus(firstManager, first.id, "cancelled");
+    await waitForStatus(secondManager, shared.id, "running");
+    await waitForRunnerStarts(secondRunner, 2);
+    expect(secondRunner.startedRunIds).toEqual([independent.runId, shared.runId]);
+
+    await Promise.all([secondManager.stop(independent.id), secondManager.stop(shared.id)]);
+    await Promise.all([firstManager.shutdown(), secondManager.shutdown()]);
   });
 
   it("同测试入口与设备的运行任务拒绝重复创建，终态后允许再次启动", async () => {
@@ -660,6 +812,7 @@ describe("任务管理器", () => {
     await manager.stop(first.id);
     await waitForStatus(manager, first.id, "cancelled");
     await waitForStatus(manager, queued.id, "running");
+    await waitForRunnerStarts(controlled, 2);
     expect(controlled.startedRunIds).toEqual([first.runId, queued.runId]);
 
     await manager.stop(queued.id);

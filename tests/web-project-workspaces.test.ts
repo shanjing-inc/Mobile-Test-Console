@@ -15,10 +15,11 @@ const readyAccess: ProjectWorkspaceAccess = {
 };
 
 describe("项目工作台注册", () => {
-  it("始终按固定顺序展示五个项目入口", () => {
+  it("始终按固定顺序展示项目入口", () => {
     expect(resolveWorkspaceViews()).toEqual([
       "projects",
       "tests",
+      "screenshot-compare",
       "page-parameters",
       "business-scripts",
       "account-profiles",
@@ -34,15 +35,17 @@ describe("项目工作台注册", () => {
 
   it("接入完成后按配置声明开放项目工具", () => {
     expect(workspaceDisabledReason("tests", readyAccess)).toBeNull();
+    expect(workspaceDisabledReason("screenshot-compare", readyAccess)).toBeNull();
     expect(workspaceDisabledReason("account-profiles", readyAccess)).toBeNull();
     expect(workspaceDisabledReason("business-scripts", readyAccess))
       .toContain("adapter.workspaces");
     expect(reconcileWorkspaceView("business-scripts", readyAccess)).toBe("projects");
   });
 
-  it("小程序只开放项目概览与测试套件工作区", () => {
-    expect(resolveWorkspaceViews("mini-program")).toEqual(["projects", "tests"]);
+  it("小程序开放项目概览、测试套件和截图对比工作区", () => {
+    expect(resolveWorkspaceViews("mini-program")).toEqual(["projects", "tests", "screenshot-compare"]);
+    expect(workspaceDisabledReason("screenshot-compare", { ...readyAccess, family: "mini-program" })).toBeNull();
     expect(workspaceDisabledReason("page-parameters", { ...readyAccess, family: "mini-program" }))
-      .toBe("小程序项目使用测试套件与结果报告工作区");
+      .toBe("小程序项目使用测试套件、结果报告和截图对比工作区");
   });
 });

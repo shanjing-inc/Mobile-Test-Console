@@ -40,6 +40,7 @@ import { resolveDeviceExecutable, SystemCommandRunner, type CommandRunner } from
 import { assertPathInsideProject, configSchema, loadProjectConfig, resolveTargetCommand, resolveTargetHealthCheckCommand, TEST_ENTRIES_FILE_NAME, TEST_ENTRIES_SCHEMA_VERSION, toPublicTests, toPublicTestsFromConfig, type LoadedProjectConfig, type TestDefinition } from "./config.js";
 import { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
+import { canonicalProjectRoot, projectIdFromRoot } from "./project-identity.js";
 import { ResultBundleStore } from "./result-bundle-store.js";
 import { loadRunnerRuntime } from "./runner-runtime.js";
 
@@ -166,16 +167,21 @@ export class ProjectCatalogService {
 
   async initialize(activeConfig?: LoadedProjectConfig): Promise<void> {
     const stored = await this.store.load();
+    const migrated = await migrateStoredCatalog(stored);
     this.projects.clear();
-    for (const entry of stored.projects) this.projects.set(entry.id, normalizeEntry(entry));
+    for (const entry of migrated.projects) this.projects.set(entry.id, normalizeEntry(entry));
     await this.runExclusive(async () => {
       if (!activeConfig) {
-        this.activeProjectId = stored.activeProjectId;
+        this.activeProjectId = migrated.activeProjectId;
         this.markActiveProject();
+        if (migrated.changed) await this.persist();
         return;
       }
       this.activeProjectId = activeConfig.project.id;
-      const activeEntryWasRemoved = stored.activeProjectId === activeConfig.project.id
+      const activeEntryWasRemoved = (
+        migrated.activeProjectId === activeConfig.project.id
+        || stored.activeProjectId === activeConfig.configuredProjectId
+      )
         && !this.projects.has(activeConfig.project.id);
       if (activeEntryWasRemoved) {
         this.markActiveProject();
@@ -206,7 +212,7 @@ export class ProjectCatalogService {
       schemaVersion: CATALOG_SCHEMA_VERSION,
       activeProjectId: this.activeProjectId,
       projects: [...this.projects.values()]
-        .sort((left, right) => Number(right.active) - Number(left.active) || right.updatedAt.localeCompare(left.updatedAt))
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
         .map(entry => structuredClone(entry)),
     };
   }
@@ -389,7 +395,7 @@ export class ProjectCatalogService {
   }
 
   async register(input: RegisterProjectRequest): Promise<ProjectCatalogResponse> {
-    return this.runExclusive(async () => {
+    const projectId = await this.runExclusive(async () => {
       const root = await requireDirectory(input.projectDirectory, "PROJECT_DIRECTORY_REQUIRED", "请选择有效的项目目录");
       const configPath = resolveConfigPath(root, input.configFile);
       if ([...this.projects.values()].some(entry => entry.configPath === configPath)) {
@@ -425,8 +431,9 @@ export class ProjectCatalogService {
         onboarding: createOnboarding(config.project.id, config.project.name, now),
       });
       await this.persist();
-      return this.snapshot();
+      return config.project.id;
     });
+    return this.verify(projectId);
   }
 
   async previewInitialization(input: PreviewProjectInitializationRequest): Promise<ProjectSetupPlan> {
@@ -437,10 +444,9 @@ export class ProjectCatalogService {
     const built = await this.buildInitializationPlan(input);
     requireCurrentSetupPlan(built.plan, input.planId);
     const results = await this.executeSetupActions(built.actions);
-    if (!this.projects.has(built.projectId!)) {
-      await this.register({ projectDirectory: built.plan.projectDirectory, configFile: CONFIG_FILE_NAME });
-    }
-    const catalog = await this.verify(built.projectId!);
+    const catalog = this.projects.has(built.projectId!)
+      ? await this.verify(built.projectId!)
+      : await this.register({ projectDirectory: built.plan.projectDirectory, configFile: CONFIG_FILE_NAME });
     return { plan: built.plan, catalog, results };
   }
 
@@ -526,13 +532,17 @@ export class ProjectCatalogService {
     });
   }
 
-  async activate(projectId: string, activeTaskCount: number): Promise<ProjectActivationResponse> {
+  async loadRuntimeConfig(projectId: string): Promise<LoadedProjectConfig> {
+    const entry = this.projects.get(projectId);
+    if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
+    return this.loadEntryConfig(entry);
+  }
+
+  async activate(projectId: string, activeTaskCount = 0): Promise<ProjectActivationResponse> {
+    void activeTaskCount;
     return this.runExclusive(async () => {
       const entry = this.projects.get(projectId);
       if (!entry) throw new ConsoleError("PROJECT_UNKNOWN", `项目不存在: ${projectId}`, 404);
-      if (activeTaskCount > 0) {
-        throw new ConsoleError("PROJECT_SWITCH_TASK_ACTIVE", `当前有 ${activeTaskCount} 个活动任务，请先停止任务`, 409);
-      }
 
       const configExists = await fs.stat(entry.configPath).catch(() => null);
       if (!configExists?.isFile()) {
@@ -555,7 +565,7 @@ export class ProjectCatalogService {
         catalog: this.snapshot(),
         projectId: entry.id,
         configPath: entry.configPath,
-        restartRequired: true,
+        restartRequired: false,
       };
     });
   }
@@ -652,7 +662,7 @@ export class ProjectCatalogService {
           version: target.runtime,
           detail: result.code === 0
             ? String(result.stdout || "运行环境可用").trim()
-            : String(result.stderr || result.stdout || `退出码 ${result.code}`).trim(),
+            : commandFailureDetail(result),
           guidance: result.code === 0 ? [] : ["按项目运行环境检查输出完成配置后重新验证。"],
         };
       } catch (error) {
@@ -686,13 +696,13 @@ export class ProjectCatalogService {
       const capabilities = new Set(runtime.providers.manifests()
         .flatMap(provider => provider.capabilities.map(capability => capability.id)));
       const declarations = config.testing?.capabilities ?? [];
-      if (declarations.length === 0 && entry.integrationType !== "app") {
+      if (declarations.length === 0) {
         updateStep(
           entry,
           "capabilities",
-          "waiting",
-          "项目尚未声明测试能力",
-          ["在 mobile-test.config.cjs 的 testing.capabilities 中声明测试能力和 Provider。"],
+          "verified",
+          "基础命令测试能力已就绪",
+          [],
           checkedAt,
           { capabilities: [] },
         );
@@ -735,7 +745,7 @@ export class ProjectCatalogService {
       ? [...new Set(input.platforms)].filter(platform => PLATFORMS.includes(platform))
       : [];
     const existingEntry = [...this.projects.values()].find(entry => entry.root === root);
-    const projectId = existingEntry?.id ?? inferProjectId(root);
+    const projectId = existingEntry?.id ?? projectIdFromRoot(root);
     const projectName = existingEntry?.name ?? (path.basename(root) || "Lynx App");
     const configPath = existingEntry?.configPath ?? path.join(root, CONFIG_FILE_NAME);
     const configProjectRoot = path.relative(path.dirname(configPath), root).split(path.sep).join("/") || ".";
@@ -747,12 +757,13 @@ export class ProjectCatalogService {
       : [configPath, smokePath, guidePath];
     const conflicts = await existingPaths(generatedPaths);
     const idConflict = [...this.projects.values()].some(entry => entry.id === projectId && entry.root !== root);
+    const configExists = conflicts.includes(configPath);
     const blockingReason = input.family === "app" && platforms.length === 0
       ? "至少选择一个目标平台"
       : idConflict
         ? `项目 ID 已登记: ${projectId}`
-        : conflicts.length > 0
-          ? `以下文件已存在：${conflicts.join("、")}`
+        : configExists
+          ? `项目配置已存在，请直接读取并登记：${configPath}`
           : "";
     const actions: InternalSetupAction[] = [
       fileAction("write-config", "创建 MTC 项目配置", configPath, buildInitialConfig(projectId, projectName, configProjectRoot, platforms, input.family)),
@@ -761,7 +772,7 @@ export class ProjectCatalogService {
         : []),
       fileAction("write-smoke", "创建 Smoke 命令骨架", smokePath, buildSmokeScript(input.family)),
       fileAction("write-guide", "创建接入说明", guidePath, buildSetupGuide(input.family)),
-    ];
+    ].filter(action => !conflicts.includes(action.target!));
     return finalizeSetupPlan({
       step: "config",
       projectId,
@@ -884,7 +895,8 @@ const CONFIG_FILE_NAME = "mobile-test.config.cjs";
 const CONFIG_SCAN_IGNORED_DIRECTORIES = new Set([".git", "node_modules", "dist", "build", ".next", ".mtc-state"]);
 
 export async function resolveProjectConfigSelection(configPath: string): Promise<ProjectConfigSelection> {
-  const resolvedConfigPath = path.resolve(configPath);
+  const requestedConfigPath = path.resolve(configPath);
+  const resolvedConfigPath = await fs.realpath(requestedConfigPath).catch(() => requestedConfigPath);
   const configStat = await fs.stat(resolvedConfigPath).catch(() => null);
   if (!configStat?.isFile()) {
     throw new ConsoleError("PROJECT_CONFIG_REQUIRED", `项目配置不存在: ${resolvedConfigPath}`, 409);
@@ -938,6 +950,53 @@ async function findProjectConfig(root: string): Promise<string | null> {
     }
   }
   return null;
+}
+
+async function migrateStoredCatalog(stored: StoredCatalog): Promise<StoredCatalog & { changed: boolean }> {
+  const idMap = new Map<string, string>();
+  const projects = new Map<string, ProjectCatalogEntry>();
+  let changed = false;
+
+  for (const entry of stored.projects) {
+    const root = await canonicalProjectRoot(entry.root);
+    const id = projectIdFromRoot(root);
+    idMap.set(entry.id, id);
+    const relativeConfigPath = path.relative(path.resolve(entry.root), path.resolve(entry.configPath));
+    const configPath = !relativeConfigPath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeConfigPath)
+      ? path.resolve(root, relativeConfigPath)
+      : entry.configPath;
+    const next = normalizeEntry({ ...entry, id, root, configPath });
+    const existing = projects.get(id);
+    if (existing && existing.root !== root) {
+      throw new ConsoleError(
+        "PROJECT_ID_COLLISION",
+        `项目路径身份冲突: ${existing.root} / ${root}`,
+        409,
+      );
+    }
+    if (existing) {
+      const preferred = existing.updatedAt >= next.updatedAt ? existing : next;
+      projects.set(id, {
+        ...preferred,
+        id,
+        root,
+        createdAt: existing.createdAt <= next.createdAt ? existing.createdAt : next.createdAt,
+        active: existing.active || next.active,
+      });
+      changed = true;
+    } else {
+      projects.set(id, next);
+    }
+    changed ||= id !== entry.id || root !== entry.root || configPath !== entry.configPath;
+  }
+
+  const activeProjectId = idMap.get(stored.activeProjectId) ?? stored.activeProjectId;
+  return {
+    schemaVersion: CATALOG_SCHEMA_VERSION,
+    activeProjectId,
+    projects: [...projects.values()],
+    changed: changed || activeProjectId !== stored.activeProjectId,
+  };
 }
 
 function emptyCatalog(): StoredCatalog {
@@ -1129,7 +1188,7 @@ async function requireDirectory(input: string, code: string, message: string): P
   const root = path.resolve(input.trim());
   const stat = await fs.stat(root).catch(() => null);
   if (!stat?.isDirectory()) throw new ConsoleError(code, message, 409);
-  return root;
+  return canonicalProjectRoot(root);
 }
 
 function resolveConfigPath(root: string, configFile: string): string {
@@ -1281,6 +1340,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function commandFailureDetail(result: { code: number; stdout?: string; stderr?: string }): string {
+  const output = [result.stdout, result.stderr]
+    .map(value => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n");
+  return output || `退出码 ${result.code}`;
+}
+
 function requireCurrentSetupPlan(plan: ProjectSetupPlan, planId: string): void {
   if (plan.planId !== planId) {
     throw new ConsoleError("PROJECT_SETUP_PLAN_STALE", "接入计划已变化，请重新预览后确认", 409);
@@ -1288,17 +1355,6 @@ function requireCurrentSetupPlan(plan: ProjectSetupPlan, planId: string): void {
   if (!plan.canApply) {
     throw new ConsoleError("PROJECT_SETUP_BLOCKED", plan.blockingReason || "当前接入计划无法执行", 409);
   }
-}
-
-function inferProjectId(root: string): string {
-  const candidate = path.basename(root)
-    .toLowerCase()
-    .replace(/[_\s]+/g, "-")
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  if (/^[a-z][a-z0-9-]*$/.test(candidate)) return candidate;
-  return `lynx-app-${digest(root).slice(0, 8)}`;
 }
 
 async function existingPaths(paths: string[]): Promise<string[]> {
@@ -1461,7 +1517,6 @@ function buildInitialConfig(
     return `module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
-    id: ${JSON.stringify(projectId)},
     name: ${JSON.stringify(projectName)},
     root: ${JSON.stringify(projectRoot)},
     integrationType: "mini-program",
@@ -1503,7 +1558,6 @@ function buildInitialConfig(
   return `module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
-    id: ${JSON.stringify(projectId)},
     name: ${JSON.stringify(projectName)},
     root: ${JSON.stringify(projectRoot)},
     integrationType: "lynx-app",
@@ -1529,26 +1583,50 @@ function buildInitialConfig(
 
 function buildMiniProgramHealthCheckScript(): string {
   return `const fs = require("node:fs");
+const path = require("node:path");
 
 const args = process.argv.slice(2);
 const valueOf = name => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : "";
 };
+const envFileValue = name => {
+  try {
+    const source = fs.readFileSync(path.join(process.cwd(), ".env.e2e"), "utf8");
+    for (const rawLine of source.split(/\\r?\\n/)) {
+      const line = rawLine.trim().replace(/^export\\s+/, "");
+      if (!line || line.startsWith("#")) continue;
+      const separator = line.indexOf("=");
+      if (separator < 0 || line.slice(0, separator).trim() !== name) continue;
+      const value = line.slice(separator + 1).trim();
+      if ((value.startsWith("\\\"") && value.endsWith("\\\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+        return value.slice(1, -1);
+      }
+      return value;
+    }
+  } catch {}
+  return "";
+};
 const runtime = valueOf("--runtime");
 const appId = valueOf("--app-id");
-const devtoolsPath = process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH || "";
+const cliName = process.platform === "win32" ? "cli.bat" : "cli";
+const devtoolsDirectory = process.env.WECHAT_DEVTOOLS_DIR || envFileValue("WECHAT_DEVTOOLS_DIR");
+const cliCandidates = [
+  process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH || "",
+  devtoolsDirectory ? path.join(devtoolsDirectory, cliName) : "",
+  ...(process.platform === "darwin" ? [
+    "/Applications/wechatwebdevtools.app/Contents/MacOS/cli",
+    "/Applications/WeChatWebDevTools.app/Contents/MacOS/cli",
+  ] : []),
+].filter(Boolean);
+const devtoolsPath = cliCandidates.find(candidate => fs.existsSync(candidate)) || "";
 
 if (!appId || appId === "wx-replace-me") {
   console.error("请在 mobile-test.config.cjs 中填写小程序 App ID。");
   process.exit(1);
 }
 if (!devtoolsPath) {
-  console.error("请设置 MTC_MINI_PROGRAM_DEVTOOLS_PATH，指向小程序开发者工具 CLI。");
-  process.exit(1);
-}
-if (!fs.existsSync(devtoolsPath)) {
-  console.error(\`小程序开发者工具 CLI 不存在: \${devtoolsPath}\`);
+  console.error("未找到小程序开发者工具 CLI；可在 .env.e2e 中设置 WECHAT_DEVTOOLS_DIR，或设置 MTC_MINI_PROGRAM_DEVTOOLS_PATH。");
   process.exit(1);
 }
 
@@ -1572,9 +1650,9 @@ function buildSetupGuide(family: ProjectFamily): string {
   if (family === "mini-program") {
     return `# Mobile Test Console 小程序接入
 
-1. 在 \`mobile-test.config.cjs\` 中确认项目 ID、运行目标、App ID 和 Smoke 命令。
+1. 在 \`mobile-test.config.cjs\` 中确认运行目标、App ID 和 Smoke 命令；项目实例 ID 由 MTC 根据目录生成。
 2. 将 \`mini-program-devtools\` 替换为项目实际使用的小程序开发者工具和运行时。
-3. 设置 \`MTC_MINI_PROGRAM_DEVTOOLS_PATH\`，指向开发者工具 CLI；也可以按项目实际环境修改 \`qa/mtc/health-check.cjs\`。
+3. MTC 会依次读取 \`MTC_MINI_PROGRAM_DEVTOOLS_PATH\`、环境变量或 \`.env.e2e\` 中的 \`WECHAT_DEVTOOLS_DIR\`，并自动识别 macOS 常见安装路径。
 4. health check 以退出码 0 表示环境可用，其他退出码表示需要处理；标准输出和错误输出会展示在项目概览中。
 5. 在 MTC 项目概览中执行“重新检查”，确认项目声明的运行环境。
 6. 在 \`qa/mtc/lynx-smoke.cjs\` 中接入开发者工具拉起和页面验证命令。
@@ -1585,7 +1663,7 @@ function buildSetupGuide(family: ProjectFamily): string {
 
   return `# Mobile Test Console 接入
 
-1. 在 \`mobile-test.config.cjs\` 中确认项目 ID、目标平台和 Smoke 命令。
+1. 在 \`mobile-test.config.cjs\` 中确认目标平台和 Smoke 命令；项目实例 ID 由 MTC 根据目录生成。
 2. 在 MTC 项目概览中执行“验证接入”，确认本机 adb、Xcode 或 hdc 工具链可用。
 3. 工具位于自定义目录时，设置 ANDROID_ADB_PATH、ANDROID_SDK_ROOT、ANDROID_HOME、HARMONY_HDC_PATH、HARMONY_SDK_HOME 或 DEVECO_SDK_HOME。
 4. 连接目标设备，完成调试授权后重新验证设备环境。

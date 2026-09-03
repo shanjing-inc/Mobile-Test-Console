@@ -367,6 +367,15 @@ export interface TaskRetryCase {
   parameterProfileId?: string;
 }
 
+export interface TaskLiveArtifact {
+  id: string;
+  uri: string;
+  role: "screenshot";
+  label: string;
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+  createdAt: string;
+}
+
 export interface TestTask {
   id: string;
   runId: string;
@@ -388,6 +397,8 @@ export interface TestTask {
   exitCode: number | null;
   error: string;
   logs: string[];
+  /** Runner 在执行中发布的可预览产物。 */
+  artifacts?: TaskLiveArtifact[];
   /** Runner 完成结果分析后返回的平台存储位置。 */
   resultUri?: string;
   /** 修复验证任务运行在独立 worktree 时记录其代码根目录。 */
@@ -707,7 +718,7 @@ export interface ProjectActivationResponse {
   catalog: ProjectCatalogResponse;
   projectId: string;
   configPath: string;
-  restartRequired: true;
+  restartRequired: boolean;
 }
 
 export interface RegisterProjectRequest {
@@ -833,6 +844,69 @@ export interface InstallDevicePreparationResponse {
 
 export interface TaskResultResponse {
   result: TaskResult;
+}
+
+export interface ScreenshotComparisonRef {
+  projectId: string;
+  taskId: string;
+}
+
+export interface ScreenshotComparisonCandidate {
+  projectId: string;
+  projectName: string;
+  directoryName: string;
+  taskId: string;
+  runId: string;
+  testLabel: string;
+  status: TaskStatus;
+  createdAt: string;
+  finishedAt: string;
+  screenshotCount: number;
+  error: string;
+}
+
+export interface ScreenshotComparisonImage {
+  projectId: string;
+  taskId: string;
+  artifactId: string;
+  url: string;
+  available: boolean;
+  missingReason: string;
+}
+
+export interface ScreenshotComparisonSide {
+  projectId: string;
+  projectName: string;
+  projectRoot: string;
+  directoryName: string;
+  taskId: string;
+  runId: string;
+  testLabel: string;
+  createdAt: string;
+  finishedAt: string;
+  sourceRevision: string;
+  error: string;
+}
+
+export interface ScreenshotComparisonPair {
+  key: string;
+  caseId: string;
+  label: string;
+  title: string;
+  presence: "both" | "left-only" | "right-only";
+  left: ScreenshotComparisonImage | null;
+  right: ScreenshotComparisonImage | null;
+}
+
+export interface ScreenshotComparison {
+  comparisonId: string;
+  left: ScreenshotComparisonSide;
+  right: ScreenshotComparisonSide;
+  pairs: ScreenshotComparisonPair[];
+}
+
+export interface ScreenshotComparisonCandidatesResponse {
+  candidates: ScreenshotComparisonCandidate[];
 }
 
 export type RepairJobStatus =

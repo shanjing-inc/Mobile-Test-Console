@@ -3,10 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactCleanupPlan, ProjectCatalogResponse } from "../src/shared/contracts.js";
 import { ProjectDeleteConfirmation, ProjectSidebar } from "../src/web/App.js";
-import { waitForProjectActivation } from "../src/web/api.js";
+import { setApiProjectId, taskArtifactUrl } from "../src/web/api.js";
 import { ArtifactCleanupConfirmation, ProjectCatalogWorkspace } from "../src/web/ProjectCatalogWorkspace.js";
+import { readSelectedProjectId, saveSelectedProjectId, SELECTED_PROJECT_SESSION_KEY } from "../src/web/project-selection.js";
 
 afterEach(() => {
+  setApiProjectId("");
   vi.unstubAllGlobals();
 });
 
@@ -149,7 +151,7 @@ describe("项目目录工作区", () => {
     }));
 
     expect(markup).toContain("项目接入中心");
-    expect(markup).toContain("当前运行项目");
+    expect(markup).not.toContain("当前查看项目");
     expect(markup).toContain("Lynx App");
     expect(markup).toContain("重新检查");
     expect(markup).toContain("完成接入，运行第一条测试");
@@ -174,6 +176,27 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("完成后，可以开始检查运行环境。");
   });
 
+  it("历史登记记录待检查时重新读取配置", () => {
+    const pendingCatalog = structuredClone(catalog);
+    const template = pendingCatalog.projects[0].onboarding.find(step => step.id === "template");
+    if (!template) throw new Error("缺少接入配置步骤");
+    template.status = "pending";
+    template.summary = "选择接入模板并写入项目配置";
+    template.issues = [];
+
+    const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
+      catalog: pendingCatalog,
+      loading: false,
+      onRegister: vi.fn(), onSelectDirectory: vi.fn(), onSelectConfig: vi.fn(), onVerify: vi.fn(), onActivate: vi.fn(),
+      onPreviewInitialization: vi.fn(), onApplyInitialization: vi.fn(), onPreviewSetup: vi.fn(), onApplySetup: vi.fn(),
+      runtimeProjectId: "demo-lynx", onCloseAdd: vi.fn(), onMessage: vi.fn(),
+    }));
+
+    expect(markup).toContain("重新检查配置");
+    expect(markup).toContain("重新读取项目配置并更新接入状态");
+    expect(markup).not.toContain("</svg>生成基础配置</button>");
+  });
+
   it("添加项目使用独立页面并隐藏当前项目工作区", () => {
     const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
       catalog,
@@ -187,7 +210,6 @@ describe("项目目录工作区", () => {
       onApplyInitialization: vi.fn(),
       onPreviewSetup: vi.fn(),
       onApplySetup: vi.fn(),
-      runtimeProjectId: "demo-lynx",
       addingProject: true,
       onCloseAdd: vi.fn(),
       onMessage: vi.fn(),
@@ -196,6 +218,8 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("添加项目");
     expect(markup).toContain("登记新的项目目录");
     expect(markup).toContain("取消添加");
+    expect(markup).toContain("MTC 可一键生成基础配置并完成登记");
+    expect(markup).toContain("根据项目目录生成实例 ID");
     expect(markup).not.toContain("当前运行项目");
     expect(markup).not.toContain("项目接入状态");
     expect(markup).not.toContain("Demo Lynx");
@@ -229,7 +253,6 @@ describe("项目目录工作区", () => {
     const sidebar = renderToStaticMarkup(createElement(ProjectSidebar, {
       catalog,
       selectedProjectId: "",
-      runtimeProjectId: "demo-lynx",
       addingProject: true,
       onSelect: vi.fn(),
       onAdd: vi.fn(),
@@ -370,6 +393,7 @@ describe("项目目录工作区", () => {
     expect(markup).toContain("退出码 0 表示可用");
     expect(markup).toContain("qa/mtc/health-check.cjs");
     expect(markup).toContain("MTC_MINI_PROGRAM_DEVTOOLS_PATH");
+    expect(markup).toContain("WECHAT_DEVTOOLS_DIR");
     expect(markup).toContain('aria-label="复制 healthCheck 配置示例"');
   });
 
@@ -377,7 +401,6 @@ describe("项目目录工作区", () => {
     const sidebar = renderToStaticMarkup(createElement(ProjectSidebar, {
       catalog,
       selectedProjectId: "demo-lynx",
-      runtimeProjectId: "demo-lynx",
       onSelect: vi.fn(),
       onAdd: vi.fn(),
       onDelete: vi.fn(),
@@ -392,6 +415,7 @@ describe("项目目录工作区", () => {
 
     expect(sidebar).toContain('title="删除项目：Demo Lynx"');
     expect(sidebar).toContain('aria-label="删除项目：Demo Lynx"');
+    expect(sidebar).toContain(">Lynx App</small><small class=\"app-project-directory\" title=\"demo-lynx\">demo-lynx</small>");
     expect(confirmation).toContain('role="dialog"');
     expect(confirmation).toContain("当前控制台继续使用已加载的项目配置");
     expect(confirmation).toContain("项目目录、配置文件和测试数据会保留");
@@ -411,7 +435,7 @@ describe("项目目录工作区", () => {
     expect(confirmation).not.toContain("当前控制台继续使用已加载的项目配置");
   });
 
-  it("目录历史活动项目在平台壳中可切换运行", () => {
+  it("目录项目可直接加载到平台壳", () => {
     const markup = renderToStaticMarkup(createElement(ProjectCatalogWorkspace, {
       catalog,
       loading: false,
@@ -429,27 +453,44 @@ describe("项目目录工作区", () => {
       onMessage: vi.fn(),
     }));
 
-    expect(markup).toContain("切换运行项目");
-    expect(markup).not.toContain("当前运行项目");
+    expect(markup).toContain("加载项目");
+    expect(markup).not.toContain("当前查看项目");
   });
 
-  it("项目切换期间等待 API 重启并确认目标项目生效", async () => {
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new Error("API 正在重启"))
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ project: { id: "demo-lynx" } }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ project: { id: "next-project" } }),
-      });
-    vi.stubGlobal("fetch", fetchMock);
+  it("截图地址携带当前项目上下文", () => {
+    setApiProjectId("next-project");
+    expect(taskArtifactUrl("task/1", "screen 1")).toBe(
+      "/api/tasks/task%2F1/artifacts/screen%201?projectId=next-project",
+    );
+  });
 
-    await expect(waitForProjectActivation("next-project", { attempts: 3, delayMs: 50 })).resolves.toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+  it("将项目选择保存在当前浏览器标签页的会话存储中", () => {
+    const firstTab = sessionStorageStub();
+    const secondTab = sessionStorageStub();
+
+    saveSelectedProjectId("project-a", firstTab.storage);
+    saveSelectedProjectId("project-b", secondTab.storage);
+    expect(firstTab.values.get(SELECTED_PROJECT_SESSION_KEY)).toBe("project-a");
+    expect(readSelectedProjectId(firstTab.storage)).toBe("project-a");
+    expect(readSelectedProjectId(secondTab.storage)).toBe("project-b");
+
+    saveSelectedProjectId("", firstTab.storage);
+    expect(readSelectedProjectId(firstTab.storage)).toBe("");
+    expect(readSelectedProjectId(secondTab.storage)).toBe("project-b");
   });
 });
+
+function sessionStorageStub() {
+  const values = new Map<string, string>();
+  return {
+    values,
+    storage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  };
+}
 
 const catalog: ProjectCatalogResponse = {
   schemaVersion: "mobile-test-console.project-catalog.v1",
@@ -466,7 +507,7 @@ const catalog: ProjectCatalogResponse = {
     updatedAt: "2026-08-07T00:00:00.000Z",
     onboarding: [
       { id: "project", status: "verified", summary: "项目目录已登记", issues: [], checkedAt: "2026-08-07T00:00:00.000Z" },
-      { id: "template", status: "waiting", summary: "等待项目写入接入配置", issues: ["缺少配置文件"], checkedAt: "2026-08-07T00:00:00.000Z" },
+      { id: "template", status: "waiting", summary: "等待项目写入接入配置", issues: ["缺少配置文件: /tmp/demo-lynx/mobile-test.config.cjs"], checkedAt: "2026-08-07T00:00:00.000Z" },
       { id: "devices", status: "blocked", summary: "设备工具链需要处理", issues: ["Android Platform Tools：adb 不可用"], checkedAt: "2026-08-07T00:00:00.000Z", tools: [{ id: "android-adb", label: "Android Platform Tools", executable: "adb", status: "blocked", path: "", version: "", detail: "找不到 adb", guidance: ["设置 ANDROID_ADB_PATH=/path/to/adb"] }] },
       { id: "capabilities", status: "verified", summary: "已检测到 6 项项目能力", issues: [], checkedAt: "2026-08-07T00:00:00.000Z", capabilities: [
         { id: "qa.bundle.prepare", label: "QA 包准备", status: "ready", detail: "准备项目测试所需的 QA 包和资源。", guidance: [] },

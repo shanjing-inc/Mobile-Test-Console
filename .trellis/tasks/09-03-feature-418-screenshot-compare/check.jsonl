@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/mobile-test-console-integration.md", "reason": "核对对比读取未绕过 projectId 与截图目录边界"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "核对小程序工作区入口与缺失页空态"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 API 合约与 UI presence 枚举一致"}

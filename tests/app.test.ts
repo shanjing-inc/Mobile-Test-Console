@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TaskResult, TaskStatus, TestTask } from "../src/shared/contracts.js";
 import { createApp, expandPageSelectionParameters, previewTestCommands } from "../src/server/app.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
@@ -9,10 +9,13 @@ import { loadProjectConfig, type LoadedProjectConfig } from "../src/server/confi
 import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
-import type { TaskResultService } from "../src/server/task-results.js";
+import { TaskResultService } from "../src/server/task-results.js";
 import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 import { ProjectCatalogService, ProjectCatalogStore } from "../src/server/project-catalog.js";
 import { DirectoryPicker } from "../src/server/directory-picker.js";
+import { projectIdFromRoot } from "../src/server/project-identity.js";
+import { createRunnerEvent, type InProcessRunner } from "../src/runner/sdk.js";
+import type { ProjectRuntime, ProjectRuntimeRegistry } from "../src/server/project-runtime.js";
 
 const tempDirs: string[] = [];
 
@@ -21,6 +24,58 @@ afterEach(async () => {
 });
 
 describe("HTTP API", () => {
+  it("通过统一附件接口读取 Runner 执行中截图并报告文件缺失", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-live-artifact-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    const relativePath = ".test/results/live/screen.png";
+    const absolutePath = path.join(dir, relativePath);
+    const runner: InProcessRunner = {
+      id: "live-artifact-runner",
+      async run(plan, context) {
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+        context.emit(createRunnerEvent(plan.runId, "artifact", {
+          data: {
+            schemaVersion: "mobile-test-console.runner-artifact.v1",
+            uri: `project://${plan.projectId}/${relativePath}`,
+            role: "screenshot",
+            label: "screen.png",
+            mimeType: "image/png",
+          },
+        }));
+        return { runId: plan.runId, status: "passed", exitCode: 0 };
+      },
+    };
+    const tasks = new TaskManager(config, new StateStore(dir), runner, { resolve: () => runner });
+    await tasks.initialize();
+    const [created] = await tasks.start({ testId: "pass", deviceKeys: ["android:device-1"], parameters: {} }, [{
+      key: "android:device-1", id: "device-1", name: "Pixel", platform: "android", type: "physical", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "",
+    }]);
+    const finished = await tasks.waitForTerminal(created.id);
+    const artifactId = finished.artifacts?.[0]?.id;
+    expect(artifactId).toBeTruthy();
+    const app = await createApp({
+      config,
+      devices: new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, []),
+      tasks,
+    });
+
+    try {
+      const image = await app.inject({ method: "GET", url: `/api/tasks/${created.id}/artifacts/${artifactId}` });
+      expect(image.statusCode).toBe(200);
+      expect(image.headers["content-type"]).toContain("image/png");
+      expect(image.rawPayload).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      await fs.rm(absolutePath);
+      const missing = await app.inject({ method: "GET", url: `/api/tasks/${created.id}/artifacts/${artifactId}` });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json().error).toMatchObject({ code: "TASK_ARTIFACT_MISSING" });
+    } finally {
+      await tasks.shutdown();
+      await app.close();
+    }
+  });
+
   it("按运行目标和参数解析命令预览并拒绝无效入口", async () => {
     const config = createMiniProgramConfig("/tmp/mtc-command-preview");
     config.testing!.targets!.push(
@@ -205,6 +260,8 @@ describe("HTTP API", () => {
     const initializationRoot = path.join(dir, "new-api-lynx");
     await fs.mkdir(candidateRoot);
     await fs.mkdir(initializationRoot);
+    const candidateId = projectIdFromRoot(await fs.realpath(candidateRoot));
+    const initializationId = projectIdFromRoot(await fs.realpath(initializationRoot));
     await fs.writeFile(path.join(candidateRoot, "mobile-test.config.cjs"), `module.exports = {
       schemaVersion: "mobile-test-console.config.v1",
       project: { id: "candidate-lynx", name: "Candidate Lynx", root: ".", integrationType: "lynx-app" },
@@ -231,11 +288,11 @@ describe("HTTP API", () => {
     try {
       const selected = await app.inject({ method: "POST", url: "/api/projects/select-directory" });
       expect(selected.statusCode).toBe(200);
-      expect(selected.json()).toMatchObject({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs", configFound: true });
+      expect(selected.json()).toMatchObject({ projectDirectory: await fs.realpath(candidateRoot), configFile: "mobile-test.config.cjs", configFound: true });
 
       const selectedConfig = await app.inject({ method: "POST", url: "/api/projects/select-config" });
       expect(selectedConfig.statusCode).toBe(200);
-      expect(selectedConfig.json()).toMatchObject({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs", configFound: true });
+      expect(selectedConfig.json()).toMatchObject({ projectDirectory: await fs.realpath(candidateRoot), configFile: "mobile-test.config.cjs", configFound: true });
 
       const created = await app.inject({
         method: "POST",
@@ -250,7 +307,7 @@ describe("HTTP API", () => {
         activeProjectId: "demo",
         projects: expect.arrayContaining([
           expect.objectContaining({
-            id: "candidate-lynx",
+            id: candidateId,
             name: "Candidate Lynx",
             integrationType: "lynx-app",
             platforms: ["android"],
@@ -262,19 +319,19 @@ describe("HTTP API", () => {
 
       const verified = await app.inject({
         method: "POST",
-        url: "/api/projects/candidate-lynx/onboarding/verify",
+        url: `/api/projects/${candidateId}/onboarding/verify`,
       });
       expect(verified.statusCode).toBe(200);
-      expect(verified.json().projects.find((project: { id: string }) => project.id === "candidate-lynx").onboarding)
+      expect(verified.json().projects.find((project: { id: string }) => project.id === candidateId).onboarding)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: "template", status: "verified" })]));
 
       const detail = await app.inject({
         method: "GET",
-        url: "/api/projects/candidate-lynx/detail",
+        url: `/api/projects/${candidateId}/detail`,
       });
       expect(detail.statusCode).toBe(200);
       expect(detail.json()).toMatchObject({
-        project: { id: "candidate-lynx", name: "Candidate Lynx" },
+        project: { id: candidateId, name: "Candidate Lynx" },
         tests: [{ id: "smoke", label: "Smoke", platforms: ["android"] }],
         executionReady: false,
       });
@@ -300,12 +357,12 @@ describe("HTTP API", () => {
       });
       expect(initializationApply.statusCode).toBe(200);
       expect(initializationApply.json().catalog.projects).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "new-api-lynx" }),
+        expect.objectContaining({ id: initializationId }),
       ]));
 
       const capabilityPreview = await app.inject({
         method: "POST",
-        url: "/api/projects/new-api-lynx/setup/preview",
+        url: `/api/projects/${initializationId}/setup/preview`,
         payload: { step: "capabilities" },
       });
       expect(capabilityPreview.statusCode).toBe(200);
@@ -314,12 +371,12 @@ describe("HTTP API", () => {
         expect.objectContaining({ kind: "manual" }),
       ]));
 
-      const initializedDeleted = await app.inject({ method: "DELETE", url: "/api/projects/new-api-lynx" });
+      const initializedDeleted = await app.inject({ method: "DELETE", url: `/api/projects/${initializationId}` });
       expect(initializedDeleted.statusCode).toBe(200);
 
-      const deleted = await app.inject({ method: "DELETE", url: "/api/projects/candidate-lynx" });
+      const deleted = await app.inject({ method: "DELETE", url: `/api/projects/${candidateId}` });
       expect(deleted.statusCode).toBe(200);
-      expect(deleted.json().projects).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "candidate-lynx" })]));
+      expect(deleted.json().projects).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: candidateId })]));
 
       const activeDelete = await app.inject({ method: "DELETE", url: "/api/projects/demo" });
       expect(activeDelete.statusCode).toBe(200);
@@ -342,6 +399,7 @@ describe("HTTP API", () => {
       tests: [{ id: "smoke", label: "Smoke", targetKeys: ["wechat"], commands: { default: { executable: "node", args: ["--version"] } } }],
     };\n`);
     const config = await loadProjectConfig(path.join(miniRoot, "mobile-test.config.cjs"));
+    const projectId = config.project.id;
     const catalog = new ProjectCatalogService(new ProjectCatalogStore(path.join(dir, "projects.json")));
     await catalog.initialize(config);
     const tasks = new TaskManager(config, new StateStore(dir));
@@ -353,13 +411,13 @@ describe("HTTP API", () => {
       projectCatalog: catalog,
     });
     try {
-      const editor = await app.inject({ method: "GET", url: "/api/projects/api-mini/test-entry-editor" });
+      const editor = await app.inject({ method: "GET", url: `/api/projects/${projectId}/test-entry-editor` });
       expect(editor.statusCode).toBe(200);
       expect(editor.json()).toMatchObject({ targets: [{ key: "wechat" }], mainConfigTests: [{ id: "smoke", source: "preset" }], editableTests: [] });
 
       const preview = await app.inject({
         method: "POST",
-        url: "/api/projects/api-mini/test-entries/preview",
+        url: `/api/projects/${projectId}/test-entries/preview`,
         payload: {
           mode: "create",
           entry: {
@@ -370,9 +428,9 @@ describe("HTTP API", () => {
         },
       });
       expect(preview.statusCode).toBe(200);
-      expect(preview.json()).toMatchObject({ projectId: "api-mini", canApply: true, commandPreview: { args: ["qa/pages.cjs", "pages/example/index", "wechat", "preview-task"] } });
+      expect(preview.json()).toMatchObject({ projectId, canApply: true, commandPreview: { args: ["qa/pages.cjs", "pages/example/index", "wechat", "preview-task"] } });
       expect(preview.body).not.toContain("secret-value");
-      const applied = await app.inject({ method: "POST", url: "/api/projects/api-mini/test-entries/apply", payload: { planId: preview.json().planId } });
+      const applied = await app.inject({ method: "POST", url: `/api/projects/${projectId}/test-entries/apply`, payload: { planId: preview.json().planId } });
       expect(applied.statusCode).toBe(200);
       expect(applied.body).not.toContain("secret-value");
       expect(applied.json().editor.editableTests).toEqual([expect.objectContaining({ id: "page-tests", source: "custom" })]);
@@ -395,7 +453,7 @@ describe("HTTP API", () => {
           targetLabel: "微信",
           executable: "node",
           args: ["qa/pages.cjs", "", "wechat", "<runtime:task.id>"],
-          cwd: miniRoot,
+          cwd: await fs.realpath(miniRoot),
           env: { API_TOKEN: "<redacted>" },
         }],
       });
@@ -413,7 +471,7 @@ describe("HTTP API", () => {
       });
       expect(started.statusCode).toBe(200);
 
-      const invalid = await app.inject({ method: "POST", url: "/api/projects/api-mini/test-entries/preview", payload: { mode: "create", entry: {} } });
+      const invalid = await app.inject({ method: "POST", url: `/api/projects/${projectId}/test-entries/preview`, payload: { mode: "create", entry: {} } });
       expect(invalid.statusCode).toBe(400);
     } finally {
       await tasks.shutdown();
@@ -421,12 +479,13 @@ describe("HTTP API", () => {
     }
   });
 
-  it("活动任务存在时阻止项目切换", async () => {
+  it("活动任务存在时允许加载另一个项目", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-project-switch-"));
     tempDirs.push(dir);
     const config = createConfig(dir);
     const candidateRoot = path.join(dir, "candidate");
     await fs.mkdir(candidateRoot);
+    const candidateId = projectIdFromRoot(await fs.realpath(candidateRoot));
     const catalog = new ProjectCatalogService(new ProjectCatalogStore(path.join(dir, "projects.json")));
     await catalog.initialize(config);
     await fs.writeFile(path.join(candidateRoot, "mobile-test.config.cjs"), `module.exports = {
@@ -448,9 +507,10 @@ describe("HTTP API", () => {
       key: "android:device-1", id: "device-1", name: "Pixel", platform: "android", type: "physical", connectionState: "available", osVersion: "", detail: "", controlState: "ready", controlReason: "",
     }]);
     try {
-      const response = await app.inject({ method: "POST", url: "/api/projects/candidate/activate" });
-      expect(response.statusCode).toBe(409);
-      expect(response.json().error.code).toBe("PROJECT_SWITCH_TASK_ACTIVE");
+      const response = await app.inject({ method: "POST", url: `/api/projects/${candidateId}/activate` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ projectId: candidateId, restartRequired: false });
+      expect(tasks.get(task[0].id)?.status).toMatch(/queued|running/);
     } finally {
       await tasks.stop(task[0].id);
       await tasks.waitForTerminal(task[0].id);
@@ -459,12 +519,13 @@ describe("HTTP API", () => {
     }
   });
 
-  it("项目切换响应完成后触发重启回调", async () => {
+  it("兼容旧启动方式的项目切换回调", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-project-switch-response-"));
     tempDirs.push(dir);
     const config = createConfig(dir);
     const candidateRoot = path.join(dir, "candidate");
     await fs.mkdir(candidateRoot);
+    const candidateId = projectIdFromRoot(await fs.realpath(candidateRoot));
     await fs.writeFile(path.join(candidateRoot, "mobile-test.config.cjs"), `module.exports = {
       schemaVersion: "mobile-test-console.config.v1",
       project: { id: "candidate", name: "Candidate", root: ".", integrationType: "app" },
@@ -486,11 +547,11 @@ describe("HTTP API", () => {
     });
 
     try {
-      const response = await app.inject({ method: "POST", url: "/api/projects/candidate/activate" });
+      const response = await app.inject({ method: "POST", url: `/api/projects/${candidateId}/activate` });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ projectId: "candidate", restartRequired: true });
+      expect(response.json()).toMatchObject({ projectId: candidateId, restartRequired: false });
       await new Promise(resolve => setTimeout(resolve, 0));
-      expect(switchedTo).toBe(path.join(candidateRoot, "mobile-test.config.cjs"));
+      expect(switchedTo).toBe(path.join(await fs.realpath(candidateRoot), "mobile-test.config.cjs"));
     } finally {
       await app.close();
     }
@@ -542,6 +603,61 @@ describe("HTTP API", () => {
     expect(invalid.statusCode).toBe(404);
     expect(invalid.json().error.code).toBe("TEST_UNKNOWN");
     await app.close();
+  });
+
+  it("按项目请求头和查询参数路由到独立 Runtime", async () => {
+    const firstDir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-runtime-a-"));
+    const secondDir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-runtime-b-"));
+    tempDirs.push(firstDir, secondDir);
+    const firstConfig = createConfig(firstDir);
+    const secondConfig = createConfig(secondDir);
+    firstConfig.project = { ...firstConfig.project, id: "project-a", name: "Project A" };
+    secondConfig.project = { ...secondConfig.project, id: "project-b", name: "Project B" };
+    const runner: CommandRunner = { async capture() { return { code: 0, stdout: "", stderr: "" }; } };
+    const firstTasks = new TaskManager(firstConfig, new StateStore(firstDir));
+    const secondTasks = new TaskManager(secondConfig, new StateStore(secondDir));
+    await Promise.all([firstTasks.initialize(), secondTasks.initialize()]);
+    const firstDevices = new DeviceDiscoveryService(runner, []);
+    const secondDevices = new DeviceDiscoveryService(runner, []);
+    const runtime = (config: LoadedProjectConfig, tasks: TaskManager, devices: DeviceDiscoveryService): ProjectRuntime => ({
+      config,
+      tasks,
+      devices,
+      taskResults: new TaskResultService(config, tasks),
+      pageParameters: {} as ProjectRuntime["pageParameters"],
+      accountProfiles: {} as ProjectRuntime["accountProfiles"],
+      businessScripts: {} as ProjectRuntime["businessScripts"],
+      resultBundles: {} as ProjectRuntime["resultBundles"],
+      artifacts: {} as ProjectRuntime["artifacts"],
+      projectProviders: [],
+      async shutdown() {},
+    });
+    const runtimesById = new Map([
+      ["project-a", runtime(firstConfig, firstTasks, firstDevices)],
+      ["project-b", runtime(secondConfig, secondTasks, secondDevices)],
+    ]);
+    const resolve = vi.fn(async (projectId = "") => runtimesById.get(projectId || "project-a")!);
+    const runtimes = { resolve } as unknown as ProjectRuntimeRegistry;
+    const app = await createApp({
+      config: firstConfig,
+      devices: firstDevices,
+      tasks: firstTasks,
+      runtimes,
+    });
+
+    try {
+      const [queryResponse, headerResponse] = await Promise.all([
+        app.inject({ method: "GET", url: "/api/snapshot?projectId=project-b" }),
+        app.inject({ method: "GET", url: "/api/snapshot", headers: { "x-mtc-project-id": "project-a" } }),
+      ]);
+      expect(queryResponse.json().project).toMatchObject({ id: "project-b", name: "Project B" });
+      expect(headerResponse.json().project).toMatchObject({ id: "project-a", name: "Project A" });
+      expect(resolve).toHaveBeenCalledWith("project-b");
+      expect(resolve).toHaveBeenCalledWith("project-a");
+    } finally {
+      await Promise.all([firstTasks.shutdown(), secondTasks.shutdown()]);
+      await app.close();
+    }
   });
 
   it("返回小程序运行目标并通过 targetKeys 启动任务", async () => {

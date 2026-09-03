@@ -49,12 +49,21 @@ import type {
   ApplyProjectTestEntryResponse,
   PreviewTestCommandsRequest,
   PreviewTestCommandsResponse,
+  ScreenshotComparison,
+  ScreenshotComparisonCandidatesResponse,
+  ScreenshotComparisonRef,
 } from "../shared/contracts";
 
 export class ApiError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
   }
+}
+
+let apiProjectId = "";
+
+export function setApiProjectId(projectId: string): void {
+  apiProjectId = projectId.trim();
 }
 
 export function fetchAccountProfiles(): Promise<AccountProfilesResponse> {
@@ -142,6 +151,9 @@ export function deleteAccountProfile(profileId: string): Promise<{ ok: true }> {
 
 async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
+  if (apiProjectId && !headers.has("x-mtc-project-id")) {
+    headers.set("x-mtc-project-id", apiProjectId);
+  }
   if (init?.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
@@ -157,8 +169,12 @@ async function request<T>(input: RequestInfo | URL, init?: RequestInit): Promise
   return payload as T;
 }
 
-export function fetchSnapshot(refresh = false): Promise<ConsoleSnapshot> {
-  return request<ConsoleSnapshot>(refresh ? "/api/snapshot?refresh=1" : "/api/snapshot");
+export function fetchSnapshot(refresh = false, projectId = apiProjectId): Promise<ConsoleSnapshot> {
+  const query = new URLSearchParams();
+  if (refresh) query.set("refresh", "1");
+  if (projectId) query.set("projectId", projectId);
+  const suffix = query.size > 0 ? `?${query}` : "";
+  return request<ConsoleSnapshot>(`/api/snapshot${suffix}`);
 }
 
 export function fetchProjectCatalog(): Promise<ProjectCatalogResponse> {
@@ -279,27 +295,6 @@ export function activateProject(projectId: string): Promise<ProjectActivationRes
   });
 }
 
-export async function waitForProjectActivation(
-  projectId: string,
-  options: { attempts?: number; delayMs?: number } = {},
-): Promise<boolean> {
-  const attempts = Math.max(1, options.attempts ?? 180);
-  const delayMs = Math.max(50, options.delayMs ?? 500);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const response = await fetch("/api/snapshot", { cache: "no-store" });
-      if (response.ok) {
-        const payload = await response.json().catch(() => null) as { project?: { id?: string } } | null;
-        if (payload?.project?.id === projectId) return true;
-      }
-    } catch {
-      // API 重启期间连接失败属于预期状态，继续轮询。
-    }
-    await new Promise(resolve => globalThis.setTimeout(resolve, delayMs));
-  }
-  return false;
-}
-
 export function startTasks(body: StartTasksRequest): Promise<StartTasksResponse> {
   return request<StartTasksResponse>("/api/tasks", {
     method: "POST",
@@ -382,8 +377,20 @@ export function fetchTaskResult(taskId: string, refresh = false): Promise<TaskRe
   return request<TaskResultResponse>(`/api/tasks/${encodeURIComponent(taskId)}/result${suffix}`);
 }
 
-export function taskArtifactUrl(taskId: string, artifactId: string): string {
-  return `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`;
+export function fetchScreenshotComparisonCandidates(projectId: string): Promise<ScreenshotComparisonCandidatesResponse> {
+  return request<ScreenshotComparisonCandidatesResponse>(`/api/projects/${encodeURIComponent(projectId)}/screenshot-comparison/candidates`);
+}
+
+export function createScreenshotComparison(body: { left: ScreenshotComparisonRef; right: ScreenshotComparisonRef }): Promise<ScreenshotComparison> {
+  return request<ScreenshotComparison>("/api/screenshot-comparisons", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function taskArtifactUrl(taskId: string, artifactId: string, projectId = apiProjectId): string {
+  const base = `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`;
+  return projectId ? `${base}?projectId=${encodeURIComponent(projectId)}` : base;
 }
 
 export function fetchPageParameters(): Promise<PageParametersResponse> {

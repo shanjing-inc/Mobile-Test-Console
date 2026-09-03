@@ -92,6 +92,16 @@ const stepBenefits = {
   capabilities: "完成后，可以自动处理更多项目准备工作。",
 } as const;
 
+function projectStepNextAction(step: ProjectOnboardingStep, miniProgram: boolean): string {
+  if (step.id === "template" && !templateConfigMissing(step)) return "重新读取项目配置并更新接入状态。";
+  if (step.id === "devices" && miniProgram) return "根据下方检查结果准备运行环境，再重新检查。";
+  return stepNextActions[step.id];
+}
+
+function templateConfigMissing(step: ProjectOnboardingStep): boolean {
+  return step.status === "waiting" && step.issues.some(issue => issue.startsWith("缺少配置文件:"));
+}
+
 const miniProgramHealthCheckConfig = `testing: {
   targets: [{
     // ...运行目标其他字段
@@ -107,10 +117,13 @@ const miniProgramHealthCheckConfig = `testing: {
 }`;
 
 const miniProgramHealthCheckScript = `const fs = require("node:fs");
+const path = require("node:path");
 
-const cli = process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH;
+const devtoolsDir = process.env.WECHAT_DEVTOOLS_DIR;
+const cli = process.env.MTC_MINI_PROGRAM_DEVTOOLS_PATH
+  || (devtoolsDir ? path.join(devtoolsDir, process.platform === "win32" ? "cli.bat" : "cli") : "");
 if (!cli || !fs.existsSync(cli)) {
-  console.error("请配置可用的开发者工具 CLI 路径");
+  console.error("请在 .env.e2e 中配置 WECHAT_DEVTOOLS_DIR，或配置 MTC_MINI_PROGRAM_DEVTOOLS_PATH");
   process.exit(1);
 }
 
@@ -182,7 +195,7 @@ export function ProjectCatalogWorkspace({
   const [setupPlan, setSetupPlan] = useState<ProjectSetupPlan | null>(null);
   const [setupContext, setSetupContext] = useState<SetupContext | null>(null);
   const [setupPending, setSetupPending] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState(catalog?.activeProjectId || catalog?.projects[0]?.id || "");
+  const [selectedProjectId, setSelectedProjectId] = useState(controlledSelectedProjectId || catalog?.projects[0]?.id || "");
   const [detail, setDetail] = useState<ProjectCatalogDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -195,16 +208,14 @@ export function ProjectCatalogWorkspace({
   const selectedProjectVersion = selectedProject?.updatedAt ?? "";
 
   useEffect(() => {
+    if (!catalog) return;
     const projects = catalog?.projects ?? [];
     setSelectedProjectId(current => {
       if (controlledSelectedProjectId && projects.some(project => project.id === controlledSelectedProjectId)) {
         return controlledSelectedProjectId;
       }
       if (projects.some(project => project.id === current)) return current;
-      const activeProjectId = projects.some(project => project.id === catalog?.activeProjectId)
-        ? catalog?.activeProjectId ?? ""
-        : "";
-      return activeProjectId || projects[0]?.id || "";
+      return projects[0]?.id || "";
     });
   }, [catalog, controlledSelectedProjectId]);
 
@@ -316,6 +327,30 @@ export function ProjectCatalogWorkspace({
     }
   };
 
+  const initializeProject = async () => {
+    const projectDirectory = form.projectDirectory.trim();
+    const platforms = family === "mini-program" ? [] : initializationPlatforms;
+    const request = { projectDirectory, platforms, family };
+    setSetupPending(true);
+    try {
+      const plan = await onPreviewInitialization(request);
+      if (!plan) return;
+      if (!plan.canApply) {
+        setSetupPlan(plan);
+        setSetupContext({ kind: "initialization", ...request });
+        return;
+      }
+      const response = await onApplyInitialization({ ...request, planId: plan.planId });
+      if (!response) return;
+      setForm(emptyForm());
+      setInitializationRequired(false);
+      setSetupPlan(null);
+      setSetupContext(null);
+    } finally {
+      setSetupPending(false);
+    }
+  };
+
   const previewSetup = async (projectId: string, step: ApplyProjectSetupRequest["step"]) => {
     setSetupPending(true);
     try {
@@ -421,9 +456,10 @@ export function ProjectCatalogWorkspace({
         <button className="primary-button" type="button" onClick={() => void applySelection("config")} disabled={Boolean(selectingSource)}><FileText size={14} />{selectingSource === "config" ? "选择中..." : "选择配置文件"}</button>
         <button className="secondary-button" type="button" onClick={() => void applySelection("directory")} disabled={Boolean(selectingSource)}><FolderOpen size={14} />{selectingSource === "directory" ? "扫描中..." : "打开项目目录并扫描"}</button>
       </div>
+      <p className="project-register-source-hint">目录中缺少配置时，MTC 可一键生成基础配置并完成登记。</p>
       <div className="project-register-grid">
         <label className="field project-register-wide"><span>项目目录</span><input value={form.projectDirectory} placeholder="选择配置文件或打开项目目录" readOnly aria-readonly="true" /><small className="field-description">选择配置文件后，项目根目录按配置中的 project.root 自动填入。</small></label>
-        <label className="field"><span>配置文件</span><input value={form.configFile} placeholder="选择 mobile-test.config.cjs" readOnly aria-readonly="true" /><small className="field-description">MTC 会从配置读取项目 ID、名称、类型和目标平台。</small></label>
+        <label className="field"><span>配置文件</span><input value={form.configFile} placeholder="选择 mobile-test.config.cjs" readOnly aria-readonly="true" /><small className="field-description">MTC 从配置读取名称、类型和目标平台，并根据项目目录生成实例 ID。</small></label>
       </div>
       {initializationRequired && family === "app" && <fieldset className="project-register-platforms">
         <legend>目标平台</legend>
@@ -442,10 +478,10 @@ export function ProjectCatalogWorkspace({
         <small>初始化配置会按这里选择的平台声明设备 Provider 和 Smoke 入口。</small>
       </fieldset>}
       <div className="project-register-actions">
-        <span className="action-hint"><Wrench size={14} />{initializationRequired ? "预览计划后确认创建，取消不会写入文件" : "选择配置后自动解析并显示接入步骤"}</span>
+        <span className="action-hint"><Wrench size={14} />{initializationRequired ? "仅创建缺失的接入文件，已有文件保持原样" : "选择配置后自动解析并显示接入步骤"}</span>
         {initializationRequired
-          ? <button className="primary-button" type="button" onClick={() => void previewInitialization()} disabled={setupPending || !form.projectDirectory.trim() || (family === "app" && initializationPlatforms.length === 0)}>
-            <FileText size={15} />预览初始化计划
+          ? <button className="primary-button" type="button" onClick={() => void initializeProject()} disabled={setupPending || !form.projectDirectory.trim() || (family === "app" && initializationPlatforms.length === 0)}>
+            {setupPending ? <LoaderCircle className="spin" size={15} /> : <FileText size={15} />}{setupPending ? "正在生成..." : "一键生成基础配置"}
           </button>
           : <button className="primary-button" type="button" onClick={() => void submit()} disabled={Boolean(selectingSource) || !form.projectDirectory.trim() || !form.configFile.trim()}>
             <CheckCircle2 size={15} />读取并登记
@@ -798,7 +834,7 @@ function ProjectStoragePanel({
 }) {
   if (!runtimeActive) return <section className="section-panel project-storage-panel inactive">
     <div className="section-heading"><div><p className="eyebrow">TEST STORAGE</p><h2>测试存储</h2></div><HardDrive size={18} /></div>
-    <p className="project-storage-placeholder">激活该项目后，可读取产物占用、磁盘状态和清理计划。</p>
+    <p className="project-storage-placeholder">加载项目后，可读取产物占用、磁盘状态和清理计划。</p>
   </section>;
   if (!retention) return <section className="section-panel project-storage-panel">
     <div className="section-heading"><div><p className="eyebrow">TEST STORAGE</p><h2>测试存储</h2></div><HardDrive size={18} /></div>
@@ -994,15 +1030,14 @@ function ProjectCatalogCard({
   const copyGuidePath = () => void navigator.clipboard.writeText(guidePath)
     .then(() => onMessage({ kind: "info", text: "已复制接入指南路径" }))
     .catch(() => onMessage({ kind: "error", text: "复制接入指南路径失败" }));
-  return <section className={`section-panel project-card ${runtimeActive ? "active" : ""}`}>
+  return <section className="section-panel project-card">
     <div className="project-card-header">
       <div className="project-card-title">
         <span className="project-card-icon">{miniProgram ? <PanelsTopLeft size={17} /> : <Smartphone size={17} />}</span>
         <div><strong>{project.name}</strong><small>{project.id} · {integrationLabels[project.integrationType]}</small></div>
       </div>
       <div className="project-card-tools">
-        {runtimeActive && <span className="project-active-label">当前运行项目</span>}
-        {!runtimeActive && <button className="secondary-button" type="button" onClick={onActivate} disabled={verifying}><Power size={14} />切换运行项目</button>}
+        {!runtimeActive && <button className="secondary-button" type="button" onClick={onActivate} disabled={verifying}><Power size={14} />加载项目</button>}
         <button className="secondary-button" type="button" onClick={onVerify} disabled={verifying}>
           <RefreshCw size={14} className={verifying ? "spin" : ""} />重新检查
         </button>
@@ -1023,7 +1058,7 @@ function ProjectCatalogCard({
             onPreviewSetup={onPreviewSetup}
             onCopyGuide={copyGuidePath}
           />
-        : <div className="project-execution-ready"><CheckCircle2 size={15} /><span>{runtimeActive ? "接入已完成。现在运行第一条测试，确认整个链路正常。" : "接入已完成。切换为当前运行项目后，即可运行第一条测试。"}</span>{runtimeActive && <button className="primary-button project-first-test-action" type="button" onClick={onOpenTests}><Terminal size={14} />运行第一条测试</button>}</div>}
+        : <div className="project-execution-ready"><CheckCircle2 size={15} /><span>{runtimeActive ? "接入已完成。现在运行第一条测试，确认整个链路正常。" : "接入已完成。加载项目后即可运行第一条测试。"}</span>{runtimeActive && <button className="primary-button project-first-test-action" type="button" onClick={onOpenTests}><Terminal size={14} />运行第一条测试</button>}</div>}
       <div className="project-step-list">
         {project.onboarding.map(step => <details className={`project-step ${step.status}`} key={step.id} open={step.id === nextStep?.id}>
           <summary className="project-step-summary">
@@ -1034,7 +1069,7 @@ function ProjectCatalogCard({
           <div className="project-step-detail">
             <p>{miniProgram && step.id === "devices" ? "确认 Node、包管理器和小程序开发工具已准备好，让测试可以稳定运行。" : stepDescriptions[step.id]}</p>
             <div><strong>完成后</strong><span>{stepBenefits[step.id]}</span></div>
-            <div><strong>下一步</strong><span>{miniProgram && step.id === "devices" ? "根据下方检查结果准备运行环境，再重新检查。" : stepNextActions[step.id]}</span></div>
+            <div><strong>下一步</strong><span>{projectStepNextAction(step, miniProgram)}</span></div>
             {step.id === "template" && <ProjectTestEntryChecks testEntries={step.testEntries ?? []} />}
             {miniProgram && step.id === "devices" && step.status !== "verified" && <MiniProgramHealthCheckGuide onMessage={onMessage} />}
             {step.id !== nextStep?.id && <ProjectStepAction step={step} miniProgram={miniProgram} setupPending={setupPending} onVerify={onVerify} onPreviewInitialization={onPreviewInitialization} onPreviewSetup={onPreviewSetup} />}
@@ -1090,7 +1125,7 @@ function ProjectOnboardingNextAction({
 }) {
   return <div className="project-onboarding-next-action">
     <span className="project-onboarding-next-number">{PROJECT_EXECUTION_PREREQUISITE_STEP_IDS.indexOf(step.id) + 1}</span>
-    <div><span>当前要做</span><strong>{stepLabels[step.id]}</strong><p>{stepNextActions[step.id]}</p></div>
+    <div><span>当前要做</span><strong>{stepLabels[step.id]}</strong><p>{projectStepNextAction(step, miniProgram)}</p></div>
     <div className="project-onboarding-next-controls">
       <ProjectStepAction step={step} miniProgram={miniProgram} setupPending={setupPending} onVerify={onVerify} onPreviewInitialization={onPreviewInitialization} onPreviewSetup={onPreviewSetup} primary />
       <button className="text-button" type="button" onClick={onCopyGuide}><FileText size={13} />查看接入指南</button>
@@ -1117,7 +1152,11 @@ function ProjectStepAction({
 }) {
   if (step.status === "verified") return null;
   const className = primary ? "primary-button" : "secondary-button project-step-action";
-  if (step.id === "template") return <button className={className} type="button" onClick={onPreviewInitialization} disabled={setupPending}><FileText size={14} />生成基础配置</button>;
+  if (step.id === "template") {
+    return templateConfigMissing(step)
+      ? <button className={className} type="button" onClick={onPreviewInitialization} disabled={setupPending}><FileText size={14} />生成基础配置</button>
+      : <button className={className} type="button" onClick={onVerify} disabled={setupPending}><RefreshCw size={14} />重新检查配置</button>;
+  }
   if (step.id === "devices" && !miniProgram) return <button className={className} type="button" onClick={() => onPreviewSetup("devices")} disabled={setupPending}><Terminal size={14} />{primary ? "检查并修复环境" : "修复设备环境"}</button>;
   if (step.id === "devices") return <button className={className} type="button" onClick={onVerify} disabled={setupPending}><RefreshCw size={14} />重新检查运行环境</button>;
   if (step.id === "capabilities") return <button className={className} type="button" onClick={() => onPreviewSetup("capabilities")} disabled={setupPending}><Wrench size={14} />生成能力骨架</button>;

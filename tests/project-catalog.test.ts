@@ -1,11 +1,14 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CommandRunner } from "../src/server/command-runner.js";
 import { loadProjectConfig } from "../src/server/config.js";
 import { ProjectCatalogService, ProjectCatalogStore, resolveProjectConfigSelection, scanProjectDirectory } from "../src/server/project-catalog.js";
-import { PROJECT_ONBOARDING_STEP_IDS } from "../src/shared/contracts.js";
+import { projectIdFromRoot } from "../src/server/project-identity.js";
+import { PROJECT_ONBOARDING_STEP_IDS, type ProjectCatalogEntry } from "../src/shared/contracts.js";
 
 const tempDirs: string[] = [];
 
@@ -23,14 +26,14 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
     await service.initialize(await loadProjectConfig(configPath));
 
-    const editor = await service.testEntryEditor("manual-mini");
+    const editor = await service.testEntryEditor(runtimeProjectId(root));
     expect(editor).toMatchObject({
       targets: [expect.objectContaining({ key: "wechat-devtools" })],
       mainConfigTests: [expect.objectContaining({ id: "smoke" })],
       editableTests: [],
-      entriesPath: path.join(root, "mobile-test.entries.json"),
+      entriesPath: path.join(fsSync.realpathSync(root), "mobile-test.entries.json"),
     });
-    const preview = await service.previewTestEntry("manual-mini", {
+    const preview = await service.previewTestEntry(runtimeProjectId(root), {
       mode: "create",
       entry: {
         id: "page-tests",
@@ -54,7 +57,7 @@ describe("项目目录与接入验证", () => {
       },
     });
 
-    expect(preview.commandPreview).toMatchObject({ executable: "node", args: ["qa/page-tests.cjs", "--pages", "all"], cwd: root });
+    expect(preview.commandPreview).toMatchObject({ executable: "node", args: ["qa/page-tests.cjs", "--pages", "all"], cwd: fsSync.realpathSync(root) });
     expect(preview.commandPreview.env).toEqual({ PROJECT_TOKEN: "<redacted>" });
     expect(preview.contentPreview).toContain('"PROJECT_TOKEN": "<redacted>"');
     expect(preview.contentPreview).not.toContain("secret");
@@ -62,7 +65,7 @@ describe("项目目录与接入验证", () => {
     expect(preview.aiGuidance).not.toContain("secret");
     await expect(fs.stat(preview.entriesPath)).rejects.toMatchObject({ code: "ENOENT" });
 
-    const applied = await service.applyTestEntry("manual-mini", { planId: preview.planId });
+    const applied = await service.applyTestEntry(runtimeProjectId(root), { planId: preview.planId });
     expect(applied.editor.editableTests).toEqual([expect.objectContaining({ id: "page-tests" })]);
     expect(await fs.readFile(configPath, "utf8")).toBe(mainBefore);
     expect((await loadProjectConfig(configPath)).tests.map(test => test.id)).toEqual(["smoke", "page-tests"]);
@@ -76,7 +79,7 @@ describe("项目目录与接入验证", () => {
     const backupPath = path.join(root, "mobile-test.entries.json.bak");
     await fs.symlink(outsideFile, backupPath);
 
-    const secondPreview = await service.previewTestEntry("manual-mini", {
+    const secondPreview = await service.previewTestEntry(runtimeProjectId(root), {
       mode: "create",
       entry: {
         id: "flow-tests", label: "流程测试", testType: "", description: "", kind: "flow",
@@ -85,7 +88,7 @@ describe("项目目录与接入验证", () => {
       },
     });
     expect(secondPreview.contentPreview).not.toContain("secret");
-    await service.applyTestEntry("manual-mini", { planId: secondPreview.planId });
+    await service.applyTestEntry(runtimeProjectId(root), { planId: secondPreview.planId });
     expect((await fs.stat(entriesPath)).mode & 0o777).toBe(0o640);
     expect(await fs.readFile(outsideFile, "utf8")).toBe("outside-content");
     expect((await fs.lstat(backupPath)).isSymbolicLink()).toBe(false);
@@ -101,7 +104,7 @@ describe("项目目录与接入验证", () => {
     const configPath = path.join(root, "mobile-test.config.cjs");
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
     await service.initialize(await loadProjectConfig(configPath));
-    const preview = await service.previewTestEntry("stale-mini", {
+    const preview = await service.previewTestEntry(runtimeProjectId(root), {
       mode: "create",
       entry: {
         id: "flow-tests", label: "流程测试", testType: "", description: "", kind: "flow",
@@ -112,7 +115,7 @@ describe("项目目录与接入验证", () => {
     const external = `${JSON.stringify({ schemaVersion: "mobile-test-console.test-entries.v1", tests: [] }, null, 2)}\n`;
     await fs.writeFile(path.join(root, "mobile-test.entries.json"), external);
 
-    await expect(service.applyTestEntry("stale-mini", { planId: preview.planId })).rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PLAN_STALE" });
+    await expect(service.applyTestEntry(runtimeProjectId(root), { planId: preview.planId })).rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PLAN_STALE" });
     expect(await fs.readFile(path.join(root, "mobile-test.entries.json"), "utf8")).toBe(external);
   });
 
@@ -124,7 +127,7 @@ describe("项目目录与接入验证", () => {
     const configPath = path.join(root, "mobile-test.config.cjs");
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
     await service.initialize(await loadProjectConfig(configPath));
-    const preview = await service.previewTestEntry("symlink-swap-mini", {
+    const preview = await service.previewTestEntry(runtimeProjectId(root), {
       mode: "create",
       entry: {
         id: "flow-tests", label: "流程测试", testType: "", description: "", kind: "flow",
@@ -136,7 +139,7 @@ describe("项目目录与接入验证", () => {
     await fs.writeFile(outsideEntriesPath, JSON.stringify({ schemaVersion: "mobile-test-console.test-entries.v1", tests: [] }));
     await fs.symlink(outsideEntriesPath, path.join(root, "mobile-test.entries.json"));
 
-    await expect(service.applyTestEntry("symlink-swap-mini", { planId: preview.planId }))
+    await expect(service.applyTestEntry(runtimeProjectId(root), { planId: preview.planId }))
       .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
   });
 
@@ -153,19 +156,19 @@ describe("项目目录与接入验证", () => {
       commands: { default: { executable: "ignored", args: ["ignored"], cwd: "." } },
     };
 
-    const preview = await service.previewTestEntry("simple-command-mini", {
+    const preview = await service.previewTestEntry(runtimeProjectId(root), {
       mode: "create",
       commandLine: `pnpm test:e2e --filter "pickup code"`,
       entry,
     });
-    expect(preview.commandPreview).toMatchObject({ executable: "pnpm", args: ["test:e2e", "--filter", "pickup code"], cwd: root });
-    await service.applyTestEntry("simple-command-mini", { planId: preview.planId });
+    expect(preview.commandPreview).toMatchObject({ executable: "pnpm", args: ["test:e2e", "--filter", "pickup code"], cwd: fsSync.realpathSync(root) });
+    await service.applyTestEntry(runtimeProjectId(root), { planId: preview.planId });
     expect((await loadProjectConfig(configPath)).sidecarTests?.[0]?.commands.default).toMatchObject({
       executable: "pnpm",
       args: ["test:e2e", "--filter", "pickup code"],
     });
 
-    await expect(service.previewTestEntry("simple-command-mini", {
+    await expect(service.previewTestEntry(runtimeProjectId(root), {
       mode: "create",
       commandLine: "pnpm test:e2e | tee result.log",
       entry: { ...entry, id: "invalid-shell" },
@@ -187,10 +190,10 @@ describe("项目目录与接入验证", () => {
         commands: { default: { executable: "node", args: [`${id}.cjs`] } },
       },
     });
-    const [first, second] = await Promise.all([service.previewTestEntry("concurrent-mini", entry("first-entry")), service.previewTestEntry("concurrent-mini", entry("second-entry"))]);
+    const [first, second] = await Promise.all([service.previewTestEntry(runtimeProjectId(root), entry("first-entry")), service.previewTestEntry(runtimeProjectId(root), entry("second-entry"))]);
     const applied = await Promise.allSettled([
-      service.applyTestEntry("concurrent-mini", { planId: first.planId }),
-      service.applyTestEntry("concurrent-mini", { planId: second.planId }),
+      service.applyTestEntry(runtimeProjectId(root), { planId: first.planId }),
+      service.applyTestEntry(runtimeProjectId(root), { planId: second.planId }),
     ]);
 
     expect(applied.filter(result => result.status === "fulfilled")).toHaveLength(1);
@@ -209,18 +212,18 @@ describe("项目目录与接入验证", () => {
       runnerId: "legacy-command-runner", requiredCapabilities: [], platforms: [], targetKeys: ["wechat-devtools"], parameters: [],
       commands: { default: { executable: "node", args: ["test.cjs"] } },
     };
-    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, targetKeys: ["missing"] } }))
+    await expect(service.previewTestEntry(runtimeProjectId(root), { mode: "create", entry: { ...baseEntry, targetKeys: ["missing"] } }))
       .rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, runnerId: "custom-runner" } }))
+    await expect(service.previewTestEntry(runtimeProjectId(root), { mode: "create", entry: { ...baseEntry, runnerId: "custom-runner" } }))
       .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_RUNNER_UNSUPPORTED" });
-    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: ["{{unknown.value}}"] } } } }))
+    await expect(service.previewTestEntry(runtimeProjectId(root), { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: ["{{unknown.value}}"] } } } }))
       .rejects.toMatchObject({ code: "TEMPLATE_TOKEN_UNKNOWN" });
-    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: "../outside" } } } }))
+    await expect(service.previewTestEntry(runtimeProjectId(root), { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: "../outside" } } } }))
       .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
-    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: ".." } } } }))
+    await expect(service.previewTestEntry(runtimeProjectId(root), { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: ".." } } } }))
       .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
     await fs.symlink(path.dirname(root), path.join(root, "outside-link"));
-    await expect(service.previewTestEntry("invalid-mini", { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: "outside-link/generated" } } } }))
+    await expect(service.previewTestEntry(runtimeProjectId(root), { mode: "create", entry: { ...baseEntry, commands: { default: { executable: "node", args: [], cwd: "outside-link/generated" } } } }))
       .rejects.toMatchObject({ code: "PROJECT_TEST_ENTRY_PATH_OUTSIDE" });
   });
 
@@ -274,7 +277,7 @@ describe("项目目录与接入验证", () => {
     })));
   });
 
-  it("登记项目后按配置、设备和 Provider 能力更新接入步骤", async () => {
+  it("登记项目后自动按配置、设备和 Provider 能力更新接入步骤", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-catalog-"));
     tempDirs.push(root);
     const activeRoot = path.join(root, "active");
@@ -285,8 +288,9 @@ describe("项目目录与接入验证", () => {
     await writeConfig(candidateRoot, "candidate-lynx", "Candidate Lynx", false, undefined, "lynx-app");
 
     const activeConfig = await loadProjectConfig(path.join(activeRoot, "mobile-test.config.cjs"));
+    const store = new ProjectCatalogStore(path.join(root, "catalog.json"));
     const service = new ProjectCatalogService(
-      new ProjectCatalogStore(path.join(root, "catalog.json")),
+      store,
       androidReadyRunner,
     );
     await service.initialize(activeConfig);
@@ -295,20 +299,22 @@ describe("项目目录与接入验证", () => {
       projectDirectory: candidateRoot,
       configFile: "mobile-test.config.cjs",
     });
-    expect(registered.projects.find(project => project.id === "candidate-lynx")).toMatchObject({
+    expect(registered.projects.find(project => project.id === runtimeProjectId(candidateRoot))).toMatchObject({
       name: "Candidate Lynx",
       integrationType: "lynx-app",
       platforms: ["android"],
       active: false,
       onboarding: expect.arrayContaining([
         expect.objectContaining({ id: "project", status: "verified" }),
-        expect.objectContaining({ id: "template", status: "pending" }),
+        expect.objectContaining({ id: "template", status: "verified" }),
+        expect.objectContaining({ id: "devices", status: "verified" }),
+        expect.objectContaining({ id: "capabilities", status: "waiting" }),
       ]),
     });
 
     await writeConfig(candidateRoot, "candidate-lynx", "Candidate Lynx", true, undefined, "lynx-app");
-    const verified = await service.verify("candidate-lynx");
-    expect(step(verified, "candidate-lynx", "template")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(candidateRoot));
+    expect(step(verified, runtimeProjectId(candidateRoot), "template")).toMatchObject({
       status: "verified",
       testEntries: [{
         id: "smoke",
@@ -320,8 +326,8 @@ describe("项目目录与接入验证", () => {
         parameterLabels: [],
       }],
     });
-    expect(step(verified, "candidate-lynx", "devices")).toMatchObject({ status: "verified" });
-    expect(step(verified, "candidate-lynx", "capabilities")).toMatchObject({
+    expect(step(verified, runtimeProjectId(candidateRoot), "devices")).toMatchObject({ status: "verified" });
+    expect(step(verified, runtimeProjectId(candidateRoot), "capabilities")).toMatchObject({
       status: "waiting",
       summary: expect.stringContaining("Project Provider"),
       capabilities: [
@@ -333,20 +339,26 @@ describe("项目目录与接入验证", () => {
         expect.objectContaining({ id: "result.analysis", status: "missing" }),
       ],
     });
-    expect(verified.activeProjectId).toBe("active-app");
+    expect(verified.activeProjectId).toBe(runtimeProjectId(activeRoot));
+    const projectOrder = verified.projects.map(project => project.id);
 
-    const activation = await service.activate("candidate-lynx", 0);
+    const activation = await service.activate(runtimeProjectId(candidateRoot), 0);
     expect(activation).toMatchObject({
-      projectId: "candidate-lynx",
-      configPath: path.join(candidateRoot, "mobile-test.config.cjs"),
-      restartRequired: true,
+      projectId: runtimeProjectId(candidateRoot),
+      configPath: path.join(fsSync.realpathSync(candidateRoot), "mobile-test.config.cjs"),
+      restartRequired: false,
     });
-    expect(activation.catalog.activeProjectId).toBe("active-app");
-    await expect(service.activate("candidate-lynx", 1)).rejects.toMatchObject({ code: "PROJECT_SWITCH_TASK_ACTIVE" });
+    expect(activation.catalog.activeProjectId).toBe(runtimeProjectId(activeRoot));
+    expect(activation.catalog.projects.map(project => project.id)).toEqual(projectOrder);
+    expect(activation.catalog.projects.find(project => project.id === runtimeProjectId(candidateRoot))?.active).toBe(false);
+    await expect(service.activate(runtimeProjectId(candidateRoot), 1)).resolves.toMatchObject({ restartRequired: false });
+
+    const persisted = await store.load();
+    expect(persisted.activeProjectId).toBe(runtimeProjectId(activeRoot));
 
     await writeConfig(candidateRoot, "candidate-lynx", "Candidate Lynx v2", true, undefined, "lynx-app");
-    const reverified = await service.verify("candidate-lynx");
-    expect(reverified.projects.find(project => project.id === "candidate-lynx")?.name).toBe("Candidate Lynx v2");
+    const reverified = await service.verify(runtimeProjectId(candidateRoot));
+    expect(reverified.projects.find(project => project.id === runtimeProjectId(candidateRoot))?.name).toBe("Candidate Lynx v2");
   });
 
   it("四项接入检查通过后允许执行测试", async () => {
@@ -363,8 +375,8 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    await service.verify("ready-lynx");
-    const detail = await service.detail("ready-lynx");
+    await service.verify(runtimeProjectId(root));
+    const detail = await service.detail(runtimeProjectId(root));
 
     expect(detail).toMatchObject({ executionReady: true });
     expect(detail.project.onboarding).toEqual([
@@ -373,7 +385,7 @@ describe("项目目录与接入验证", () => {
       expect.objectContaining({ id: "devices", status: "verified" }),
       expect.objectContaining({ id: "capabilities", status: "verified" }),
     ]);
-    expect(step({ projects: [detail.project] }, "ready-lynx", "capabilities")).toMatchObject({
+    expect(step({ projects: [detail.project] }, runtimeProjectId(root), "capabilities")).toMatchObject({
       capabilities: [
         expect.objectContaining({ id: "qa.bundle.prepare", label: "QA 包准备", status: "ready" }),
         expect.objectContaining({ id: "app.build", label: "App 构建", status: "ready" }),
@@ -394,7 +406,7 @@ describe("项目目录与接入验证", () => {
     await service.initialize(await loadProjectConfig(configPath));
     await fs.rm(configPath);
 
-    await expect(service.activate("stale-active", 0)).rejects.toMatchObject({
+    await expect(service.activate(runtimeProjectId(root), 0)).rejects.toMatchObject({
       code: "PROJECT_SWITCH_CONFIG_REQUIRED",
     });
   });
@@ -412,8 +424,8 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), unauthorizedRunner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    const verified = await service.verify("device-auth-app");
-    expect(step(verified, "device-auth-app", "devices")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(root));
+    expect(step(verified, runtimeProjectId(root), "devices")).toMatchObject({
       status: "waiting",
       issues: [expect.stringContaining("等待设备授权")],
     });
@@ -433,8 +445,8 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), missingAdbRunner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    const verified = await service.verify("device-tool-app");
-    expect(step(verified, "device-tool-app", "devices")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(root));
+    expect(step(verified, runtimeProjectId(root), "devices")).toMatchObject({
       status: "blocked",
       summary: "设备工具链需要处理",
       issues: [expect.stringContaining("ANDROID_ADB_PATH")],
@@ -445,7 +457,7 @@ describe("项目目录与接入验证", () => {
         guidance: expect.arrayContaining([expect.stringContaining("ANDROID_ADB_PATH")]),
       })],
     });
-    await expect(service.detail("device-tool-app")).resolves.toMatchObject({ executionReady: false });
+    await expect(service.detail(runtimeProjectId(root))).resolves.toMatchObject({ executionReady: false });
   });
 
   it("小程序项目使用运行目标 healthCheck 完成运行环境验证", async () => {
@@ -462,8 +474,8 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), runner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    const verified = await service.verify("mini-health");
-    expect(step(verified, "mini-health", "devices")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(root));
+    expect(step(verified, runtimeProjectId(root), "devices")).toMatchObject({
       status: "verified",
       summary: "已验证 1 个小程序运行环境",
       tools: [{
@@ -478,7 +490,7 @@ describe("项目目录与接入验证", () => {
     expect(calls).toEqual([expect.objectContaining({
       executable: "node",
       args: ["health-check.mjs", "--app-id", "wx-test", "--runtime", "wechat-devtools"],
-      cwd: root,
+      cwd: fsSync.realpathSync(root),
     })]);
   });
 
@@ -492,12 +504,31 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), runner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    const verified = await service.verify("mini-blocked");
-    expect(step(verified, "mini-blocked", "devices")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(root));
+    expect(step(verified, runtimeProjectId(root), "devices")).toMatchObject({
       status: "blocked",
       issues: ["微信开发者工具：WECHAT_DEVTOOLS_DIR missing"],
       tools: [{ status: "blocked", guidance: ["按项目运行环境检查输出完成配置后重新验证。"] }],
     });
+  });
+
+  it("小程序运行环境 healthCheck 失败时同时保留 stdout 和 stderr", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-project-mini-health-output-"));
+    tempDirs.push(root);
+    const runner: CommandRunner = {
+      async capture() {
+        return { code: 1, stdout: '{"errors":["缺少 dist"]}\n', stderr: "Command failed" };
+      },
+    };
+    await writeMiniProgramConfig(root, "mini-health-output", "Mini Health Output");
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), runner);
+    await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
+
+    const verified = await service.verify(runtimeProjectId(root));
+    const devices = step(verified, runtimeProjectId(root), "devices");
+
+    expect(devices.issues[0]).toContain('{"errors":["缺少 dist"]}');
+    expect(devices.issues[0]).toContain("Command failed");
   });
 
   it("通用 App 的基础命令测试无需 Project Provider 即可执行", async () => {
@@ -507,12 +538,12 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    const verified = await service.verify("command-app");
-    expect(step(verified, "command-app", "capabilities")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(root));
+    expect(step(verified, runtimeProjectId(root), "capabilities")).toMatchObject({
       status: "verified",
       summary: "基础命令测试能力已就绪",
     });
-    await expect(service.detail("command-app")).resolves.toMatchObject({
+    await expect(service.detail(runtimeProjectId(root))).resolves.toMatchObject({
       executionReady: true,
     });
   });
@@ -527,12 +558,12 @@ describe("项目目录与接入验证", () => {
     const plan = await service.previewInitialization({ projectDirectory: projectRoot, platforms: ["android"], family: "app" });
     expect(plan).toMatchObject({
       step: "config",
-      projectId: "new-lynx-app",
+      projectId: runtimeProjectId(projectRoot),
       canApply: true,
       actions: [
-        expect.objectContaining({ kind: "write-file", target: path.join(projectRoot, "mobile-test.config.cjs") }),
-        expect.objectContaining({ kind: "write-file", target: path.join(projectRoot, "qa", "mtc", "lynx-smoke.cjs") }),
-        expect.objectContaining({ kind: "write-file", target: path.join(projectRoot, "qa", "mtc", "README.md") }),
+        expect.objectContaining({ kind: "write-file", target: path.join(fsSync.realpathSync(projectRoot), "mobile-test.config.cjs") }),
+        expect.objectContaining({ kind: "write-file", target: path.join(fsSync.realpathSync(projectRoot), "qa", "mtc", "lynx-smoke.cjs") }),
+        expect.objectContaining({ kind: "write-file", target: path.join(fsSync.realpathSync(projectRoot), "qa", "mtc", "README.md") }),
       ],
     });
     await expect(fs.stat(path.join(projectRoot, "mobile-test.config.cjs"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -545,11 +576,12 @@ describe("项目目录与接入验证", () => {
     });
     expect(applied.results).toHaveLength(3);
     expect(applied.catalog.projects).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "new-lynx-app", integrationType: "lynx-app" }),
+      expect.objectContaining({ id: runtimeProjectId(projectRoot), integrationType: "lynx-app" }),
     ]));
-    await expect(fs.readFile(path.join(projectRoot, "mobile-test.config.cjs"), "utf8"))
-      .resolves.toContain('integrationType: "lynx-app"');
-    expect(step(applied.catalog, "new-lynx-app", "template")).toMatchObject({ status: "verified" });
+    const generatedConfig = await fs.readFile(path.join(projectRoot, "mobile-test.config.cjs"), "utf8");
+    expect(generatedConfig).toContain('integrationType: "lynx-app"');
+    expect(generatedConfig).not.toMatch(/project:\s*\{[^}]*\bid:/su);
+    expect(step(applied.catalog, runtimeProjectId(projectRoot), "template")).toMatchObject({ status: "verified" });
   });
 
   it("小程序初始化生成小程序配置与运行目标", async () => {
@@ -557,6 +589,11 @@ describe("项目目录与接入验证", () => {
     tempDirs.push(root);
     const projectRoot = path.join(root, "new-mini-program");
     await fs.mkdir(projectRoot);
+    const devtoolsDirectory = path.join(projectRoot, "fake-devtools");
+    const cliName = process.platform === "win32" ? "cli.bat" : "cli";
+    await fs.mkdir(devtoolsDirectory);
+    await fs.writeFile(path.join(devtoolsDirectory, cliName), "");
+    await fs.writeFile(path.join(projectRoot, ".env.e2e"), `WECHAT_DEVTOOLS_DIR=${devtoolsDirectory}\n`);
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
 
     const plan = await service.previewInitialization({
@@ -587,10 +624,67 @@ describe("项目目录与接入验证", () => {
     })]);
     expect(config.tests[0]).toMatchObject({ targetKeys: ["mini-program-devtools"], platforms: [] });
     expect(applied.catalog.projects).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "new-mini-program", integrationType: "mini-program", platforms: [] }),
+      expect.objectContaining({ id: runtimeProjectId(projectRoot), integrationType: "mini-program", platforms: [] }),
     ]));
-    await expect(fs.readFile(path.join(projectRoot, "qa", "mtc", "health-check.cjs"), "utf8"))
-      .resolves.toContain("MTC_MINI_PROGRAM_DEVTOOLS_PATH");
+    expect(step(applied.catalog, runtimeProjectId(projectRoot), "capabilities")).toMatchObject({
+      status: "verified",
+      summary: "基础命令测试能力已就绪",
+      issues: [],
+    });
+    await expect(service.detail(runtimeProjectId(projectRoot))).resolves.toMatchObject({ executionReady: true });
+    const healthCheckPath = path.join(projectRoot, "qa", "mtc", "health-check.cjs");
+    const healthCheck = await fs.readFile(healthCheckPath, "utf8");
+    expect(healthCheck).toContain("MTC_MINI_PROGRAM_DEVTOOLS_PATH");
+    expect(healthCheck).toContain("WECHAT_DEVTOOLS_DIR");
+    const healthEnv = { ...process.env };
+    delete healthEnv.MTC_MINI_PROGRAM_DEVTOOLS_PATH;
+    delete healthEnv.WECHAT_DEVTOOLS_DIR;
+    expect(execFileSync(process.execPath, [healthCheckPath, "--runtime", "wechat-devtools", "--app-id", "wx-test-app"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: healthEnv,
+    })).toContain(`运行环境可用: runtime=wechat-devtools appId=wx-test-app cli=${path.join(devtoolsDirectory, cliName)}`);
+  });
+
+  it("小程序已有接入脚本时一键补齐主配置并保留现有文件", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-program-existing-setup-"));
+    tempDirs.push(root);
+    const setupRoot = path.join(root, "qa", "mtc");
+    await fs.mkdir(setupRoot, { recursive: true });
+    const existingFiles = new Map([
+      [path.join(setupRoot, "health-check.cjs"), "module.exports = 'existing-health-check';\n"],
+      [path.join(setupRoot, "lynx-smoke.cjs"), "module.exports = 'existing-smoke';\n"],
+      [path.join(setupRoot, "README.md"), "# Existing setup guide\n"],
+    ]);
+    await Promise.all([...existingFiles].map(([target, content]) => fs.writeFile(target, content)));
+    const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
+
+    const plan = await service.previewInitialization({
+      projectDirectory: root,
+      platforms: [],
+      family: "mini-program",
+    });
+
+    expect(plan).toMatchObject({
+      canApply: true,
+      actions: [expect.objectContaining({
+        id: "write-config",
+        target: path.join(fsSync.realpathSync(root), "mobile-test.config.cjs"),
+      })],
+    });
+    const applied = await service.applyInitialization({
+      projectDirectory: root,
+      platforms: [],
+      family: "mini-program",
+      planId: plan.planId,
+    });
+
+    expect(applied.results).toHaveLength(1);
+    await expect(fs.readFile(path.join(root, "mobile-test.config.cjs"), "utf8"))
+      .resolves.toContain('integrationType: "mini-program"');
+    await Promise.all([...existingFiles].map(async ([target, content]) => {
+      await expect(fs.readFile(target, "utf8")).resolves.toBe(content);
+    }));
   });
 
   it("文件状态变化后拒绝旧初始化计划", async () => {
@@ -618,15 +712,15 @@ describe("项目目录与接入验证", () => {
     const service = new ProjectCatalogService(new ProjectCatalogStore(path.join(root, "catalog.json")), androidReadyRunner);
     await service.initialize(await loadProjectConfig(path.join(root, "mobile-test.config.cjs")));
 
-    const plan = await service.previewSetup("template-lynx", "capabilities");
+    const plan = await service.previewSetup(runtimeProjectId(root), "capabilities");
     expect(plan.actions).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ target: providerPath }),
     ]));
     expect(plan.actions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ target: path.join(root, "qa", "mtc", "runner.cjs") }),
+      expect.objectContaining({ target: path.join(fsSync.realpathSync(root), "qa", "mtc", "runner.cjs") }),
       expect.objectContaining({ kind: "manual" }),
     ]));
-    await service.applySetup("template-lynx", { step: "capabilities", planId: plan.planId });
+    await service.applySetup(runtimeProjectId(root), { step: "capabilities", planId: plan.planId });
     await expect(fs.readFile(providerPath, "utf8")).resolves.toBe("module.exports = { preserved: true };\n");
   });
 
@@ -664,14 +758,14 @@ describe("项目目录与接入验证", () => {
     };\n`);
 
     await expect(resolveProjectConfigSelection(configPath)).resolves.toMatchObject({
-      projectDirectory: projectRoot,
+      projectDirectory: fsSync.realpathSync(projectRoot),
       configFile: "qa/mobile-test.config.cjs",
       configFound: true,
     });
     await expect(scanProjectDirectory(qaRoot)).resolves.toMatchObject({
-      projectDirectory: projectRoot,
+      projectDirectory: fsSync.realpathSync(projectRoot),
       configFile: "qa/mobile-test.config.cjs",
-      configPath,
+      configPath: fsSync.realpathSync(configPath),
       configFound: true,
     });
   });
@@ -720,8 +814,8 @@ describe("项目目录与接入验证", () => {
     await service.register({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs" });
 
     await writeConfig(candidateRoot, "candidate", "Candidate v2", false, undefined, "mini-program", ["ios", "harmony"]);
-    const verified = await service.verify("candidate");
-    expect(verified.projects.find(project => project.id === "candidate")).toMatchObject({
+    const verified = await service.verify(runtimeProjectId(candidateRoot));
+    expect(verified.projects.find(project => project.id === runtimeProjectId(candidateRoot))).toMatchObject({
       name: "Candidate v2",
       integrationType: "mini-program",
       platforms: ["ios", "harmony"],
@@ -743,28 +837,28 @@ describe("项目目录与接入验证", () => {
     await service.register({ projectDirectory: candidateRoot, configFile: "mobile-test.config.cjs" });
 
     const activeConfig = await loadProjectConfig(path.join(activeRoot, "mobile-test.config.cjs"));
-    const activeRemoved = await service.remove("active");
+    const activeRemoved = await service.remove(runtimeProjectId(activeRoot));
     expect(activeRemoved).toMatchObject({
-      activeProjectId: "active",
-      projects: [expect.objectContaining({ id: "candidate", active: false })],
+      activeProjectId: runtimeProjectId(activeRoot),
+      projects: [expect.objectContaining({ id: runtimeProjectId(candidateRoot), active: false })],
     });
     expect((await fs.stat(path.join(activeRoot, "mobile-test.config.cjs"))).isFile()).toBe(true);
 
     const restarted = new ProjectCatalogService(store, androidReadyRunner);
     await restarted.initialize(activeConfig);
     expect(restarted.snapshot()).toMatchObject({
-      activeProjectId: "active",
-      projects: [expect.objectContaining({ id: "candidate", active: false })],
+      activeProjectId: runtimeProjectId(activeRoot),
+      projects: [expect.objectContaining({ id: runtimeProjectId(candidateRoot), active: false })],
     });
 
     const registeredAgain = await restarted.register({ projectDirectory: activeRoot, configFile: "mobile-test.config.cjs" });
     expect(registeredAgain.projects).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "active", active: true }),
-      expect.objectContaining({ id: "candidate", active: false }),
+      expect.objectContaining({ id: runtimeProjectId(activeRoot), active: true }),
+      expect.objectContaining({ id: runtimeProjectId(candidateRoot), active: false }),
     ]));
 
-    const inactiveRemoved = await restarted.remove("candidate");
-    expect(inactiveRemoved.projects.map(project => project.id)).toEqual(["active"]);
+    const inactiveRemoved = await restarted.remove(runtimeProjectId(candidateRoot));
+    expect(inactiveRemoved.projects.map(project => project.id)).toEqual([runtimeProjectId(activeRoot)]);
     expect((await fs.stat(path.join(candidateRoot, "mobile-test.config.cjs"))).isFile()).toBe(true);
   });
 });
@@ -776,11 +870,15 @@ const androidReadyRunner: CommandRunner = {
   },
 };
 
-function step(catalog: { projects: Array<{ id: string; onboarding: Array<{ id: string }> }> }, projectId: string, stepId: string) {
+function step(catalog: { projects: ProjectCatalogEntry[] }, projectId: string, stepId: string) {
   const project = catalog.projects.find(item => item.id === projectId);
   const onboardingStep = project?.onboarding.find(item => item.id === stepId);
   if (!onboardingStep) throw new Error(`未找到接入步骤: ${projectId}/${stepId}`);
   return onboardingStep;
+}
+
+function runtimeProjectId(root: string): string {
+  return projectIdFromRoot(fsSync.realpathSync(root));
 }
 
 async function writeConfig(root: string, id: string, name: string, provider = false, providerVersion?: number, integrationType = "app", deviceProviders = ["android"], providerCapabilities?: string[]): Promise<void> {

@@ -172,6 +172,8 @@ testing: {
 - Every `tests[].targetKeys` value references one declared `testing.targets` key.
 - `/api/snapshot` returns live App devices in `devices` and configured run targets in `targets`.
 - Catalog onboarding keeps the stable step ID `devices`. App projects verify device tools and live devices; mini-program projects run each target health check and present that step as the run environment.
+- Registering an existing project config persists the catalog entry and immediately verifies every onboarding step before returning. A persisted pending config step is rechecked from the project card; config generation is offered only after verification confirms the file is missing.
+- A failed target health check preserves non-empty stdout and stderr in the tool detail so project-owned structured diagnostics remain visible.
 - The browser keeps separate App and mini-program project lists. App execution renders device controls and App workspaces. Mini-program execution renders run targets and the project/test workspaces.
 - Changing the selected test within the active project reconciles the current resource selection against the next test. Mini-program selections keep keys declared by the next `targetKeys`; App selections keep device keys whose platform belongs to the next `platforms`. Project and family changes clear the selection.
 
@@ -644,6 +646,85 @@ cleanupRun: request => ({
     args: ["cleanup", "--id", `mobile-test-console-${request.plan.runId}`],
   }],
 })
+```
+
+## Scenario: Path-derived project identity and live Runner screenshots
+
+### 1. Scope / Trigger
+
+- Trigger: MTC loads a project config, restores a project catalog, starts a task, or receives a Runner screenshot event.
+- MTC owns project-instance identity. Provider and Runner IDs remain stable plugin registration keys shared by every checkout of the same integration.
+
+### 2. Signatures
+
+```ts
+resolveProjectIdentity(root: string): Promise<{ id: string; root: string }>
+
+interface RunnerArtifactEventData {
+  schemaVersion: "mobile-test-console.runner-artifact.v1";
+  uri: `project://${string}/${string}`;
+  role: "screenshot";
+  label: string;
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+}
+
+GET /api/tasks/:taskId/artifacts/:artifactId
+```
+
+### 3. Contracts
+
+- `loadProjectConfig()` resolves `project.root` through `realpath` and generates `<directory-slug>-<sha1-prefix>` from that canonical absolute path.
+- `project.id` in `mobile-test.config.cjs` is an optional compatibility input. Runtime config, default state directory, catalog entries, tasks, Runner plans, and new Result Bundles use the generated identity.
+- Catalog startup migrates legacy keys and `activeProjectId` by stored project root while preserving project metadata. Historical tasks retain their persisted `projectId` and `workspaceRoot`.
+- A Runner screenshot event carries the current `runId` and MTC-injected project ID. Its URI is project-relative and contains no host absolute path.
+- MTC accepts JPEG, PNG, and WebP live screenshots up to 20 MiB. The URI extension, declared MIME type, on-disk file type, and binary signature must agree when the event is accepted and when the attachment is read.
+- Task state deduplicates live screenshots by URI, preserves at most 100 entries, and persists accepted entries. Active and terminal screenshots share the task-scoped artifact endpoint.
+- Active task details expose screenshot and log tabs. The screenshot tab renders `等待首张截图` until the first accepted event and shows a visible load error when an image cannot be read.
+- Terminal task presentation uses the persisted Result Bundle as the authoritative screenshot source.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Config omits or keeps a legacy `project.id` | Load succeeds and runtime identity comes from the canonical root |
+| Two different roots have the same directory name or configured ID | Each root receives a distinct path fingerprint |
+| A symlink and its real target are loaded | Both resolve to one project identity |
+| Catalog migration maps two different canonical roots to one generated ID | Initialization fails with `PROJECT_ID_COLLISION` |
+| Artifact event run ID or project URI differs from the task | Ignore the event and append a bounded diagnostic log |
+| Artifact URI is absolute, traverses upward, or resolves through an escaping symlink | Reject artifact access with a task artifact error |
+| Artifact file is missing | Return `TASK_ARTIFACT_MISSING`, HTTP 404 |
+| Artifact extension and MIME disagree, the binary signature is forged, the path is not a file, or size is zero / over 20 MiB | Ignore the live event with a bounded diagnostic; attachment revalidation returns `TASK_ARTIFACT_INVALID`, HTTP 409 |
+| More than 100 unique live screenshots arrive | Retain the newest 100 task entries |
+
+### 5. Good / Base / Bad Cases
+
+- Good: two worktrees reuse one config, Provider ID, and Runner ID while MTC assigns separate project IDs and task roots.
+- Good: a page-matrix Runner publishes each stable JPEG after it is written; the active gallery grows without duplicate entries.
+- Base: a Runner emits logs only; the active screenshot tab remains in its waiting state.
+- Bad: a business config computes its own worktree ID or a Result Bundle falls back to a locally generated project ID.
+- Bad: MTC scans a project-specific results directory to infer screenshot ownership.
+
+### 6. Tests Required
+
+- Assert missing, fixed, and stale configured IDs all produce the canonical path identity at the config boundary.
+- Assert same-name roots differ, symlink roots converge, catalog keys migrate, and historical task artifact URIs still use `task.projectId`.
+- Assert Runner artifact schema, run/project matching, URI traversal, deduplication, 100-item cap, persistence, missing files, escaping symlinks, extension/MIME mismatch, forged signatures, and zero/over-20-MiB files.
+- Assert active screenshot waiting/gallery/error states and terminal Result Bundle handoff.
+- Integrate a project config without `project.id`; assert MTC supplies the ID to Runner events and Result Bundle screenshot URIs.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+project: { id: deriveId(__dirname), root: __dirname }
+```
+
+#### Correct
+
+```js
+project: { name: "Example", root: __dirname }
+// plan.projectId is supplied by MTC and reused in artifact URIs.
 ```
 
 ## Scenario: Platform-neutral Result Bundle and artifacts
@@ -1212,6 +1293,38 @@ MTC owns stable transport and orchestration contracts. Integrated repositories o
 ### Native mini-program connectors
 
 The first mini-program integration uses a Project Provider and Runner around the project's proven commands. A future native connector can implement attach, launch, reload, screenshot, log, and network capabilities under the existing target/connector contracts.
+
+## Scenario: Historical screenshot comparison
+
+### 1. Scope / Trigger
+
+- Trigger: a user selects two terminal tasks from registered projects, including a main checkout and a worktree, and opens the screenshot comparison workspace.
+- MTC owns pairing, comparison HTTP, and the viewer. Each project Runtime still owns Result Bundle storage and screenshot files.
+
+### 2. Signatures
+
+```ts
+POST /api/screenshot-comparisons
+GET /api/projects/:projectId/screenshot-comparison/candidates
+
+function screenshotComparisonKey(caseId: string, label: string): string;
+```
+
+Matching uses `caseId + screenshot.label`. Unmatched items retry once by `label` so page-matrix filenames such as `newCustomer-pages_index.jpg` still pair when case IDs drift.
+
+### 3. Contracts
+
+- Comparison handlers call `ProjectRuntimeRegistry.resolve(projectId)` for each side and do not reuse the request-scoped single Runtime.
+- Artifact URLs include that side's `projectId` query parameter.
+- Original images stay in the owning project. The comparison payload stores only `{projectId, taskId}` refs and pairing indexes.
+- Presence values are `both`, `left-only`, and `right-only`. A missing source task or unreadable result fills `side.error` and still returns HTTP 200.
+- Mini-program navigation includes the screenshot comparison workspace without an `adapter.workspaces` declaration.
+
+### 4. Tests Required
+
+- Pair page-matrix labels across different case IDs and mark a missing role as `left-only`.
+- POST a cross-project comparison and assert each image URL carries its own `projectId`.
+- Render missing-page copy and the slider when both images exist.
 
 ## Quality Gate
 

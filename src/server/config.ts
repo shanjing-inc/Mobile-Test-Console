@@ -24,6 +24,7 @@ import {
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
 import { LEGACY_COMMAND_RUNNER_ID, RUNNER_ID_PATTERN } from "../runner/sdk.js";
 import { ConsoleError } from "./errors.js";
+import { resolveProjectIdentity } from "./project-identity.js";
 
 let configImportNonce = 0;
 
@@ -283,7 +284,7 @@ export const testEntriesSchema = z.object({
 export const configSchema = z.object({
   schemaVersion: z.literal("mobile-test-console.config.v1"),
   project: z.object({
-    id: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    id: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(),
     name: z.string().min(1),
     root: z.string().min(1),
     integrationType: z.enum(PROJECT_INTEGRATION_TYPES).default("app"),
@@ -490,6 +491,7 @@ export type ProjectProviderPluginDefinition = Omit<ParsedProjectProviderPluginDe
 export interface LoadedProjectConfig {
   schemaVersion: "mobile-test-console.config.v1";
   configPath: string;
+  configuredProjectId?: string;
   project: {
     id: string;
     name: string;
@@ -572,7 +574,12 @@ export interface ResolvedCommand {
 }
 
 export async function loadProjectConfig(inputPath: string): Promise<LoadedProjectConfig> {
-  const configPath = path.resolve(inputPath);
+  const requestedConfigPath = path.resolve(inputPath);
+  const configPath = await fs.realpath(requestedConfigPath).catch(error => {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return requestedConfigPath;
+    throw error;
+  });
   let imported: unknown;
   try {
     if (path.extname(configPath) === ".cjs") {
@@ -629,10 +636,11 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
     );
   }
 
-  const projectRoot = path.resolve(configDir, parsed.data.project.root);
+  const projectIdentity = await resolveProjectIdentity(path.resolve(configDir, parsed.data.project.root));
+  const projectRoot = projectIdentity.root;
   const stateDir = parsed.data.stateDir
     ? path.resolve(configDir, parsed.data.stateDir)
-    : path.join(os.homedir(), ".mobile-test-console", parsed.data.project.id);
+    : path.join(os.homedir(), ".mobile-test-console", projectIdentity.id);
   const adapter = await resolveLoadedProjectAdapter(
     parsed.data.adapter as ProjectAdapterManifest | undefined,
     parsed.data.compatibility.v1ProjectAdapterDefaults,
@@ -643,8 +651,10 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
   return {
     ...parsed.data,
     configPath,
+    ...(parsed.data.project.id ? { configuredProjectId: parsed.data.project.id } : {}),
     project: {
       ...parsed.data.project,
+      id: projectIdentity.id,
       root: projectRoot,
     },
     taskResults: parsed.data.taskResults ? {
