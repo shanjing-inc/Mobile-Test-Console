@@ -156,7 +156,7 @@ Keep the preview link beside the detail button so the markup does not nest inter
 
 **Problem**: Full-width rendering enlarges tall mobile screenshots beyond the usable viewport, while rendering only the selected pair makes every page transition depend on the navigation list.
 
-**Contract**: The comparison stage renders every matched pair in one bounded scroll container. Pair sections preserve server order, use proximity scroll snapping, and update the navigation's `aria-current` item from the section offsets as the user scrolls. Navigation clicks and unmodified ArrowUp / ArrowDown key presses smoothly scroll the same container to the requested section. Keyboard handling ignores form controls, buttons, links, and editable content.
+**Contract**: The comparison stage renders every matched pair in one bounded scroll container. Pair sections preserve server order, use proximity scroll snapping, and update the navigation's `aria-current` item from the section offsets as the user scrolls. Navigation clicks and unmodified ArrowUp / ArrowDown key presses smoothly scroll the same container to the requested section. After the result pane filled the viewport, page-list items are buttons and screenshots sit in links, so arrow keys still switch pairs from those targets. Keyboard handling ignores only form fields and editable content (`input`, `select`, `textarea`, `contenteditable`), including the slider range input.
 
 The `SCREENSHOT COMPARE` configuration starts expanded. Its heading keeps the page count visible and exposes an icon disclosure with `aria-expanded` and `aria-controls`; collapsing the controlled region gives the comparison stage more first-screen space without clearing either selection.
 
@@ -177,7 +177,7 @@ stream.scrollTo({ top: pairElement.offsetTop, behavior: "smooth" });
 - The comparison container has bounded viewport height, vertical overflow, and proximity scroll snapping.
 - Side-by-side and slider images share the viewport-relative maximum height and preserve original-artifact links.
 - A real multi-page comparison can scroll from the first pair to the second while navigation `aria-current` follows.
-- ArrowUp and ArrowDown select adjacent pairs, clamp at the first and last pair, and preserve native behavior in interactive controls.
+- ArrowUp and ArrowDown select adjacent pairs from the page list and screenshot links, clamp at the first and last pair, and preserve native behavior in form fields.
 - The configuration region is expanded by default and its disclosure exposes the controlled-region relationship.
 
 ### Result retry actions

@@ -21,3 +21,16 @@ export function adjacentComparisonKey(
   const nextIndex = Math.min(keys.length - 1, Math.max(0, currentIndex + direction));
   return keys[nextIndex] ?? "";
 }
+
+const COMPARISON_SHORTCUT_FORM_SELECTOR = "input, select, textarea, [contenteditable]:not([contenteditable='false'])";
+
+export function shouldHandleComparisonShortcut(
+  event: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
+  target: { closest(selector: string): unknown; isContentEditable?: boolean } | null,
+): boolean {
+  if ((event.key !== "ArrowDown" && event.key !== "ArrowUp") || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    return false;
+  }
+  if (target?.isContentEditable) return false;
+  return !target?.closest(COMPARISON_SHORTCUT_FORM_SELECTOR);
+}

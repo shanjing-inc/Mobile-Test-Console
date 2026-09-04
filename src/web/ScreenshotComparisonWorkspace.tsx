@@ -9,7 +9,7 @@ import type {
   ScreenshotComparisonSide,
 } from "../shared/contracts";
 import { ApiError, createScreenshotComparison, fetchScreenshotComparisonCandidates } from "./api";
-import { activeComparisonKeyAtOffset, adjacentComparisonKey } from "./screenshot-comparison-scroll";
+import { activeComparisonKeyAtOffset, adjacentComparisonKey, shouldHandleComparisonShortcut } from "./screenshot-comparison-scroll";
 
 const STORAGE_KEY = "mtc.screenshot-comparison.v1";
 const PRESENCE_LABELS = {
@@ -117,9 +117,8 @@ export function ScreenshotComparisonWorkspace({
   useEffect(() => {
     if (visiblePairs.length === 0) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.key !== "ArrowDown" && event.key !== "ArrowUp") || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      const target = event.target;
-      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, select, textarea, button, a"))) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!shouldHandleComparisonShortcut(event, target)) return;
       const nextKey = adjacentComparisonKey(
         visiblePairs.map(pair => pair.key),
         activeKey,
@@ -130,8 +129,8 @@ export function ScreenshotComparisonWorkspace({
         selectPair(nextKey);
       }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [activeKey, selectPair, visiblePairs]);
 
   const syncSelectedPairFromScroll = useCallback(() => {

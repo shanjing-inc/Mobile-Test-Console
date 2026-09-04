@@ -5,7 +5,7 @@ import { RunRow } from "../src/web/App.js";
 import fs from "node:fs";
 import path from "node:path";
 import { ComparisonImagePane, ComparisonPairView, ComparisonSlider, ScreenshotComparisonWorkspace } from "../src/web/ScreenshotComparisonWorkspace.js";
-import { activeComparisonKeyAtOffset, adjacentComparisonKey } from "../src/web/screenshot-comparison-scroll.js";
+import { activeComparisonKeyAtOffset, adjacentComparisonKey, shouldHandleComparisonShortcut } from "../src/web/screenshot-comparison-scroll.js";
 import type { ScreenshotComparisonPair, TestTask } from "../src/shared/contracts.js";
 
 const styles = fs.readFileSync(path.resolve("src/web/styles.css"), "utf8");
@@ -67,6 +67,20 @@ describe("截图对比界面", () => {
     expect(activeComparisonKeyAtOffset(positions, 1600)).toBe("manager");
   });
 
+  it("对比区内上下键在列表按钮和图片链接上仍然切页，表单控件保持原行为", () => {
+    const arrowDown = { key: "ArrowDown" as const, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+    const arrowUp = { key: "ArrowUp" as const, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+    expect(shouldHandleComparisonShortcut(arrowDown, fakeTarget([]))).toBe(true);
+    expect(shouldHandleComparisonShortcut(arrowUp, fakeTarget(["button"]))).toBe(true);
+    expect(shouldHandleComparisonShortcut(arrowDown, fakeTarget(["a"]))).toBe(true);
+    expect(shouldHandleComparisonShortcut(arrowDown, fakeTarget(["input"]))).toBe(false);
+    expect(shouldHandleComparisonShortcut(arrowDown, fakeTarget(["select"]))).toBe(false);
+    expect(shouldHandleComparisonShortcut(arrowDown, fakeTarget(["textarea"]))).toBe(false);
+    expect(shouldHandleComparisonShortcut(arrowDown, { closest: () => null, isContentEditable: true })).toBe(false);
+    expect(shouldHandleComparisonShortcut({ ...arrowDown, key: "ArrowLeft" }, fakeTarget([]))).toBe(false);
+    expect(shouldHandleComparisonShortcut({ ...arrowDown, metaKey: true }, fakeTarget([]))).toBe(false);
+  });
+
   it("按上下方向在页面间移动并停留在边界", () => {
     const keys = ["new-customer", "employee", "manager"];
     expect(adjacentComparisonKey(keys, "new-customer", 1)).toBe("employee");
@@ -114,6 +128,15 @@ describe("截图对比界面", () => {
     expect(markup).toContain("compare-button");
   });
 });
+
+function fakeTarget(matches: string[]) {
+  return {
+    closest(selector: string) {
+      const parts = selector.split(",").map(item => item.trim());
+      return parts.some(part => matches.includes(part)) ? {} : null;
+    },
+  };
+}
 
 function missingPair(): ScreenshotComparisonPair {
   return {
