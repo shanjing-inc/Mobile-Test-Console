@@ -152,6 +152,34 @@ Keep the preview link beside the detail button so the markup does not nest inter
 - Hiding the gallery changes `aria-expanded` to `false` and removes all `<img>` nodes.
 - Entry previews sit beside the entry copy and make the preview image define the cell height. The image is rendered directly without a background block at `420px` high on desktop and `330px` high at a `390px` viewport. The disclosure chevron stays at the far-right edge and the page has no horizontal overflow.
 
+### Screenshot comparison continuous browsing
+
+**Problem**: Full-width rendering enlarges tall mobile screenshots beyond the usable viewport, while rendering only the selected pair makes every page transition depend on the navigation list.
+
+**Contract**: The comparison stage renders every matched pair in one bounded scroll container. Pair sections preserve server order, use proximity scroll snapping, and update the navigation's `aria-current` item from the section offsets as the user scrolls. Navigation clicks and unmodified ArrowUp / ArrowDown key presses smoothly scroll the same container to the requested section. Keyboard handling ignores form controls, buttons, links, and editable content.
+
+The `SCREENSHOT COMPARE` configuration starts expanded. Its heading keeps the page count visible and exposes an icon disclosure with `aria-expanded` and `aria-controls`; collapsing the controlled region gives the comparison stage more first-screen space without clearing either selection.
+
+Comparison images preserve their intrinsic ratio with automatic width and a viewport-relative maximum height. The original artifact remains available through the image link. Side-by-side and slider modes share the same height limit, and images below the current viewport use native lazy loading.
+
+```tsx
+const nextKey = activeComparisonKeyAtOffset(positions, activationOffset);
+stream.scrollTo({ top: pairElement.offsetTop, behavior: "smooth" });
+
+<div className="screenshot-compare-pair-stream" onScroll={syncSelectedPairFromScroll}>
+  {pairs.map(pair => <ComparisonPairView key={pair.key} pair={pair} />)}
+</div>
+```
+
+**Required regression checks**:
+
+- Scroll offsets select the first pair whose section top is at or before the activation threshold.
+- The comparison container has bounded viewport height, vertical overflow, and proximity scroll snapping.
+- Side-by-side and slider images share the viewport-relative maximum height and preserve original-artifact links.
+- A real multi-page comparison can scroll from the first pair to the second while navigation `aria-current` follows.
+- ArrowUp and ArrowDown select adjacent pairs, clamp at the first and last pair, and preserve native behavior in interactive controls.
+- The configuration region is expanded by default and its disclosure exposes the controlled-region relationship.
+
 ### Result retry actions
 
 Terminal results expose re-test actions at the scope where the evidence is visible. Every result module retries its own `caseRunId`; the overview toolbar retries every failed `caseRunId`. Module actions use a module-level pending key and disable repeated submission for the active request. The source task remains focused while the retry runs.

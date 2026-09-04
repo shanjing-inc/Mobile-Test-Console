@@ -26,8 +26,8 @@ const PAGE_MATRIX_LABELS = [
   "shopOwner-pages_index.jpg",
 ] as const;
 const PAGE_MATRIX_CASE_ID = "tests/e2e/specs/wechatide-page-matrix.e2e · 最新版微信开发者工具全页面巡检";
-const LEFT_REAL_BUNDLE = "/Users/fengit/workspace/biaoju/saas-mini-program.worktrees/FEATURE-403-infrastructure/.mtc-state/result-bundles/saas-mini-program-feature-403-infrastructure-cbfb5960-20260901061819-547ea49d.json";
-const RIGHT_REAL_BUNDLE = "/Users/fengit/workspace/biaoju/saas-mini-program.worktrees/sp-org/.mtc-state/result-bundles/sp-org-3ddb7984-20260903053434-a4f09d53.json";
+const LEFT_REAL_BUNDLE = process.env.MTC_COMPARE_LEFT_BUNDLE || "";
+const RIGHT_REAL_BUNDLE = process.env.MTC_COMPARE_RIGHT_BUNDLE || "";
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map(directory => fs.rm(directory, { recursive: true, force: true })));
@@ -164,6 +164,7 @@ describe("截图对比 API", () => {
 
 describe("真实巡检 Result Bundle 配对", () => {
   it("主仓 FEATURE-403 与 sp-org worktree 的四张角色截图全部配对", async () => {
+    if (!LEFT_REAL_BUNDLE || !RIGHT_REAL_BUNDLE) return;
     const [leftExists, rightExists] = await Promise.all([
       fs.access(LEFT_REAL_BUNDLE).then(() => true, () => false),
       fs.access(RIGHT_REAL_BUNDLE).then(() => true, () => false),

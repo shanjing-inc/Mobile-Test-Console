@@ -1,5 +1,5 @@
-import { AlertCircle, Columns2, ImageIcon, LoaderCircle, SplitSquareHorizontal } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertCircle, ChevronDown, ChevronUp, Columns2, ImageIcon, LoaderCircle, SplitSquareHorizontal } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ProjectCatalogResponse,
   ScreenshotComparison,
@@ -9,6 +9,7 @@ import type {
   ScreenshotComparisonSide,
 } from "../shared/contracts";
 import { ApiError, createScreenshotComparison, fetchScreenshotComparisonCandidates } from "./api";
+import { activeComparisonKeyAtOffset, adjacentComparisonKey } from "./screenshot-comparison-scroll";
 
 const STORAGE_KEY = "mtc.screenshot-comparison.v1";
 const PRESENCE_LABELS = {
@@ -53,6 +54,9 @@ export function ScreenshotComparisonWorkspace({
   const [mode, setMode] = useState<CompareMode>("side-by-side");
   const [missingOnly, setMissingOnly] = useState(false);
   const [slider, setSlider] = useState(50);
+  const [settingsCollapsed, setSettingsCollapsed] = useState(false);
+  const pairStreamRef = useRef<HTMLDivElement>(null);
+  const pairElementsRef = useRef(new Map<string, HTMLElement>());
 
   useEffect(() => {
     if (initialLeft) {
@@ -89,7 +93,64 @@ export function ScreenshotComparisonWorkspace({
     return missingOnly ? pairs.filter(pair => pair.presence !== "both") : pairs;
   }, [comparison, missingOnly]);
 
-  const selectedPair = visiblePairs.find(pair => pair.key === selectedKey) ?? visiblePairs[0] ?? null;
+  const activeKey = visiblePairs.some(pair => pair.key === selectedKey)
+    ? selectedKey
+    : visiblePairs[0]?.key ?? "";
+
+  const registerPairElement = useCallback((key: string, element: HTMLElement | null) => {
+    if (element) {
+      pairElementsRef.current.set(key, element);
+      return;
+    }
+    pairElementsRef.current.delete(key);
+  }, []);
+
+  const selectPair = useCallback((key: string) => {
+    setSelectedKey(key);
+    const stream = pairStreamRef.current;
+    const element = pairElementsRef.current.get(key);
+    if (stream && element) {
+      stream.scrollTo({ top: element.offsetTop, behavior: "smooth" });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (visiblePairs.length === 0) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.key !== "ArrowDown" && event.key !== "ArrowUp") || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("input, select, textarea, button, a"))) return;
+      const nextKey = adjacentComparisonKey(
+        visiblePairs.map(pair => pair.key),
+        activeKey,
+        event.key === "ArrowDown" ? 1 : -1,
+      );
+      if (nextKey) {
+        event.preventDefault();
+        selectPair(nextKey);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeKey, selectPair, visiblePairs]);
+
+  const syncSelectedPairFromScroll = useCallback(() => {
+    const stream = pairStreamRef.current;
+    if (!stream) return;
+    const positions = visiblePairs.flatMap(pair => {
+      const element = pairElementsRef.current.get(pair.key);
+      return element ? [{ key: pair.key, top: element.offsetTop }] : [];
+    });
+    const activationOffset = stream.scrollTop + Math.min(160, stream.clientHeight * 0.3);
+    const nextKey = activeComparisonKeyAtOffset(positions, activationOffset);
+    if (nextKey) {
+      setSelectedKey(current => current === nextKey ? current : nextKey);
+    }
+  }, [visiblePairs]);
+
+  useEffect(() => {
+    if (pairStreamRef.current) pairStreamRef.current.scrollTop = 0;
+  }, [comparison?.comparisonId, missingOnly]);
 
   const compare = useCallback(async (left = { projectId: leftProjectId, taskId: leftTaskId }, right = { projectId: rightProjectId, taskId: rightTaskId }) => {
     if (!left.projectId || !left.taskId || !right.projectId || !right.taskId) {
@@ -122,45 +183,62 @@ export function ScreenshotComparisonWorkspace({
     <section className="section-panel">
       <div className="section-heading">
         <div><p className="eyebrow">SCREENSHOT COMPARE</p><h2>截图对比</h2></div>
-        <span className="count-label">{comparison ? `${comparison.pairs.length} 页` : "选择两个历史结果"}</span>
+        <span className="screenshot-compare-heading-actions">
+          <span className="count-label">{comparison ? `${comparison.pairs.length} 页` : "选择两个历史结果"}</span>
+          <button
+            className="icon-button screenshot-compare-collapse"
+            type="button"
+            onClick={() => setSettingsCollapsed(collapsed => !collapsed)}
+            aria-expanded={!settingsCollapsed}
+            aria-controls="screenshot-compare-settings"
+            aria-label={settingsCollapsed ? "展开截图对比配置" : "折叠截图对比配置"}
+            title={settingsCollapsed ? "展开截图对比配置" : "折叠截图对比配置"}
+          >
+            {settingsCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+          </button>
+        </span>
       </div>
-      <div className="screenshot-compare-pickers">
-        <ComparisonSidePicker
-          label="左侧"
-          projectId={leftProjectId}
-          taskId={leftTaskId}
-          projects={projects}
-          candidates={leftCandidates}
-          loading={loadingLeft}
-          onProject={setLeftProjectId}
-          onTask={setLeftTaskId}
-        />
-        <ComparisonSidePicker
-          label="右侧"
-          projectId={rightProjectId}
-          taskId={rightTaskId}
-          projects={projects}
-          candidates={rightCandidates}
-          loading={loadingRight}
-          onProject={setRightProjectId}
-          onTask={setRightTaskId}
-        />
-      </div>
-      <div className="screenshot-compare-actions">
-        <button className="primary-button" type="button" onClick={() => void compare()} disabled={pending || !leftTaskId || !rightTaskId}>
-          {pending ? <LoaderCircle className="spin" size={15} /> : <Columns2 size={15} />}
-          {pending ? "正在配对" : "开始对比"}
-        </button>
-        <label className="screenshot-compare-filter">
-          <input type="checkbox" checked={missingOnly} onChange={event => setMissingOnly(event.target.checked)} />
-          只看缺失页
-        </label>
+      <div id="screenshot-compare-settings" className="screenshot-compare-settings" hidden={settingsCollapsed}>
+        <div className="screenshot-compare-pickers">
+          <ComparisonSidePicker
+            label="左侧"
+            projectId={leftProjectId}
+            taskId={leftTaskId}
+            projects={projects}
+            candidates={leftCandidates}
+            loading={loadingLeft}
+            onProject={setLeftProjectId}
+            onTask={setLeftTaskId}
+          />
+          <ComparisonSidePicker
+            label="右侧"
+            projectId={rightProjectId}
+            taskId={rightTaskId}
+            projects={projects}
+            candidates={rightCandidates}
+            loading={loadingRight}
+            onProject={setRightProjectId}
+            onTask={setRightTaskId}
+          />
+        </div>
+        <div className="screenshot-compare-actions">
+          <button className="primary-button" type="button" onClick={() => void compare()} disabled={pending || !leftTaskId || !rightTaskId}>
+            {pending ? <LoaderCircle className="spin" size={15} /> : <Columns2 size={15} />}
+            {pending ? "正在配对" : "开始对比"}
+          </button>
+          <label className="screenshot-compare-filter">
+            <input type="checkbox" checked={missingOnly} onChange={event => setMissingOnly(event.target.checked)} />
+            只看缺失页
+          </label>
+        </div>
       </div>
     </section>
 
     {comparison && <section className="section-panel screenshot-compare-result">
-      <ComparisonSideMeta side={comparison.left} align="left" />
-      <ComparisonSideMeta side={comparison.right} align="right" />
+      <div className="screenshot-compare-result-header">
+        <ComparisonSideMeta side={comparison.left} align="left" />
+        <ComparisonSideMeta side={comparison.right} align="right" />
+      </div>
       <div className="screenshot-compare-layout">
         <aside className="screenshot-compare-list" aria-label="对比页面">
           {visiblePairs.length === 0
@@ -168,8 +246,9 @@ export function ScreenshotComparisonWorkspace({
             : visiblePairs.map(pair => <button
                 key={pair.key}
                 type="button"
-                className={`screenshot-compare-item ${pair.key === selectedPair?.key ? "selected" : ""} ${pair.presence}`}
-                onClick={() => setSelectedKey(pair.key)}
+                className={`screenshot-compare-item ${pair.key === activeKey ? "selected" : ""} ${pair.presence}`}
+                aria-current={pair.key === activeKey ? "page" : undefined}
+                onClick={() => selectPair(pair.key)}
               >
                 <strong>{pair.title}</strong>
                 <small>{PRESENCE_LABELS[pair.presence]}</small>
@@ -180,9 +259,28 @@ export function ScreenshotComparisonWorkspace({
             <button type="button" role="tab" aria-selected={mode === "side-by-side"} className={mode === "side-by-side" ? "active" : ""} onClick={() => setMode("side-by-side")}><Columns2 size={14} />并排</button>
             <button type="button" role="tab" aria-selected={mode === "slider"} className={mode === "slider" ? "active" : ""} onClick={() => setMode("slider")}><SplitSquareHorizontal size={14} />滑杆</button>
           </div>
-          {selectedPair
-            ? <ComparisonPairView pair={selectedPair} mode={mode} slider={slider} onSlider={setSlider} />
-            : <div className="result-empty"><ImageIcon size={18} /><strong>选择一个页面</strong><span>从左侧列表打开配对结果</span></div>}
+          {visiblePairs.length > 0
+            ? <div
+                ref={pairStreamRef}
+                className="screenshot-compare-pair-stream"
+                aria-label="截图连续对比"
+                tabIndex={0}
+                onScroll={syncSelectedPairFromScroll}
+              >
+                {visiblePairs.map((pair, index) => <article
+                  key={pair.key}
+                  ref={element => registerPairElement(pair.key, element)}
+                  className="screenshot-compare-pair-section"
+                  data-comparison-key={pair.key}
+                >
+                  <header className="screenshot-compare-pair-heading">
+                    <strong>{pair.title}</strong>
+                    <small>{index + 1} / {visiblePairs.length}</small>
+                  </header>
+                  <ComparisonPairView pair={pair} mode={mode} slider={slider} onSlider={setSlider} />
+                </article>)}
+              </div>
+            : <div className="result-empty"><ImageIcon size={18} /><strong>没有可对比页面</strong><span>调整筛选条件或选择包含截图的运行</span></div>}
         </div>
       </div>
     </section>}
@@ -275,7 +373,7 @@ export function ComparisonImagePane({
     <span>{caption}</span>
     {missing
       ? <div className="screenshot-compare-missing"><AlertCircle size={16} /><strong>{image?.missingReason || fallback}</strong></div>
-      : <a href={image.url} target="_blank" rel="noreferrer"><img src={image.url} alt={`${caption} ${image.artifactId}`} onError={() => setFailed(true)} /></a>}
+      : <a href={image.url} target="_blank" rel="noreferrer" title="点击查看原图"><img src={image.url} alt={`${caption} ${image.artifactId}`} loading="lazy" onError={() => setFailed(true)} /></a>}
   </div>;
 }
 
@@ -293,8 +391,8 @@ export function ComparisonSlider({
   onChange: (value: number) => void;
 }) {
   return <div className="screenshot-compare-slider">
-    <img src={right} alt={`${label} 右侧`} />
-    <img src={left} alt={`${label} 左侧`} style={{ clipPath: `inset(0 ${100 - value}% 0 0)` }} />
+    <img src={right} alt={`${label} 右侧`} loading="lazy" />
+    <img src={left} alt={`${label} 左侧`} loading="lazy" style={{ clipPath: `inset(0 ${100 - value}% 0 0)` }} />
     <input
       type="range"
       min={0}

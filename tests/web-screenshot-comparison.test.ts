@@ -2,8 +2,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { RunRow } from "../src/web/App.js";
-import { ComparisonImagePane, ComparisonPairView, ComparisonSlider } from "../src/web/ScreenshotComparisonWorkspace.js";
+import fs from "node:fs";
+import path from "node:path";
+import { ComparisonImagePane, ComparisonPairView, ComparisonSlider, ScreenshotComparisonWorkspace } from "../src/web/ScreenshotComparisonWorkspace.js";
+import { activeComparisonKeyAtOffset, adjacentComparisonKey } from "../src/web/screenshot-comparison-scroll.js";
 import type { ScreenshotComparisonPair, TestTask } from "../src/shared/contracts.js";
+
+const styles = fs.readFileSync(path.resolve("src/web/styles.css"), "utf8");
 
 describe("截图对比界面", () => {
   it("并排模式对缺失页显示仅一侧存在", () => {
@@ -31,6 +36,7 @@ describe("截图对比界面", () => {
     expect(markup).toContain("inset(0 60% 0 0)");
     expect(markup).toContain("/left.jpg");
     expect(markup).toContain("/right.jpg");
+    expect(markup.match(/loading="lazy"/g)).toHaveLength(2);
   });
 
   it("图片不可用时显示源截图已清理", () => {
@@ -48,6 +54,49 @@ describe("截图对比界面", () => {
     }));
     expect(markup).toContain("源截图已清理");
     expect(markup).not.toContain("<img");
+  });
+
+  it("根据连续滚动位置同步当前页面", () => {
+    const positions = [
+      { key: "new-customer", top: 0 },
+      { key: "employee", top: 640 },
+      { key: "manager", top: 1280 },
+    ];
+    expect(activeComparisonKeyAtOffset(positions, 120)).toBe("new-customer");
+    expect(activeComparisonKeyAtOffset(positions, 760)).toBe("employee");
+    expect(activeComparisonKeyAtOffset(positions, 1600)).toBe("manager");
+  });
+
+  it("按上下方向在页面间移动并停留在边界", () => {
+    const keys = ["new-customer", "employee", "manager"];
+    expect(adjacentComparisonKey(keys, "new-customer", 1)).toBe("employee");
+    expect(adjacentComparisonKey(keys, "manager", -1)).toBe("employee");
+    expect(adjacentComparisonKey(keys, "new-customer", -1)).toBe("new-customer");
+    expect(adjacentComparisonKey(keys, "manager", 1)).toBe("manager");
+    expect(adjacentComparisonKey(keys, "unknown", 1)).toBe("new-customer");
+    expect(adjacentComparisonKey([], "", 1)).toBe("");
+  });
+
+  it("截图对比配置默认展开并提供可访问的折叠控制", () => {
+    const markup = renderToStaticMarkup(createElement(ScreenshotComparisonWorkspace, {
+      catalog: null,
+      currentProjectId: "",
+      onMessage: vi.fn(),
+    }));
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('aria-controls="screenshot-compare-settings"');
+    expect(markup).toContain('id="screenshot-compare-settings"');
+    expect(markup).toContain("折叠截图对比配置");
+    expect(markup).not.toContain('id="screenshot-compare-settings" hidden');
+  });
+
+  it("对比区域自适应撑满可用高度且图片自适应容器尺寸", () => {
+    expect(styles).toContain(".content.content-screenshot-compare");
+    expect(styles).toContain(".screenshot-compare-result");
+    expect(styles).toContain(".screenshot-compare-pair-stream");
+    expect(styles).toContain("scroll-snap-type: y proximity");
+    expect(styles).toContain(".screenshot-compare-pane img");
+    expect(styles).toContain("object-fit: contain");
   });
 
   it("终态运行提供加入对比入口", () => {

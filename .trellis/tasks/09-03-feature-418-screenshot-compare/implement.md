@@ -7,8 +7,10 @@
 3. 服务：`src/server/screenshot-comparison.ts`（读两侧 Runtime、组装 URL、side.error）。
 4. HTTP：`src/server/app.ts` 增加 candidates GET 与 comparisons POST；handler 显式 `runtimes.resolve`。
 5. 前端 API：`src/web/api.ts`。
-6. 工作区：`project-workspaces.ts` + `ScreenshotComparisonWorkspace.tsx` + `App.tsx` 入口/「加入对比」+ `styles.css`。
+6. 工作区：`project-workspaces.ts` + `ScreenshotComparisonWorkspace.tsx` + `App.tsx` 入口/「加入对比」+ `styles.css`；对比区连续渲染配对页、滚动同步当前项，对比框高度自适应顶到底部，图片大小自适应容器尺寸。
+   - 配置区默认展开并可折叠；有结果时支持上下方向键定位相邻页面。
 7. 测试：配对、HTTP 跨项目、缺失页 UI、真实 Result Bundle 配对。
+   - 前端回归覆盖连续渲染、滚动位置到当前配对键的映射、相邻页面边界、默认展开的折叠控制和对比框顶到底部与图片自适应 CSS 合约。
 8. spec：在 `mobile-test-console-integration.md` 追加截图对比场景。
 
 ## 验证命令

@@ -121,6 +121,11 @@ interface ScreenshotComparisonImage {
 - 新文件 `src/web/ScreenshotComparisonWorkspace.tsx`：项目/任务选择、配对列表、并排、滑杆。
 - 运行记录「加入对比」：第一次填左侧，第二次填右侧并切到对比工作区；已选满则替换右侧。
 - 缺失页不渲染 `<img>`，展示文案。可用图片 `onError` 也切到「源截图已清理」。
+- 对比结果改为限高的连续页面流，所有 `pairs` 按服务端顺序渲染。每个页面段落使用 `scroll-snap-align`，滚动容器根据各段 `offsetTop` 更新当前 `selectedKey`；左侧点击调用容器 `scrollTo` 定位。
+- 并排图片以 `max-height: min(620px, 58dvh)` 约束展示高度，宽度保持自动并受列宽上限约束。滑杆容器由底图的受限尺寸决定，覆盖图复用同一盒模型，避免纵向截图按整列宽度放大。
+- 视口与布局适配演进：`.content-screenshot-compare` 开启弹性列布局，`.screenshot-compare-result` 填满视口剩余高度并顶到底部；左侧列表与右侧 `screenshot-compare-pair-stream` 均充满各自舞台高度；单个对比页 `screenshot-compare-pair-section` 高度填满展示区，图片容器与图片自身使用 `max-width: 100%; max-height: 100%; object-fit: contain` 自适应缩放，消灭固定像素死限，保证完整呈现手机页面。
+- `SCREENSHOT COMPARE` 标题右侧提供带 `aria-expanded` / `aria-controls` 的折叠按钮。配置表单默认可见，折叠只隐藏项目、历史结果和操作区，页数持续可见。
+- 工作区在有可见配对页时监听上下方向键，复用列表点击的 `selectPair()` 定位逻辑。带修饰键的快捷键和来自输入、选择、文本、按钮、链接、可编辑区域的事件保持原行为。
 
 ## 取舍
 

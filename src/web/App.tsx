@@ -1012,7 +1012,7 @@ export default function App() {
           onAdd={handleAddCatalogProject}
           onDelete={setProjectDeleteCandidate}
         />
-        <main className="content">
+        <main className={`content ${workspaceView === "screenshot-compare" ? "content-screenshot-compare" : ""}`}>
         {!addingCatalogProject && <nav className="project-workspace-navigation" aria-label="当前项目工作区">
           {workspaceViews.map(view => {
             const disabledReason = workspaceDisabledReason(view, workspaceAccess);
