@@ -24,6 +24,7 @@ import {
 import { EMPTY_PROJECT_ADAPTER } from "../shared/project-adapter-defaults.js";
 import { LEGACY_COMMAND_RUNNER_ID, RUNNER_ID_PATTERN } from "../runner/sdk.js";
 import { ConsoleError } from "./errors.js";
+import { ensureConfigPageInspectionTheme } from "./page-inspection-theme.js";
 import { resolveProjectIdentity } from "./project-identity.js";
 
 let configImportNonce = 0;
@@ -648,7 +649,7 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
 
   const mainConfigTests = parsed.data.tests.slice(0, mainTests.length);
   const sidecarTests = parsed.data.tests.slice(mainTests.length);
-  return {
+  const loaded = {
     ...parsed.data,
     configPath,
     ...(parsed.data.project.id ? { configuredProjectId: parsed.data.project.id } : {}),
@@ -694,6 +695,7 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
     sidecarTests,
     testEntriesPath,
   };
+  return ensureConfigPageInspectionTheme(loaded);
 }
 
 async function loadTestEntries(entriesPath: string): Promise<z.infer<typeof testEntriesSchema>> {

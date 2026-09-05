@@ -7,6 +7,7 @@ import { z } from "zod";
 import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ApplyProjectTestEntryRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type PreviewProjectTestEntryRequest, type PreviewTestCommandsRequest, type PreviewTestCommandsResponse, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource, type TestTask } from "../shared/contracts.js";
 import { LEGACY_COMMAND_RUNNER_ID } from "../runner/sdk.js";
 import { loadProjectConfig, resolveTargetCommand, toPublicTestsFromConfig, validateParameters, type LoadedProjectConfig } from "./config.js";
+import { ensureConfigPageInspectionTheme } from "./page-inspection-theme.js";
 import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import type { TaskManager } from "./task-manager.js";
@@ -542,6 +543,7 @@ export async function createApp(baseOptions: CreateAppOptions): Promise<FastifyI
   app.get<{ Querystring: { refresh?: string } }>("/api/snapshot", async (request): Promise<ConsoleSnapshot> => {
     const discovery = await options.devices.snapshot({ refresh: request.query.refresh === "1" });
     const tasks = await projectRetryTaskStatuses(options.tasks.listVisible(), options.tasks, taskResults);
+    ensureConfigPageInspectionTheme(options.config);
     return {
       project: options.config.project,
       testing: options.config.testing ?? { environments: [], capabilities: [] },

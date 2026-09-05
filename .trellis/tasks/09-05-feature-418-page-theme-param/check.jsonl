@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/mobile-test-console-integration.md", "reason": "核对注入后的测试参数与命令 env 仍符合项目配置契约"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "核对 snapshot 与 startTasks 使用同一份 theme 参数"}

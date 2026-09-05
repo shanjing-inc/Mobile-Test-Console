@@ -227,6 +227,7 @@ describe("项目配置", () => {
     });
     expect(validateParameters(config.tests[0], { pages: "pageHome,pageOrders" })).toEqual({
       pages: "pageHome,pageOrders",
+      theme: "light",
     });
   });
 
