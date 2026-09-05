@@ -49,6 +49,8 @@ describe("截图对比配对", () => {
     expect(pairs).toHaveLength(4);
     expect(pairs.every(pair => pair.presence === "both")).toBe(true);
     expect(parseScreenshotComparisonTitle("newCustomer-pages_index.jpg")).toBe("newCustomer / pages/index");
+    expect(parseScreenshotComparisonTitle("newCustomer-dark-pages_index.jpg")).toBe("newCustomer / dark / pages/index");
+    expect(parseScreenshotComparisonTitle("shopOwner-light-pages_index.jpg")).toBe("shopOwner / light / pages/index");
     expect(screenshotComparisonKey(PAGE_MATRIX_CASE_ID, "newCustomer-pages_index.jpg")).toContain("newCustomer-pages_index.jpg");
   });
 

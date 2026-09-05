@@ -30,8 +30,11 @@ export function projectDirectoryName(root: string): string {
 
 export function parseScreenshotComparisonTitle(label: string, targetPage = ""): string {
   const stem = label.replace(/\.(jpe?g|png|webp)$/i, "");
-  const matched = stem.match(/^([A-Za-z0-9]+)-(pages_.+)$/);
-  if (matched) return `${matched[1]} / ${matched[2].replaceAll("_", "/")}`;
+  const matched = stem.match(/^([A-Za-z0-9]+)(?:-(light|dark))?-(pages_.+)$/);
+  if (matched) {
+    const route = matched[3].replaceAll("_", "/");
+    return matched[2] ? `${matched[1]} / ${matched[2]} / ${route}` : `${matched[1]} / ${route}`;
+  }
   if (targetPage && targetPage !== stem) return stem ? `${stem} · ${targetPage}` : targetPage;
   return stem || label;
 }
