@@ -1,7 +1,6 @@
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
-    id: "mobile-test-console-demo",
     name: "控制台示例项目",
     root: "..",
     integrationType: "app",

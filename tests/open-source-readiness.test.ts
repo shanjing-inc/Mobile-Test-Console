@@ -60,11 +60,11 @@ describe("开源发布契约", () => {
     for (const fixture of fixtures) {
       const config = await loadProjectConfig(fixture.configPath);
       const runtime = await loadRunnerRuntime(config);
-      expect(config.project.id).toBe(fixture.projectId);
+      expect(config.project.id).toMatch(/^[a-z][a-z0-9-]+-[a-f0-9]{8}$/u);
       expect(runtime.providers.manifests().map(item => item.providerId)).toContain(fixture.providerId);
       expect(runtime.resolver.resolve({
         runId: `${fixture.projectId}-contract`,
-        projectId: fixture.projectId,
+        projectId: config.project.id,
         testId: "lynx-smoke",
         runnerId: fixture.runnerId,
         device: {
