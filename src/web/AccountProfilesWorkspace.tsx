@@ -1,4 +1,4 @@
-import { AccountProfileBackupPanel } from "./AccountProfileBackupPanel";
+import { ProjectDataBackupPanel } from "./ProjectDataBackupPanel";
 import { AlertCircle, CheckCircle2, Copy, Eye, EyeOff, Fingerprint, KeyRound, LoaderCircle, Play, Radio, Square, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -53,8 +53,10 @@ export function AccountProfilesWorkspace({ devices, onMessage }: {
       setSelectedProfileId(current => next.profiles.some(item => item.profileId === current)
         ? current
         : next.profiles[0]?.profileId ?? "");
+      return true;
     } catch (error) {
       onMessage({ kind: "error", text: messageOf(error, "无法读取账号画像") });
+      return false;
     }
   }, [onMessage]);
 
@@ -219,7 +221,7 @@ export function AccountProfilesWorkspace({ devices, onMessage }: {
   };
 
   return <div className="account-workspace">
-    <AccountProfileBackupPanel storage={data?.storage} onChanged={load} onMessage={onMessage} />
+    <ProjectDataBackupPanel storage={data?.storage} onChanged={load} onMessage={onMessage} />
     <section className="section-panel account-recording-panel">
       <div className="section-heading">
         <div><p className="eyebrow">ACCOUNT CAPTURE</p><h2>真机账号录制</h2></div>

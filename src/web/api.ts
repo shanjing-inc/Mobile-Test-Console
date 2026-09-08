@@ -1,6 +1,7 @@
 import type {
   ConsoleSnapshot,
   AccountProfileExport,
+  ProjectDataBackup,
   ProjectConfigSelection,
   ProjectActivationResponse,
   ProjectCatalogResponse,
@@ -65,6 +66,14 @@ let apiProjectId = "";
 
 export function setApiProjectId(projectId: string): void {
   apiProjectId = projectId.trim();
+}
+
+export function exportProjectData(): Promise<ProjectDataBackup> {
+  return request<ProjectDataBackup>("/api/project-data/export", { cache: "no-store" });
+}
+
+export function importProjectData(data: unknown): Promise<{ ok: true }> {
+  return request("/api/project-data/import", { method: "POST", body: JSON.stringify(data) });
 }
 
 export function exportAccountProfiles(): Promise<AccountProfileExport> {

@@ -1473,3 +1473,56 @@ const pageState = path.join(config.stateDir, "page-parameters.json");
 // Correct: the service and command consumer use one resolved path.
 const pageState = pageParameterStatePath(config);
 ```
+
+## Scenario: Unified portable project data backup
+
+### 1. Scope / Trigger
+
+Both workspaces export/import accounts, page profiles, launch navigation, actions, assertions, and recording histories as one portable project package.
+
+### 2. Signatures
+
+- `exportProjectData(config, accounts, pages): Promise<ProjectDataBackup>` coordinates request-scoped export services.
+- `importProjectData(value, accounts, pages): Promise<void>` validates and merges portable data.
+- GET `/api/project-data/export` is no-store and attachment; POST `/api/project-data/import` shares `PROJECT_DATA_IMPORT_MAX_BYTES` (40 MiB) with the browser.
+
+### 3. Contracts
+
+- `ProjectDataBackup` uses `mobile-test-console.project-data-backup.v1`, an export timestamp, informational project name, and portable account/page states. Each section contains only schemaVersion, profiles, and recordings; nested page navigation/actions/assertions remain complete.
+- Legacy account endpoints keep their formats and 20 MiB limit. Legacy account-only JSON imports only accounts. Destination UUID, paths, notices, and migration markers remain local. Resolve both vault namespaces whenever either provider is configured.
+- Validate both sections before any store mutation. Store merges preserve concurrent writes, pre-write backups, deterministic conflict copies, and repeated-import idempotency. Page default selection is a destination preference. Imported active recordings become terminal deterministically.
+- Stores commit individually. Preserve committed account state and concurrent modifications; same-file retry completes via idempotent merge.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Either section is invalid | Sanitized `PROJECT_DATA_BACKUP_INVALID`/400 before any mutation |
+| Import exceeds 40 MiB | 413, matching the browser limit |
+| Account stage fails | Page stage stays uncalled |
+| Page stage fails after account completion | `PROJECT_DATA_IMPORT_PARTIAL`/500 with safe retry guidance |
+| Import and refresh succeed | `{ ok: true }` and refreshed workspace |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a page-only project imports both namespaces and later enables the account provider with the same vault path.
+- Base: importing an unchanged file twice retains every record and the current default selection.
+- Bad: restoring stale snapshots across stores after a partial failure overwrites concurrent edits.
+
+### 6. Tests Required
+
+Cover full navigation/value/action/assertion round trip, legacy account compatibility, invalid second section before writes, defaults/conflicts/active recordings/repeated import, second-store failure/retry, selected-project routing, destination identity/provider enablement, and shared request size limit.
+
+### 7. Wrong vs Correct
+
+```ts
+// 错误：校验第二段之前已经写入账号。
+await accounts.importData(value.accountProfiles);
+parsePageParameterState(value.pageParameters);
+```
+
+```ts
+// 正确：整包校验完成后进入两阶段合并。
+const incoming = parseImport(value);
+await accounts.importData(incoming.accountProfiles);
+```

@@ -4,7 +4,7 @@ MTC stores account profiles under `~/.mobile-test-console/account-profiles/<stor
 
 ## Persistent project identity
 
-When a project config enables `accountProfiles`, MTC creates `mobile-test.identity.json` beside the config on first load. Commit this non-secret file with the project's test configuration. Moving or cloning a checkout with this file keeps the profile association on the same computer. Worktrees sharing this identity also share profiles; their runtime project IDs and test-result directories remain isolated by checkout path.
+When a project config enables `accountProfiles` or `pageParameters`, MTC creates `mobile-test.identity.json` beside the config on first load. Commit this non-secret file with the project's test configuration. Moving or cloning a checkout with this file keeps the profile association on the same computer. Worktrees sharing this identity also share profiles; their runtime project IDs and test-result directories remain isolated by checkout path.
 
 A project may instead declare an explicit UUID in `project.storageId`:
 
@@ -34,8 +34,8 @@ For other historical locations, select their `account-profiles.json` through **�
 - Profile mutations use a cross-process lock, exclusive temporary files, flush-to-disk and atomic replacement. Files use mode `0600`; new private directories use `0700`. Windows access control follows the user directory's ACLs.
 - Missing or corrupt main files recover from the newest valid backup when available. Corrupt bytes are retained, and a persistent warning asks the user to verify recent changes. An unsupported future schema version fails without automatic replacement.
 - Without a valid backup, corrupt state blocks normal writes and preserves the file. Explicit import can recover it and backs up the original bytes first.
-- **合并恢复** merges a selected backup into current state. It restores missing profiles and preserves conflicting current versions. Current state is backed up before the merge.
-- **导出画像** downloads profiles and recording history. Export contains login credentials; normal list and backup metadata APIs return summaries. Import accepts at most 20 MiB per request. Internal migration paths and notices are excluded from exported files.
+- **合并恢复账号备份** merges a selected backup into current state. It restores missing profiles and preserves conflicting current versions. Current state is backed up before the merge.
+- **导出项目数据** downloads accounts, page profiles including launch navigation, and both recording histories in one [project data backup](project-data-backup.md). The shared importer accepts up to 40 MiB and also accepts old account-only files. Account-only API endpoints retain their original format and 20 MiB import limit. Exports contain login credentials; normal account list and backup metadata APIs return summaries. Internal migration paths and notices are excluded.
 
 Automatic backups share the same disk as the main vault. Keep periodic exports in a separately protected backup location for device replacement and disk-loss recovery. Project artifact cleanup and catalog removal preserve the vault.
 

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TaskResult, TaskStatus, TestTask } from "../src/shared/contracts.js";
+import { PROJECT_DATA_IMPORT_MAX_BYTES, type TaskResult, type TaskStatus, type TestTask } from "../src/shared/contracts.js";
 import { createApp, expandPageSelectionParameters, previewTestCommands } from "../src/server/app.js";
 import type { CommandRunner } from "../src/server/command-runner.js";
 import { loadProjectConfig, type LoadedProjectConfig } from "../src/server/config.js";
@@ -10,6 +10,10 @@ import { DeviceDiscoveryService } from "../src/server/devices.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
 import { TaskResultService } from "../src/server/task-results.js";
+import { AccountProfileStore } from "../src/server/account-profile-store.js";
+import { AccountProfileService } from "../src/server/account-profiles.js";
+import { PageParameterStore } from "../src/server/page-parameter-store.js";
+import { PageParameterService } from "../src/server/page-parameters.js";
 import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 import { ProjectCatalogService, ProjectCatalogStore } from "../src/server/project-catalog.js";
 import { DirectoryPicker } from "../src/server/directory-picker.js";
@@ -680,8 +684,8 @@ describe("HTTP API", () => {
       tasks,
       devices,
       taskResults: new TaskResultService(config, tasks),
-      pageParameters: {} as ProjectRuntime["pageParameters"],
-      accountProfiles: {} as ProjectRuntime["accountProfiles"],
+      pageParameters: new PageParameterService(config, new PageParameterStore(config.stateDir)),
+      accountProfiles: new AccountProfileService(config, new AccountProfileStore(config.stateDir)),
       businessScripts: {} as ProjectRuntime["businessScripts"],
       resultBundles: {} as ProjectRuntime["resultBundles"],
       artifacts: {} as ProjectRuntime["artifacts"],
@@ -710,6 +714,49 @@ describe("HTTP API", () => {
       expect(headerResponse.json().project).toMatchObject({ id: "project-a", name: "Project A" });
       expect(resolve).toHaveBeenCalledWith("project-b");
       expect(resolve).toHaveBeenCalledWith("project-a");
+      const accountPayload = {
+        schemaVersion: "mobile-test-console.account-profile-state.v1", profiles: [], recordings: [],
+      };
+      const pageProfile = {
+        pageId: "detail", profileId: "saved", scenario: "detail", platform: "all", environment: "qa", accountLabel: "QA",
+        values: { item: { strategy: "literal", value: "test-item" } },
+        navigation: { route: "demo://open", params: { bundle: "detail", entry: "saved-source" } },
+        actions: [{ type: "tap", target: "open" }], assertions: [{ type: "visible", target: "result" }],
+        source: "manual", recordedAt: "2026-09-08T00:00:00Z", validatedAt: "", expiresAt: "", version: 1,
+      };
+      const payload = {
+        schemaVersion: "mobile-test-console.project-data-backup.v1", exportedAt: "2026-09-08T00:00:00Z",
+        project: { name: "Source project" }, accountProfiles: accountPayload,
+        pageParameters: { schemaVersion: "mobile-test-console.page-parameter-state.v1", profiles: [pageProfile], recordings: [],
+          migratedPaths: ["/private/source"], notices: ["source-notice"] },
+      };
+      const headers = { "x-mtc-project-id": "project-b" };
+      const imported = await app.inject({ method: "POST", url: "/api/project-data/import", headers, payload });
+      expect(imported.statusCode).toBe(200);
+      const exported = await app.inject({ method: "GET", url: "/api/project-data/export", headers });
+      expect(exported.headers["cache-control"]).toBe("no-store");
+      expect(exported.headers["content-disposition"]).toContain("project-data-backup.json");
+      expect(exported.json()).toMatchObject({ project: { name: "Project B" }, accountProfiles: accountPayload,
+        pageParameters: { profiles: [pageProfile], recordings: [] } });
+      expect(exported.json().pageParameters).not.toHaveProperty("migratedPaths");
+      expect(exported.body).not.toContain("source-notice");
+      const first = await app.inject({ method: "GET", url: "/api/project-data/export?projectId=project-a" });
+      expect(first.json()).toMatchObject({ project: { name: "Project A" }, pageParameters: { profiles: [] } });
+      expect((await app.inject({ method: "POST", url: "/api/project-data/import", headers, payload: exported.json() })).statusCode).toBe(200);
+      expect((await app.inject({ method: "POST", url: "/api/project-data/import", headers, payload: accountPayload })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/project-data/export", headers })).json().pageParameters)
+        .toEqual(exported.json().pageParameters);
+      const invalid = await app.inject({ method: "POST", url: "/api/project-data/import", headers,
+        payload: { ...payload, pageParameters: { ...payload.pageParameters, profiles: [{ secret: "never-in-error" }] } } });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.body).not.toContain("never-in-error");
+      const malformed = await app.inject({ method: "POST", url: "/api/project-data/import",
+        headers: { ...headers, "content-type": "application/json" }, payload: '{"secret":"never-in-error"' });
+      expect(malformed.statusCode).toBe(400);
+      expect(malformed.body).not.toContain("never-in-error");
+      const oversized = await app.inject({ method: "POST", url: "/api/project-data/import",
+        headers: { ...headers, "content-type": "application/json" }, payload: JSON.stringify("x".repeat(PROJECT_DATA_IMPORT_MAX_BYTES)) });
+      expect(oversized.statusCode).toBe(413);
     } finally {
       await Promise.all([firstTasks.shutdown(), secondTasks.shutdown()]);
       await app.close();

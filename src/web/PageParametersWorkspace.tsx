@@ -1,3 +1,4 @@
+import { ProjectDataBackupPanel } from "./ProjectDataBackupPanel";
 import { AlertCircle, Braces, CircleDot, Database, History, LoaderCircle, Play, Plus, Radio, Save, Search, Square, Star, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -114,8 +115,10 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
       setSelectedPageId(previous => previous || next.pages[0]?.pageId || "");
       const active = next.recordings.find(item => ["starting", "recording"].includes(item.status));
       if (active) setActiveRecording(active);
+      return true;
     } catch (error) {
       onMessage({ kind: "error", text: messageOf(error, "无法读取页面参数目录") });
+      return false;
     }
   }, [onMessage]);
 
@@ -735,6 +738,7 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
   const activeTestProfileId = testProfileChoice === CURRENT_TEST_PROFILE ? profileId : testProfileChoice;
 
   return <div className="parameter-workspace">
+    <ProjectDataBackupPanel onChanged={load} onMessage={onMessage} />
     <section className="section-panel parameter-catalog">
       <div className="section-heading"><div><p className="eyebrow">PAGE CATALOG</p><h2>页面列表</h2></div><span className="count-label">{data?.pages.length ?? 0} 页</span></div>
       <div className="parameter-catalog-tools">

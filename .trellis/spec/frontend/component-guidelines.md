@@ -311,3 +311,10 @@ Using only `min-height: calc(100vh - <topbar>)` on `.app-body` allows long conte
 Page/observation draft keys use the existing observation page-ID/bundle normalization. Returning to a page restores the explicitly selected compatible profile. A navigation-only observation is still a captured draft even when its values map is empty. Current save/replay materializes navigation from the selected draft before catalog or adapter defaults.
 
 Required regressions: historical selection followed by a field edit, non-default history across page restoration, observation/navigation-only drafts, catalog fallback, independent cloned parameter objects, and supplementing values without changing the selected navigation.
+
+
+### Shared project data backup controls
+
+Both account and page workspaces render `ProjectDataBackupPanel`. The shared panel owns combined export, explicit file selection/merge confirmation, credential handling notice, and `PROJECT_DATA_IMPORT_MAX_BYTES` (40 MiB). Old account-only files remain accepted. Account storage metadata optionally adds clearly labeled account-only automatic backup recovery controls.
+
+After a successful import, refresh the workspace before reporting success; a refresh failure identifies the completed import and requests a page refresh. Partial import errors retain the selected file, refresh any committed data, and preserve the original error for retry. API helpers continue using the selected project's request header. Cover both workspaces' shared entry, old-file compatibility, project routing, and export cache settings.

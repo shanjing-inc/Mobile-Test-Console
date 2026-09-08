@@ -27,3 +27,7 @@ The user reported that page parameter profiles and page launch parameters are al
 - Keep the selected historical profile's launch navigation across editing, saving, replay, draft restoration, and page changes. An API update omitting navigation preserves the previous profile navigation.
 - All Provider/Runner/lifecycle command paths and repair snapshots must use the same page state as the service.
 - Restore and verify the affected local profiles with structural equality checks and counts only; keep parameter/credential values out of diagnostics.
+
+## Unified project data backup
+
+The user approved one export/import package containing account profiles, page parameter profiles (including launch navigation/actions/assertions), and both recording histories. The existing account-only JSON files remain importable. Export/import is available from both account and page workspaces and uses the selected project. Imports preserve existing data, deterministic conflict copies, and repeated-import idempotency. Imported active recordings become terminal. Validate the complete package before mutation, preserve pre-write backups, and surface partial I/O failure accurately so a retry can finish safely. Credentials appear only in explicit export/file operations. Local paths, migration notices, and source project identity never override the destination.

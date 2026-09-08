@@ -57,7 +57,7 @@ it("仅启用页面功能的配置先迁移完整启动参数，所有命令使�
     tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { android: command, default: command } }],
   })};`);
   const config = await loadProjectConfig(configPath);
-  expect(config.accountProfileStorage).toBeUndefined();
+  expect(config.accountProfileStorage?.id).toBe(config.pageParameterStorage?.id);
   expect(config.pageParameterStorage).toBeDefined();
   const statePath = pageParameterStatePath(config);
   expect(JSON.parse(await fs.readFile(statePath, "utf8")).profiles).toEqual([profile]);
@@ -79,7 +79,10 @@ it("仅启用页面功能的配置先迁移完整启动参数，所有命令使�
   ]) expect(resolved?.args.slice(0, 2)).toEqual(["--pages", statePath]);
   const moved = path.join(root, "moved-project");
   await fs.rename(project, moved);
-  const reloaded = await loadProjectConfig(path.join(moved, "mobile-test.config.cjs"));
+  const movedConfigPath = path.join(moved, "mobile-test.config.cjs");
+  await fs.appendFile(movedConfigPath, `\nmodule.exports.accountProfiles = { provider: ${JSON.stringify(command)} };`);
+  const reloaded = await loadProjectConfig(movedConfigPath);
+  expect(reloaded.accountProfileStorage?.directory).toBe(config.accountProfileStorage?.directory);
   expect(reloaded.project.id).not.toBe(config.project.id);
   expect(pageParameterStatePath(reloaded)).toBe(statePath);
   expect(JSON.parse(await fs.readFile(statePath, "utf8")).profiles).toEqual([profile]);

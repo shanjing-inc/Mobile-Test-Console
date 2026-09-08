@@ -53,6 +53,10 @@ export class PageParameterService {
     return Boolean(this.config.pageParameters);
   }
 
+  async exportData() { return this.store.exportData(); }
+
+  async importData(value: unknown): Promise<void> { await this.store.importData(value); }
+
   async snapshot(): Promise<PageParametersResponse> {
     const state = await this.store.load();
     const catalog = await this.callProvider<CatalogPayload>("catalog");

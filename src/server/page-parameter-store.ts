@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import lockfile from "proper-lockfile";
-import type { PageParameterProfile, PageParameterRecording } from "../shared/contracts.js";
+import type { PageParameterExport, PageParameterProfile, PageParameterRecording } from "../shared/contracts.js";
 import { parsePageParameterState } from "./page-parameter-state-schema.js";
 import { ConsoleError } from "./errors.js";
 
@@ -38,6 +38,16 @@ export class PageParameterStore {
 
   async load(): Promise<StoredPageParameters> {
     return this.locked(() => this.loadUnlocked());
+  }
+
+  async exportData(): Promise<PageParameterExport> {
+    const { schemaVersion, profiles, recordings } = await this.load();
+    return { schemaVersion, profiles, recordings };
+  }
+
+  async importData(value: unknown): Promise<void> {
+    const incoming = parsePageParameterState(value);
+    await this.update(current => { mergeStates(current, incoming, true); });
   }
 
   private decode(content: string): StoredPageParameters {
@@ -171,18 +181,17 @@ export class PageParameterStore {
   }
 }
 
-function mergeStates(target: StoredPageParameters, source: StoredPageParameters): void {
+function mergeStates(target: StoredPageParameters, source: StoredPageParameters, imported = false): void {
   for (const original of source.profiles) {
     const profile = structuredClone(original);
     const existing = target.profiles.find(item => item.pageId === profile.pageId && item.profileId === profile.profileId);
-    if (existing && isDeepStrictEqual(existing, profile)) continue;
+    if (existing && sameProfile(existing, profile)) continue;
     if (profile.isDefault && target.profiles.some(item => item.pageId === profile.pageId && item.isDefault)) profile.isDefault = false;
-    if (existing && isDeepStrictEqual(existing, profile)) continue;
     if (existing) {
-      const candidateId = `${original.profileId}-migrated-${digest(original)}`;
+      const candidateId = `${original.profileId}-${imported ? "import" : "migrated"}-${digest({ ...original, isDefault: false })}`;
       profile.profileId = candidateId;
       let suffix = 1;
-      while (target.profiles.some(item => item.pageId === profile.pageId && item.profileId === profile.profileId && !isDeepStrictEqual(item, profile))) {
+      while (target.profiles.some(item => item.pageId === profile.pageId && item.profileId === profile.profileId && !sameProfile(item, profile))) {
         profile.profileId = `${candidateId}-${suffix++}`;
       }
     }
@@ -190,9 +199,14 @@ function mergeStates(target: StoredPageParameters, source: StoredPageParameters)
   }
   for (const original of source.recordings) {
     const recording = structuredClone(original);
+    if (imported && (recording.status === "starting" || recording.status === "recording")) {
+      recording.status = "failed";
+      recording.error = "导入的录制会话已结束，请重新启动录制";
+      recording.stoppedAt = recording.startedAt;
+    }
     const existing = target.recordings.find(item => item.recordingId === recording.recordingId);
     if (existing && !isDeepStrictEqual(existing, recording)) {
-      const candidateId = `${original.recordingId}-migrated-${digest(original)}`;
+      const candidateId = `${original.recordingId}-${imported ? "import" : "migrated"}-${digest(recording)}`;
       recording.recordingId = candidateId;
       let suffix = 1;
       while (target.recordings.some(item => item.recordingId === recording.recordingId && !isDeepStrictEqual(item, recording))) {
@@ -201,6 +215,11 @@ function mergeStates(target: StoredPageParameters, source: StoredPageParameters)
     }
     if (!target.recordings.some(item => item.recordingId === recording.recordingId)) target.recordings.push(recording);
   }
+}
+
+function sameProfile(left: PageParameterProfile, right: PageParameterProfile): boolean {
+  // 默认选择属于目标项目偏好；相同内容保留当前选择，避免产生重复副本。
+  return isDeepStrictEqual({ ...left, isDefault: false }, { ...right, isDefault: false });
 }
 
 function digest(value: unknown): string {

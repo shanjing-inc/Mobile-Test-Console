@@ -14,7 +14,7 @@ Every changed write first backs up the previous complete bytes under `page-param
 
 Missing or corrupt main state recovers from the newest valid backup with a visible warning, retaining corrupt source bytes. Unsupported future state blocks automatic replacement. Permission and disk I/O errors propagate so that unreadable data cannot become an empty store. Corrupt legacy files stop migration and remain available for repair.
 
-The original source and automatic backups remain on the same machine. Include the page vault in the user's protected off-device backup strategy for disk-loss recovery.
+The original source and automatic backups remain on the same machine. Use **项目数据备份** in either the page or account workspace to export page profiles, launch navigation, actions, assertions, both recording histories, and accounts together. Keep this [portable backup](project-data-backup.md) in protected off-device storage. Import merges into the selected project and preserves conflicting current versions.
 
 ## Startup and replay
 

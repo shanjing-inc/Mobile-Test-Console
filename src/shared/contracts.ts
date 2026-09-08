@@ -1341,6 +1341,22 @@ export interface AccountProfileExport {
   recordings: AccountProfileRecording[];
 }
 
+export interface PageParameterExport {
+  schemaVersion: "mobile-test-console.page-parameter-state.v1";
+  profiles: PageParameterProfile[];
+  recordings: PageParameterRecording[];
+}
+
+export const PROJECT_DATA_IMPORT_MAX_BYTES = 40 * 1024 * 1024;
+
+export interface ProjectDataBackup {
+  schemaVersion: "mobile-test-console.project-data-backup.v1";
+  exportedAt: string;
+  project: { name: string };
+  accountProfiles: AccountProfileExport;
+  pageParameters: PageParameterExport;
+}
+
 export interface AccountProfilesResponse {
   storage?: AccountProfileStorageInfo;
   schemaVersion: "mobile-test-console.account-profiles.v1";

@@ -4,7 +4,7 @@ import path from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ApplyProjectTestEntryRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type PreviewProjectTestEntryRequest, type PreviewTestCommandsRequest, type PreviewTestCommandsResponse, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource, type TestTask } from "../shared/contracts.js";
+import { ACTIVE_TASK_STATUSES, ARTIFACT_RUN_ID_PATTERN, PAGE_PARAMETER_PLATFORMS, PLATFORMS, PROJECT_DATA_IMPORT_MAX_BYTES, TERMINAL_TASK_STATUSES, type AccountProfileProvider, type ApplyProjectInitializationRequest, type ApplyProjectSetupRequest, type ApplyProjectTestEntryRequest, type ArtifactCleanupApplyRequest, type BusinessSuite, type ConsoleSnapshot, type Device, type PreviewProjectInitializationRequest, type PreviewProjectTestEntryRequest, type PreviewTestCommandsRequest, type PreviewTestCommandsResponse, type ProjectProviderManifestSummary, type RegisterProjectRequest, type RetryTaskRequest, type SaveBusinessScriptDraftRequest, type SavePageParameterProfileRequest, type StartAccountProfileRecordingRequest, type StartBusinessScriptRecordingRequest, type StartPageParameterRecordingRequest, type StartTasksRequest, type RunTarget, type TaskRetrySource, type TestTask } from "../shared/contracts.js";
 import { LEGACY_COMMAND_RUNNER_ID } from "../runner/sdk.js";
 import { loadProjectConfig, resolveTargetCommand, toPublicTestsFromConfig, validateParameters, type LoadedProjectConfig } from "./config.js";
 import { ensureConfigPageInspectionTheme } from "./page-inspection-theme.js";
@@ -12,6 +12,7 @@ import type { DeviceDiscoveryService } from "./devices.js";
 import { ConsoleError } from "./errors.js";
 import type { TaskManager } from "./task-manager.js";
 import { TaskResultService } from "./task-results.js";
+import { exportProjectData, importProjectData } from "./project-data-backup.js";
 import { PageParameterStore } from "./page-parameter-store.js";
 import { PageParameterService } from "./page-parameters.js";
 import { AccountProfileStore } from "./account-profile-store.js";
@@ -678,6 +679,27 @@ export async function createApp(baseOptions: CreateAppOptions): Promise<FastifyI
 
   app.delete<{ Params: { pageId: string; profileId: string } }>("/api/page-parameters/:pageId/profiles/:profileId", async request => {
     await pageParameters.deleteProfile(request.params.pageId, request.params.profileId);
+    return { ok: true };
+  });
+
+  app.get("/api/project-data/export", async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    reply.header("Content-Disposition", 'attachment; filename="project-data-backup.json"');
+    return exportProjectData(options.config, accountProfiles, pageParameters);
+  });
+
+  app.post("/api/project-data/import", {
+    bodyLimit: PROJECT_DATA_IMPORT_MAX_BYTES,
+    errorHandler(error, _request, reply) {
+      const known = error instanceof ConsoleError;
+      const status = known ? error.statusCode : error.statusCode === 413 ? 413 : error.statusCode === 400 ? 400 : 500;
+      reply.code(status).send({ error: {
+        code: known ? error.code : "PROJECT_DATA_IMPORT_FAILED",
+        message: known ? error.message : status === 413 ? "项目备份文件应小于 40 MiB" : "项目数据导入失败，请检查文件格式和存储状态",
+      } });
+    },
+  }, async request => {
+    await importProjectData(request.body, accountProfiles, pageParameters);
     return { ok: true };
   });
 

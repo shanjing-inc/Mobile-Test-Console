@@ -656,10 +656,11 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
 
   const mainConfigTests = parsed.data.tests.slice(0, mainTests.length);
   const sidecarTests = parsed.data.tests.slice(mainTests.length);
-  const accountProfileStorage = parsed.data.accountProfiles
+  const hasProfileStorage = Boolean(parsed.data.accountProfiles || parsed.data.pageParameters);
+  const accountProfileStorage = hasProfileStorage
     ? await resolveAccountProfileStorage({ configPath, storageId: parsed.data.project.storageId, stateDir, configuredProjectId: parsed.data.project.id })
     : undefined;
-  const pageParameterStorage = parsed.data.pageParameters
+  const pageParameterStorage = hasProfileStorage
     ? await resolvePageParameterStorage({ configPath, storageId: parsed.data.project.storageId, stateDir, configuredProjectId: parsed.data.project.id })
     : undefined;
   if (pageParameterStorage) {
