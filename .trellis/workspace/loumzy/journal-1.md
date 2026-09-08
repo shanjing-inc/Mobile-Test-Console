@@ -732,3 +732,25 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 24: 审核并提交账号画像持久存储
+<!-- trellis-session: v=2 fp=2baa4d246af06526 -->
+
+**Date**: 2026-09-08
+**Task**: 审核并提交账号画像持久存储
+**Branch**: `main`
+
+### Summary
+
+审核账号画像持久化与备份迁移改动，修复导入扩展字段泄露到公共摘要、备份 EACCES/EIO 被误判为空库、历史录制补齐后重复导入不幂等三项问题，并补充回归测试及规范。最终测试 449 通过、14 失败；隔离 HEAD 复现相同 14 个失败及 3 项类型诊断。lint、Schema、各打包步骤和包检查通过；开源扫描仍有未改动文件的既有路径问题。功能提交 315f2be；全量门禁处置待完成，保留原任务状态。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `315f2be` | feat(mtc): 持久化账号画像并支持备份迁移恢复 |
+
+### Status
+
+[OK] **Completed**
