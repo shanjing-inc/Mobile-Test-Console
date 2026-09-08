@@ -1,3 +1,4 @@
+import { pageParameterStatePath } from "./page-parameter-storage.js";
 import { accountProfileStatePath } from "./account-profile-storage.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import fsSync from "node:fs";
@@ -550,7 +551,7 @@ export class RepairJobManager {
     const directory = path.join(this.config.stateDir, "repair-snapshots", job.repairJobId);
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     for (const fileName of ["page-parameters.json", "account-profiles.json"]) {
-      const source = fileName === "account-profiles.json" ? accountProfileStatePath(this.config) : path.join(this.config.stateDir, fileName);
+      const source = fileName === "account-profiles.json" ? accountProfileStatePath(this.config) : pageParameterStatePath(this.config);
       const target = path.join(directory, fileName);
       try {
         await fs.copyFile(source, target);

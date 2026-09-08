@@ -674,7 +674,7 @@ GET /api/tasks/:taskId/artifacts/:artifactId
 ### 3. Contracts
 
 - `loadProjectConfig()` resolves `project.root` through `realpath` and generates `<directory-slug>-<sha1-prefix>` from that canonical absolute path.
-- `project.id` in `mobile-test.config.cjs` is an optional compatibility input. Runtime config, default task state directory, catalog entries, tasks, Runner plans, and new Result Bundles use the generated identity. Account profile vaults use a separate persistent UUID.
+- `project.id` in `mobile-test.config.cjs` is an optional compatibility input. Runtime config, default task state directory, catalog entries, tasks, Runner plans, and new Result Bundles use the generated identity. Account and page profile vaults use a separate persistent UUID.
 - Catalog startup migrates legacy keys and `activeProjectId` by stored project root while preserving project metadata. Historical tasks retain their persisted `projectId` and `workspaceRoot`.
 - A Runner screenshot event carries the current `runId` and MTC-injected project ID. Its URI is project-relative and contains no host absolute path.
 - MTC accepts JPEG, PNG, and WebP live screenshots up to 20 MiB. The URI extension, declared MIME type, on-disk file type, and binary signature must agree when the event is accepted and when the attachment is read.
@@ -1408,4 +1408,68 @@ return {
   accountUidMasked: maskIdentifier(entry.accountUid),
   captureSummaries: entry.captures.map(toCaptureSummary),
 };
+```
+
+
+## Scenario: Durable page profiles and launch parameters
+
+### 1. Scope / Trigger
+
+Page parameter profiles vanish when runtime project identity changes, and historical launch navigation must survive edits. Persistent page data includes parameter values, navigation, actions, assertions, and recordings.
+
+### 2. Signatures
+
+```ts
+resolveProjectDataStorage(input: ProjectDataStorageInput, namespace: "account-profiles" | "page-parameters"): Promise<ProjectDataStorage>;
+pageParameterStatePath(config: LoadedProjectConfig): string;
+new PageParameterStore(directory: string, legacyDirectories?: string[]);
+PageParameterStore.update<T>(mutator: (state: StoredPageParameters) => T | Promise<T>): Promise<T>;
+```
+
+### 3. Contracts
+
+- The shared identity resolver preserves the existing sidecar format, local index, and account storage namespace. Page-only configurations also resolve a persistent UUID. `LoadedProjectConfig.pageParameterStorage` selects `~/.mobile-test-console/page-parameters/<uuid>/`.
+- `loadProjectConfig()` completes page migration before command consumers run. Service constructors, direct replay `--profiles`, Provider/Runner/lifecycle/result templates, and repair source snapshots use `pageParameterStatePath()`. Legacy in-memory configs may omit storage metadata and use their explicit runtime directory.
+- Migration retains source bytes, uses `(pageId, profileId)` as the profile key, preserves full launch/parameter objects, and records consumed paths atomically. Default selection normalization precedes final equality/conflict comparison; identical legacy profiles from multiple directories retain one copy.
+- Page state uses `page-parameter-backups/`, avoiding account backup collisions in legacy runtime directories. Changed writes back up previous bytes, flush exclusive temporary files, and atomically replace state under a process-shared lock.
+- Service mutations use locked updates. Provider calls run outside the lock; delayed results merge observations into current state while preserving terminal recording status and concurrent profile changes.
+- Updating a profile resolves navigation in order: explicit request, previous stored navigation, catalog navigation, adapter default. Explicit navigation remains replaceable.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Current runtime file is absent and a valid configured-ID legacy file exists | Migrate profiles and recordings before returning loaded config |
+| Same profile ID occurs on two different pages | Preserve both composite identities |
+| Two legacy sources contain the same default profile while current data has a different default | Preserve one demoted legacy copy and the current default |
+| Legacy file is corrupt/unreadable | Stop migration; preserve original sources and current main file |
+| Main state is corrupt or missing and a valid backup exists | Restore with a notice; preserve corrupt bytes |
+| Main state has a future schema, or read fails with EACCES/EIO | Surface failure and preserve existing files |
+| Delayed start/refresh returns after a stop or concurrent profile deletion | Keep the terminal status and deletion, merge captured observations |
+| Existing profile update omits navigation | Retain the stored route and every launch parameter |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a moved checkout reads the same page vault and passes its path to a replay Provider.
+- Base: repeated migration preserves user deletions and keeps identical source copies deduplicated.
+- Bad: rebuilding a page-state path from runtime identity or saving a stale full state after awaiting a Provider.
+
+### 6. Tests Required
+
+- Test page-only config migration and project moves, namespace separation from accounts, and every command path family.
+- Assert complete profile/recording equality through migration, source-byte preservation, private backups, conflicting defaults, deletion/restart, failed publication, schema rejection, corruption recovery, and EACCES/EIO propagation.
+- Exercise independent-process updates and delayed Provider responses interleaved with stop/delete operations.
+- Make an HTTP replay fixture actually read the `--profiles` file and verify navigation/values after an API update omits navigation.
+- Assert repair snapshots copy persistent page bytes with private permissions while an obsolete runtime file exists.
+
+### 7. Wrong vs Correct
+
+```ts
+// Wrong: checkout identity decides which page profiles a command can see.
+const pageState = path.join(config.stateDir, "page-parameters.json");
+```
+
+```ts
+// Correct: the service and command consumer use one resolved path.
+const pageState = pageParameterStatePath(config);
 ```

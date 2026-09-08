@@ -304,6 +304,92 @@ describe("页面参数值来源", () => {
     expect(draft.values).toEqual({ q: { strategy: "literal", value: "history" } });
     expect(draft.origins).toEqual({ q: "history" });
   });
+
+  it("历史画像的启动路由和参数随草稿保留，编辑草稿拥有独立副本", () => {
+    const history = {
+      ...profile({ q: { strategy: "literal", value: "history" } }),
+      navigation: { route: "demo://launch", params: { bundle: "login.bundle", entry: "special", empty: "" } },
+    };
+    const draft = replaceDraftFromProfile(history);
+
+    expect(draft.navigation).toEqual(history.navigation);
+    expect(draft.profileId).toBe(history.profileId);
+    draft.navigation!.params.entry = "edited";
+    expect(history.navigation.params.entry).toBe("special");
+  });
+
+  it("默认历史回填与返回页面恢复保留已选画像的启动参数", () => {
+    const defaultProfile = {
+      ...profile({ q: { strategy: "literal", value: "default" } }),
+      profileId: "default",
+      isDefault: true,
+      navigation: { route: "demo://default", params: { entry: "default" } },
+    };
+    const selectedProfile = {
+      ...profile({ q: { strategy: "literal", value: "selected" } }),
+      navigation: { route: "demo://selected", params: { entry: "selected" } },
+    };
+    const catalog = { ...page, profiles: [defaultProfile, selectedProfile] };
+    const initial = resolveInitialPageParameterDraft(catalog);
+    expect(initial.draft.navigation).toEqual(defaultProfile.navigation);
+
+    const selectedDraft = replaceDraftFromProfile(selectedProfile);
+    const restored = resolveInitialPageParameterDraft(catalog, selectedDraft, "ios", "qa");
+    expect(restored.profile?.profileId).toBe(selectedProfile.profileId);
+    expect(restored.draft.navigation).toEqual(selectedProfile.navigation);
+
+    const edited = {
+      ...selectedDraft,
+      values: { q: { strategy: "literal" as const, value: "edited" } },
+      origins: { q: "manual" as const },
+    };
+    const restoredEdited = resolveInitialPageParameterDraft(catalog, edited, "ios", "qa");
+    expect(restoredEdited.draft).toBe(edited);
+    expect(restoredEdited.draft.navigation).toEqual(selectedProfile.navigation);
+    expect(resolveInitialPageParameterDraft(page).draft.navigation).toBeUndefined();
+  });
+
+  it("观察记录的启动参数优先于目录默认值，补充历史参数保留当前导航", () => {
+    const catalog = { ...page, navigation: { route: "demo://catalog", params: { entry: "catalog" } } };
+    const captured = {
+      ...observation({ q: "captured" }),
+      navigation: { route: "demo://captured", params: { entry: "recorded", empty: "" } },
+    };
+    const draft = createObservationParameterDraft(catalog, captured);
+    expect(draft.navigation).toEqual(captured.navigation);
+    const supplemented = supplementDraftFromProfile(draft, {
+      ...profile({ extra: { strategy: "literal", value: "history" } }),
+      navigation: { route: "demo://history", params: {} },
+    });
+    expect(supplemented.navigation).toEqual(captured.navigation);
+    draft.navigation!.params.entry = "edited";
+    expect(captured.navigation.params.entry).toBe("recorded");
+
+    expect(createObservationParameterDraft(catalog, observation({})).navigation).toEqual(catalog.navigation);
+    const catalogDraft = createPageParameterDraft(catalog);
+    expect(catalogDraft.navigation).toEqual(catalog.navigation);
+    catalogDraft.navigation!.params.entry = "edited";
+    expect(catalog.navigation.params.entry).toBe("catalog");
+  });
+
+  it("仅含启动导航的观察记录在测试时保留当前捕获来源", () => {
+    const captured = {
+      ...observation({}),
+      navigation: { route: "demo://captured", params: { entry: "recorded" } },
+    };
+    const draft = createObservationParameterDraft(page, captured);
+    const catalog = {
+      ...page,
+      profiles: [{
+        ...profile({ q: { strategy: "literal", value: "history" } }),
+        navigation: { route: "demo://history", params: {} },
+      }],
+    };
+    expect(shouldUseHistoricalPageParameterProfile(draft)).toBe(false);
+    const resolved = resolveInitialPageParameterDraft(catalog, draft);
+    expect(resolved.profile).toBeUndefined();
+    expect(resolved.draft.navigation).toEqual(captured.navigation);
+  });
 });
 
 function observation(values: Record<string, string>): PageParameterObservation {

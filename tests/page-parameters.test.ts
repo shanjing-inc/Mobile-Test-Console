@@ -324,6 +324,55 @@ describe("页面参数 API", () => {
     }
   });
 
+  it("修改已迁移画像时保留启动导航，回放 Provider 实际读取持久参数文件", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-page-navigation-"));
+    tempDirs.push(dir);
+    const durable = path.join(dir, "durable");
+    await fs.mkdir(durable);
+    const providerPath = path.join(dir, "provider.cjs");
+    await fs.writeFile(providerPath, `
+      const fs = require("node:fs");
+      const action = process.argv[2];
+      const schemaVersion = "mobile-test-console.page-parameter-provider.v1";
+      if (action === "catalog") console.log(JSON.stringify({ schemaVersion, pages: [{
+        pageId: "detail", label: "Detail", bundle: "detail", source: "manifest", fields: [], warnings: [],
+        navigation: { route: "demo://catalog", params: { bundle: "detail" } },
+      }] }));
+      else if (action === "replay") {
+        const filePath = process.argv[process.argv.indexOf("--profiles") + 1];
+        const profileId = process.argv[process.argv.indexOf("--profile-id") + 1];
+        const saved = JSON.parse(fs.readFileSync(filePath, "utf8")).profiles.find(item => item.profileId === profileId);
+        console.log(JSON.stringify({ schemaVersion, status: saved ? "passed" : "failed", output: JSON.stringify({ filePath, navigation: saved?.navigation, values: saved?.values }) }));
+      } else process.exit(2);
+    `);
+    const config = createConfig(dir, providerPath);
+    config.pageParameterStorage = { id: "test-storage", directory: durable, legacyDirectories: [] };
+    const runner: CommandRunner = { async capture() { return { code: 0, stdout: "device-1 device model:Pixel_8\n", stderr: "" }; } };
+    const devices = new DeviceDiscoveryService(runner, ["android"]);
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const app = await createApp({ config, devices, tasks });
+    try {
+      const navigation = { route: "demo://historical", params: { bundle: "detail", launch: '{"nested":[1,true]}', empty: "" } };
+      const payload = { scenario: "detail", environment: "qa", accountLabel: "", values: { id: { strategy: "literal", value: "001" } } };
+      const saved = await app.inject({ method: "PUT", url: "/api/page-parameters/detail/profiles/history", payload: { ...payload, navigation } });
+      expect(saved.statusCode).toBe(200);
+      const updated = await app.inject({ method: "PUT", url: "/api/page-parameters/detail/profiles/history", payload: { ...payload, scenario: "edited" } });
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json().profile.navigation).toEqual(navigation);
+      const replay = await app.inject({ method: "POST", url: "/api/page-parameters/detail/profiles/history/replay", payload: { deviceKey: "android:device-1" } });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json().replay.status).toBe("passed");
+      expect(JSON.parse(replay.json().replay.output)).toEqual({ filePath: path.join(durable, "page-parameters.json"), navigation, values: payload.values });
+      await expect(fs.stat(path.join(dir, "page-parameters.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      const replacement = { route: "demo://changed", params: { explicit: "new" } };
+      const replaced = await app.inject({ method: "PUT", url: "/api/page-parameters/detail/profiles/history", payload: { ...payload, navigation: replacement } });
+      expect(replaced.json().profile.navigation).toEqual(replacement);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("使用小程序运行目标录制和回放，不依赖 App 设备", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-mini-page-parameters-"));
     tempDirs.push(dir);

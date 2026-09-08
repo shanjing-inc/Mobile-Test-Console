@@ -32,3 +32,18 @@ The user requested review and a Git commit on MTC main. The integrated project's
 - Open-source scanning still reports the Linux absolute path in `tests/page-parameters.test.ts`; that file is byte-identical to HEAD.
 - Storage/service tests: 41 passed, including 14 durability tests. The extended vault HTTP test and both web backup tests pass in the final full run.
 - Existing live-data migration and browser-layout evidence above belongs to the earlier implementation validation. This review used synthetic test data and introduced no browser-layout changes.
+
+
+## Page parameter follow-up — 2026-09-08
+
+- Root cause: page profiles still followed the path-derived runtime directory. The legacy configured-ID directory retained 28 profiles and 48 recordings, while the active runtime directory had no page file. Page launch navigation is part of each stored profile.
+- Added shared persistent project identity resolution with separate account/page namespaces. Page-only configs resolve identity and complete migration before command execution. Existing account storage locations and sidecar/index compatibility are preserved.
+- Unified page Provider/Runner/lifecycle/result/replay paths and repair snapshots. Page stores validate state, preserve original sources and deterministic conflict copies, persist migration markers, back up changed writes, publish atomically, recover valid backups, and lock read/modify/write across processes.
+- Service callbacks reconcile delayed Provider responses with current state, retaining concurrent edits/deletions and terminal recording statuses. Repeated observations preserve earlier navigation when later payloads omit it.
+- Browser drafts retain historical/observation navigation through edits, page changes, saves, and replay. API updates omitting navigation keep the previous launch route and params.
+- Cross-review reproduced duplicate legacy defaults after default demotion; a second equality check after normalization fixes that edge case and the regression covers two identical legacy sources.
+- Final full suite: 472 passed, 14 failed across 52 files. The 14 failing names exactly match the earlier isolated HEAD baseline and the prior account-profile review. Type check still has only the same three page-inspection-theme diagnostics.
+- Lint, schema check, frontend/server bundles, Runner/SDK declarations, package contents (145 files), and whitespace checks pass. Standard full check/build remain blocked by the documented baseline tests/types. Open-source scanning still misidentifies the existing `/api/page-parameters/home/profiles/...` fixture URL as a Linux home path.
+- Live restored store: 28 profiles, 48 recordings, all complete objects deeply equal to the retained legacy data. All 28 profiles have launch navigation params. Main file mode is 0600 and one initial backup exists. Diagnostic output contained counts and equality flags only.
+- Live active-project HTTP returned the same 28 profiles and 48 recordings, with a migration warning. Browser page-list verification displayed recorded status and history-filled fields; no horizontal overflow and no browser warnings/errors. Native-device execution was not performed; the replay integration test executes a synthetic Provider that reads the actual durable state file.
+- Task remains open for repository baseline-gate disposition; both requested storage scopes are implemented and reviewed.

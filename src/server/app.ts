@@ -341,7 +341,7 @@ export async function createApp(baseOptions: CreateAppOptions): Promise<FastifyI
     ?? new TaskResultService(options.config, options.tasks, options.resultBundles);
   const defaultPageParameters = new PageParameterService(
     options.config,
-    new PageParameterStore(options.config.stateDir),
+    new PageParameterStore(options.config.pageParameterStorage?.directory ?? options.config.stateDir, options.config.pageParameterStorage?.legacyDirectories),
   );
   const defaultAccountProfiles = new AccountProfileService(
     options.config,

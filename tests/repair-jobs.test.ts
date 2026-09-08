@@ -28,6 +28,11 @@ describe("Codex 修复任务", () => {
 
   it("隔离原工作区、幂等创建并在同参数复测通过后导出修复 patch", async () => {
     const fixture = await createFixture("pass");
+    fixture.config.pageParameterStorage = { id: "page-vault", directory: path.join(fixture.config.stateDir, "page-vault"), legacyDirectories: [] };
+    await fs.mkdir(fixture.config.pageParameterStorage.directory);
+    const pageState = JSON.stringify({ profiles: [{ navigation: { route: "demo://page", params: { bundle: "detail", entry: "history" } } }] });
+    await fs.writeFile(path.join(fixture.config.pageParameterStorage.directory, "page-parameters.json"), pageState);
+    await fs.writeFile(path.join(fixture.config.stateDir, "page-parameters.json"), "obsolete-runtime-state");
     const nestedDirectory = path.join(fixture.repo, "nested");
     await fs.mkdir(nestedDirectory);
     const first = await fixture.repairs.create(fixture.originalTask.id, undefined, nestedDirectory);
@@ -36,6 +41,9 @@ describe("Codex 修复任务", () => {
     expect(await fs.realpath(first.snapshot.workspace)).toBe(await fs.realpath(fixture.repo));
 
     const fixed = await waitForRepair(fixture.repairs, first.repairJobId, "fixed");
+    const pageSnapshot = path.join(fixture.config.stateDir, "repair-snapshots", fixed.repairJobId, "page-parameters.json");
+    expect(await fs.readFile(pageSnapshot, "utf8")).toBe(pageState);
+    expect((await fs.stat(pageSnapshot)).mode & 0o777).toBe(0o600);
     expect(fixed.attempt).toBe(1);
     expect(fixed.verificationStatus).toBe("passed");
     expect(fixed.diff).toContain("+repair-fix");

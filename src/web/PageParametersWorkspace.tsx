@@ -30,7 +30,7 @@ import {
   startPageParameterRecording,
   stopPageParameterRecording,
 } from "./api";
-import { latestPageObservations } from "./page-parameter-observations";
+import { latestPageObservations, resolveObservationPageId } from "./page-parameter-observations";
 import {
   createPageActionDefaultAssertions,
   createObservationParameterDraft,
@@ -226,7 +226,8 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
 
   useEffect(() => {
     if (!page) return;
-    const pageObservation = selectedObservation?.pageId === page.pageId ? selectedObservation : undefined;
+    const pageObservation = selectedObservation && resolveObservationPageId([page], selectedObservation) === page.pageId
+      ? selectedObservation : undefined;
     const key = editorDraftKey(page.pageId, pageObservation?.observationId ?? "");
     const existingDraft = parameterDrafts.current[key];
     let draft = existingDraft;
@@ -285,7 +286,9 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
     setValues(previous => {
       const next = { ...previous, [key]: { ...previous[key], ...patch } };
       const nextOrigins = { ...valueOrigins, [key]: "manual" as const };
-      parameterDrafts.current[editorDraftKey(selectedPageId, selectedObservationId)] = {
+      const draftKey = editorDraftKey(selectedPageId, selectedObservationId);
+      parameterDrafts.current[draftKey] = {
+        ...parameterDrafts.current[draftKey],
         values: next,
         origins: nextOrigins,
       };
@@ -354,7 +357,9 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
 
   const applyHistoricalProfile = (profile: PageParameterProfile) => {
     const applied = replaceDraftFromProfile(profile);
-    saveParameterDraft(applied.values, applied.origins);
+    parameterDrafts.current[editorDraftKey(selectedPageId, selectedObservationId)] = applied;
+    setValues(applied.values);
+    setValueOrigins(applied.origins);
     replaceActions(() => pageInteractionActions(profile.actions));
     setAssertions(profile.assertions?.length
       ? profile.assertions
@@ -385,7 +390,9 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
     nextValues: Record<string, PageParameterValue>,
     nextOrigins: Record<string, PageParameterValueOrigin>,
   ) => {
-    parameterDrafts.current[editorDraftKey(selectedPageId, selectedObservationId)] = {
+    const draftKey = editorDraftKey(selectedPageId, selectedObservationId);
+    parameterDrafts.current[draftKey] = {
+      ...parameterDrafts.current[draftKey],
       values: nextValues,
       origins: nextOrigins,
     };
@@ -537,7 +544,8 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
     accountLabel,
     values,
     capturedKeys: selectedObservation ? Object.keys(selectedObservation.values) : undefined,
-    navigation: selectedObservation?.navigation ?? page?.navigation ?? defaultNavigation(page?.bundle || page?.pageId || "", adapter),
+    navigation: parameterDrafts.current[editorDraftKey(selectedPageId, selectedObservationId)]?.navigation
+      ?? page?.navigation ?? defaultNavigation(page?.bundle || page?.pageId || "", adapter),
     actions,
     assertions,
     source: selectedObservation ? "recording" : "manual",
@@ -572,8 +580,9 @@ export function PageParametersWorkspace({ devices, targets = [], environments = 
     const selectedProfile = testProfileChoice === CURRENT_TEST_PROFILE
       ? undefined
       : page.profiles.find(profile => profile.profileId === testProfileChoice);
+    const currentDraft = parameterDrafts.current[editorDraftKey(selectedPageId, selectedObservationId)];
     const fallbackProfile = !selectedProfile && shouldUseHistoricalPageParameterProfile({ values, origins: valueOrigins })
-      ? defaultHistoryProfile
+      ? resolveInitialPageParameterDraft(page, currentDraft, selectedTestDevice?.platform, environment).profile
       : undefined;
     const effectiveProfile = selectedProfile ?? fallbackProfile;
     const effectivePlatform = effectiveProfile?.platform ?? profilePlatform;

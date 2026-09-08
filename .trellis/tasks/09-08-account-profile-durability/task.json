@@ -1,10 +1,10 @@
 {
   "id": "account-profile-durability",
   "name": "account-profile-durability",
-  "title": "账号画像持久存储与备份迁移",
+  "title": "账号与页面画像持久存储及启动参数恢复",
   "status": "in_progress",
   "creator": "loumzy",
   "createdAt": "2026-09-08",
   "branch": "main",
-  "notes": "已审核并修复扩展字段脱敏、备份 I/O 错误处理及历史录制导入幂等性；449 项测试通过，14 项失败及 3 项类型错误均已在 HEAD 基线复现。用户已授权 Git 提交，全量门禁处置及归档待完成，详见 verification.md。"
+  "notes": "账号审核修复已提交；页面参数持久化与导航往返修复完成，真实28画像/48录制完整恢复。最终472测试通过、14失败与基线一致，3项既有类型诊断及开源扫描误报保留。全量门禁处置后归档。"
 }

@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import {
   PLATFORMS,
   type PageParameterPlatform,
@@ -20,6 +19,7 @@ import {
 import { resolvePageParameterProviderCommand, type LoadedProjectConfig, type ResolvedCommand } from "./config.js";
 import { ConsoleError } from "./errors.js";
 import { PageParameterStore } from "./page-parameter-store.js";
+import { pageParameterStatePath } from "./page-parameter-storage.js";
 import { resolveProjectAdapter } from "./project-adapter.js";
 
 interface CatalogPayload {
@@ -70,16 +70,13 @@ export class PageParameterService {
         };
       }),
       recordings: state.recordings,
-      warnings: catalog.warnings ?? [],
+      warnings: [...new Set([...(catalog.warnings ?? []), ...(state.notices ?? [])])],
     };
   }
 
   async startRecording(execution: Device | MiniProgramRunTarget, environment: string): Promise<PageParameterRecording> {
-    const state = await this.store.load();
     const isTarget = isMiniProgramTarget(execution);
     const executionKey = execution.key;
-    const active = state.recordings.find(item => (item.targetKey === executionKey || item.deviceKey === executionKey) && ["starting", "recording"].includes(item.status));
-    if (active) throw new ConsoleError("PAGE_PARAMETER_RECORDING_ACTIVE", `${isTarget ? execution.label : execution.name} 已有录制会话`, 409);
     const recording: PageParameterRecording = {
       recordingId: randomUUID(),
       ...(isTarget ? {
@@ -100,47 +97,50 @@ export class PageParameterService {
       error: "",
       observations: [],
     };
-    state.recordings.unshift(recording);
-    await this.store.save(state);
+    await this.store.update(state => {
+      const active = state.recordings.find(item => (item.targetKey === executionKey || item.deviceKey === executionKey) && ["starting", "recording"].includes(item.status));
+      if (active) throw new ConsoleError("PAGE_PARAMETER_RECORDING_ACTIVE", `${isTarget ? execution.label : execution.name} 已有录制会话`, 409);
+      state.recordings.unshift(recording);
+    });
+    let payload: RecordingPayload;
     try {
-      const payload = await this.callRecordingProvider("recording-start", recording);
-      Object.assign(recording, {
-        status: payload.status,
-        observations: payload.observations ?? [],
-        error: payload.error ?? "",
-      });
+      payload = await this.callRecordingProvider("recording-start", recording);
     } catch (error) {
-      recording.status = "failed";
-      recording.error = error instanceof Error ? error.message : String(error);
+      payload = {
+        schemaVersion: "mobile-test-console.page-parameter-provider.v1",
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
-    await this.store.save(state);
-    return recording;
+    return this.mergeRecordingResult(recording.recordingId, payload, "start");
   }
 
   async refreshRecording(recordingId: string): Promise<PageParameterRecording> {
-    const state = await this.store.load();
-    const recording = findRecording(state.recordings, recordingId);
+    const recording = findRecording((await this.store.load()).recordings, recordingId);
     if (["stopped", "failed"].includes(recording.status)) return recording;
     const payload = await this.callRecordingProvider("recording-status", recording);
-    recording.status = payload.status;
-    recording.error = payload.error ?? "";
-    recording.observations = mergeObservations(recording.observations, payload.observations ?? []);
-    await this.store.save(state);
-    return recording;
+    return this.mergeRecordingResult(recordingId, payload, "refresh");
   }
 
   async stopRecording(recordingId: string): Promise<PageParameterRecording> {
-    const state = await this.store.load();
-    const recording = findRecording(state.recordings, recordingId);
-    if (!["stopped", "failed"].includes(recording.status)) {
-      const payload = await this.callRecordingProvider("recording-stop", recording);
-      recording.status = payload.status === "failed" ? "failed" : "stopped";
-      recording.error = payload.error ?? "";
-      recording.observations = mergeObservations(recording.observations, payload.observations ?? []);
-      recording.stoppedAt = new Date().toISOString();
-      await this.store.save(state);
-    }
-    return recording;
+    const recording = findRecording((await this.store.load()).recordings, recordingId);
+    if (["stopped", "failed"].includes(recording.status)) return recording;
+    const payload = await this.callRecordingProvider("recording-stop", recording);
+    return this.mergeRecordingResult(recordingId, payload, "stop");
+  }
+
+  private async mergeRecordingResult(recordingId: string, payload: RecordingPayload, action: "start" | "refresh" | "stop"): Promise<PageParameterRecording> {
+    return this.store.update(state => {
+      const current = findRecording(state.recordings, recordingId);
+      current.observations = mergeObservations(current.observations, payload.observations ?? []);
+      // 已结束的会话保持终态；较晚返回的启动响应仅补充观察记录。
+      if (!["stopped", "failed"].includes(current.status) && (action !== "start" || current.status === "starting")) {
+        current.status = action === "stop" && payload.status !== "failed" ? "stopped" : payload.status;
+        current.error = payload.error ?? "";
+        if (["stopped", "failed"].includes(current.status)) current.stoppedAt = new Date().toISOString();
+      }
+      return current;
+    });
   }
 
   async replayProfile(pageId: string, profileId: string, execution: Device | MiniProgramRunTarget): Promise<PageParameterReplay> {
@@ -161,7 +161,7 @@ export class PageParameterService {
       const payload = await this.callProvider<ReplayPayload>("replay", [
         "--page", pageId,
         "--profile-id", profileId,
-        "--profiles", path.join(this.config.stateDir, "page-parameters.json"),
+        "--profiles", pageParameterStatePath(this.config),
         "--environment", profile.environment,
         "--run-id", replayId,
         ...isMiniProgramTarget(execution)
@@ -261,44 +261,44 @@ export class PageParameterService {
     }
     this.validateAssertions(profileAssertions, assertionTargets);
     const now = new Date().toISOString();
-    const state = await this.store.load();
-    const previous = state.profiles.find(item => item.pageId === pageId && item.profileId === profileId);
-    const isDefault = input.isDefault ?? previous?.isDefault ?? false;
-    const profile: PageParameterProfile = {
-      profileId,
-      pageId,
-      scenario: input.scenario,
-      platform: input.platform ?? "all",
-      ...(isDefault ? { isDefault: true } : {}),
-      environment: input.environment,
-      accountLabel: input.accountLabel,
-      values: input.values,
-      navigation: input.navigation ?? page.navigation ?? buildDefaultNavigation(page.bundle || page.pageId, resolveProjectAdapter(this.config).pageParameters),
-      actions: input.actions ?? [],
-      assertions: profileAssertions,
-      source: input.source ?? "manual",
-      recordedAt: input.recordedAt ?? now,
-      validatedAt: now,
-      expiresAt: input.expiresAt ?? "",
-      version: 1,
-    };
-    state.profiles = state.profiles
-      .filter(item => !(item.pageId === pageId && item.profileId === profileId))
-      .map(item => item.pageId === pageId && isDefault ? { ...item, isDefault: false } : item);
-    state.profiles.push(profile);
-    await this.store.save(state);
-    return profile;
+    return this.store.update(state => {
+      const previous = state.profiles.find(item => item.pageId === pageId && item.profileId === profileId);
+      const isDefault = input.isDefault ?? previous?.isDefault ?? false;
+      const profile: PageParameterProfile = {
+        profileId,
+        pageId,
+        scenario: input.scenario,
+        platform: input.platform ?? "all",
+        ...(isDefault ? { isDefault: true } : {}),
+        environment: input.environment,
+        accountLabel: input.accountLabel,
+        values: input.values,
+        navigation: input.navigation ?? previous?.navigation ?? page.navigation ?? buildDefaultNavigation(page.bundle || page.pageId, resolveProjectAdapter(this.config).pageParameters),
+        actions: input.actions ?? [],
+        assertions: profileAssertions,
+        source: input.source ?? "manual",
+        recordedAt: input.recordedAt ?? now,
+        validatedAt: now,
+        expiresAt: input.expiresAt ?? "",
+        version: 1,
+      };
+      state.profiles = state.profiles
+        .filter(item => !(item.pageId === pageId && item.profileId === profileId))
+        .map(item => item.pageId === pageId && isDefault ? { ...item, isDefault: false } : item);
+      state.profiles.push(profile);
+      return profile;
+    });
   }
 
   async setDefaultProfile(pageId: string, profileId: string, isDefault = true): Promise<PageParameterProfile> {
-    const state = await this.store.load();
-    const profile = state.profiles.find(item => item.pageId === pageId && item.profileId === profileId);
-    if (!profile) throw new ConsoleError("PAGE_PARAMETER_PROFILE_UNKNOWN", `参数画像不存在: ${profileId}`, 404);
-    state.profiles = state.profiles.map(item => item.pageId === pageId
-      ? { ...item, isDefault: isDefault && item.profileId === profileId }
-      : item);
-    await this.store.save(state);
-    return state.profiles.find(item => item.pageId === pageId && item.profileId === profileId)!;
+    return this.store.update(state => {
+      const profile = state.profiles.find(item => item.pageId === pageId && item.profileId === profileId);
+      if (!profile) throw new ConsoleError("PAGE_PARAMETER_PROFILE_UNKNOWN", `参数画像不存在: ${profileId}`, 404);
+      state.profiles = state.profiles.map(item => item.pageId === pageId
+        ? { ...item, isDefault: isDefault && item.profileId === profileId }
+        : item);
+      return state.profiles.find(item => item.pageId === pageId && item.profileId === profileId)!;
+    });
   }
 
   private validateAssertions(
@@ -322,11 +322,11 @@ export class PageParameterService {
   }
 
   async deleteProfile(pageId: string, profileId: string): Promise<void> {
-    const state = await this.store.load();
-    const next = state.profiles.filter(item => !(item.pageId === pageId && item.profileId === profileId));
-    if (next.length === state.profiles.length) throw new ConsoleError("PAGE_PARAMETER_PROFILE_UNKNOWN", `参数画像不存在: ${profileId}`, 404);
-    state.profiles = next;
-    await this.store.save(state);
+    await this.store.update(state => {
+      const next = state.profiles.filter(item => !(item.pageId === pageId && item.profileId === profileId));
+      if (next.length === state.profiles.length) throw new ConsoleError("PAGE_PARAMETER_PROFILE_UNKNOWN", `参数画像不存在: ${profileId}`, 404);
+      state.profiles = next;
+    });
   }
 
   private callRecordingProvider(action: "recording-start" | "recording-status" | "recording-stop", recording: PageParameterRecording) {
@@ -424,7 +424,11 @@ function findRecording(recordings: PageParameterRecording[], recordingId: string
 
 function mergeObservations(previous: PageParameterObservation[], next: PageParameterObservation[]): PageParameterObservation[] {
   const values = new Map(previous.map(item => [observationKey(item), item]));
-  for (const item of next) values.set(observationKey(item), item);
+  for (const item of next) {
+    const key = observationKey(item);
+    const existing = values.get(key);
+    values.set(key, existing ? { ...existing, ...item, navigation: item.navigation ?? existing.navigation } : item);
+  }
   return [...values.values()].sort((left, right) => left.capturedAt.localeCompare(right.capturedAt));
 }
 

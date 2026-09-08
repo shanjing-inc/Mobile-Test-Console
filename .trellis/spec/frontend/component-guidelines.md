@@ -302,3 +302,12 @@ At `max-width: 640px`, the form becomes one column, command tokens use `white-sp
 ### Allowing intrinsic content height to expand the shell
 
 Using only `min-height: calc(100vh - <topbar>)` on `.app-body` allows long content to increase the document height. A fixed shell height plus `minmax(0, 1fr)`, `min-height: 0`, and explicit child overflow keeps scrolling inside the intended container.
+
+
+### Page profile draft navigation
+
+`PageParameterDraft` owns `navigation` alongside `values`/`origins` and the selected historical `profileId`. Draft creation clones catalog/observation navigation; applying a historical profile clones its navigation and records its identity. Field edits and history supplementation spread the existing draft metadata so launch parameters survive changes.
+
+Page/observation draft keys use the existing observation page-ID/bundle normalization. Returning to a page restores the explicitly selected compatible profile. A navigation-only observation is still a captured draft even when its values map is empty. Current save/replay materializes navigation from the selected draft before catalog or adapter defaults.
+
+Required regressions: historical selection followed by a field edit, non-default history across page restoration, observation/navigation-only drafts, catalog fallback, independent cloned parameter objects, and supplementing values without changing the selected navigation.

@@ -68,7 +68,7 @@ export async function createProjectRuntime(
   );
   await tasks.initialize();
   const taskResults = new TaskResultService(config, tasks, resultBundles);
-  const pageParameters = new PageParameterService(config, new PageParameterStore(config.stateDir));
+  const pageParameters = new PageParameterService(config, new PageParameterStore(config.pageParameterStorage?.directory ?? config.stateDir, config.pageParameterStorage?.legacyDirectories));
   const accountProfiles = new AccountProfileService(
     config,
     new AccountProfileStore(config.accountProfileStorage?.directory ?? config.stateDir, config.adapter, config.accountProfileStorage?.legacyDirectories, config.accountProfileStorage?.id),

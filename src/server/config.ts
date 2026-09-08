@@ -1,4 +1,6 @@
 import { accountProfileStatePath, resolveAccountProfileStorage, type AccountProfileStorage } from "./account-profile-storage.js";
+import { pageParameterStatePath, resolvePageParameterStorage, type PageParameterStorage } from "./page-parameter-storage.js";
+import { PageParameterStore } from "./page-parameter-store.js";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -496,6 +498,7 @@ export interface LoadedProjectConfig {
   configPath: string;
   configuredProjectId?: string;
   accountProfileStorage?: AccountProfileStorage;
+  pageParameterStorage?: PageParameterStorage;
   project: {
     id: string;
     storageId?: string;
@@ -656,6 +659,13 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
   const accountProfileStorage = parsed.data.accountProfiles
     ? await resolveAccountProfileStorage({ configPath, storageId: parsed.data.project.storageId, stateDir, configuredProjectId: parsed.data.project.id })
     : undefined;
+  const pageParameterStorage = parsed.data.pageParameters
+    ? await resolvePageParameterStorage({ configPath, storageId: parsed.data.project.storageId, stateDir, configuredProjectId: parsed.data.project.id })
+    : undefined;
+  if (pageParameterStorage) {
+    // 配置加载时完成迁移，确保直接执行的 Runner 和 Provider 也能读取页面画像。
+    await new PageParameterStore(pageParameterStorage.directory, pageParameterStorage.legacyDirectories).load();
+  }
   const loaded = {
     ...parsed.data,
     configPath,
@@ -699,6 +709,7 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
     adapter,
     stateDir,
     accountProfileStorage,
+    pageParameterStorage,
     mainConfigTests,
     sidecarTests,
     testEntriesPath,
@@ -867,7 +878,7 @@ export function resolveOptionalCommand(
     "device.type": device.type,
     "task.id": task.id,
     "task.runId": task.runId,
-    "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
+    "pageParameters.statePath": pageParameterStatePath(config),
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
     "accountProfiles.statePath": accountProfileStatePath(config),
   };
@@ -933,8 +944,7 @@ export function resolveLifecycleCommand(
   if (!definition) return null;
 
   return resolveCommandDefinition(config, definition, {
-    projectRoot: config.project.root,
-    configPath: config.configPath,
+    ...buildCommonTemplateValues(config),
     "process.pid": String(processId),
   });
 }
@@ -1040,7 +1050,7 @@ export function resolvePageParameterProviderCommand(
     projectRoot: config.project.root,
     configPath: config.configPath,
     "process.pid": String(process.pid),
-    "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
+    "pageParameters.statePath": pageParameterStatePath(config),
     "accountProfiles.statePath": accountProfileStatePath(config),
     ...values,
   });
@@ -1083,7 +1093,7 @@ function buildTaskTemplateValues(config: LoadedProjectConfig, task: TestTask): R
     "task.id": task.id,
     "task.runId": task.runId,
     "task.testId": task.testId,
-    "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
+    "pageParameters.statePath": pageParameterStatePath(config),
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
     "accountProfiles.statePath": accountProfileStatePath(config),
   };
@@ -1114,7 +1124,7 @@ function buildCommonTemplateValues(
     projectRoot: workspaceRoot,
     configPath: config.configPath,
     "process.pid": String(process.pid),
-    "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
+    "pageParameters.statePath": pageParameterStatePath(config),
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
     "accountProfiles.statePath": accountProfileStatePath(config),
   };

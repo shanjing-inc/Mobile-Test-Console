@@ -26,7 +26,7 @@ On first profile access, MTC merges both the current `stateDir/account-profiles.
 
 For other historical locations, select their `account-profiles.json` through **选择导入文件** and confirm the merge. The importer supports v1 single-provider profiles and v2 aggregate profiles. It validates the complete file before writing. Different profiles with the same ID receive deterministic suffixed IDs, preserving both versions; importing the same content repeatedly is idempotent. Imported active recordings are finalized as failed, since their original device session cannot resume through a file import.
 
-`stateDir` continues to configure task, page-parameter, and business-script state. `accountProfiles.statePath` in Provider, Runner and repair commands resolves to the durable profile file. Repair snapshots copy that file into the protected snapshot directory.
+`stateDir` continues to configure task and business-script state. Page parameters share the persistent project UUID and use a separate [page-parameter vault](page-parameter-storage.md). `accountProfiles.statePath` in Provider, Runner and repair commands resolves to the durable account profile file. Repair snapshots copy that file into the protected snapshot directory.
 
 ## Backups and recovery
 

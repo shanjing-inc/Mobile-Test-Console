@@ -10,6 +10,7 @@ import type {
   PageScenarioAction,
   PageScenarioActionType,
   PageScenarioAssertion,
+  PageScenarioNavigation,
   PageScenarioTarget,
 } from "../shared/contracts";
 import { PLATFORMS } from "../shared/contracts";
@@ -40,6 +41,9 @@ export function isValidPageParameterKey(value: string): boolean {
 export interface PageParameterDraft {
   values: Record<string, PageParameterValue>;
   origins: Record<string, PageParameterValueOrigin>;
+  navigation?: PageScenarioNavigation;
+  profileId?: string;
+  observationId?: string;
 }
 
 export function pageUsesDynamicParameters(page: PageParameterPage): boolean {
@@ -134,6 +138,7 @@ export function hasUsablePageParameterValues(values: Record<string, PageParamete
 /** 空草稿可以由页面历史画像初始化；捕获值、手动值和已有非空值均保留。 */
 export function shouldUseHistoricalPageParameterProfile(draft: PageParameterDraft | undefined): boolean {
   if (!draft) return true;
+  if (draft.observationId) return false;
   const entries = Object.entries(draft.values);
   if (entries.length === 0) return true;
   return entries.every(([key, parameter]) => {
@@ -158,7 +163,11 @@ export function resolveInitialPageParameterDraft(
 ): InitialPageParameterDraft {
   const draft = currentDraft ?? createPageParameterDraft(page);
   if (!shouldUseHistoricalPageParameterProfile(currentDraft)) return { draft };
-  const profile = resolveDefaultPageParameterProfile(page.profiles, platform, environment);
+  const selectedProfile = currentDraft?.profileId
+    ? page.profiles.find(profile => profile.profileId === currentDraft.profileId)
+    : undefined;
+  const profile = resolveDefaultPageParameterProfile(selectedProfile ? [selectedProfile] : [], platform, environment)
+    ?? resolveDefaultPageParameterProfile(page.profiles, platform, environment);
   return profile ? { draft: replaceDraftFromProfile(profile), profile } : { draft };
 }
 
@@ -172,6 +181,8 @@ export function replaceDraftFromProfile(profile: PageParameterProfile): PagePara
   return {
     values,
     origins,
+    navigation: cloneNavigation(profile.navigation),
+    profileId: profile.profileId,
   };
 }
 
@@ -190,7 +201,12 @@ export function createObservationParameterDraft(
     };
     origins[key] = "captured";
   }
-  return { values, origins };
+  return {
+    values,
+    origins,
+    navigation: cloneNavigation(observation.navigation ?? page.navigation),
+    observationId: observation.observationId,
+  };
 }
 
 export function createPageParameterDraft(page: PageParameterPage): PageParameterDraft {
@@ -203,7 +219,7 @@ export function createPageParameterDraft(page: PageParameterPage): PageParameter
     };
     origins[field.key] = "suggested";
   }
-  return { values, origins };
+  return { values, origins, navigation: cloneNavigation(page.navigation) };
 }
 
 export function resolveDraftFields(
@@ -240,7 +256,11 @@ export function supplementDraftFromProfile(
     origins[key] = "history";
     addedCount += 1;
   }
-  return { values, origins, addedCount };
+  return { ...draft, values, origins, addedCount };
+}
+
+function cloneNavigation(navigation: PageScenarioNavigation | undefined): PageScenarioNavigation | undefined {
+  return navigation ? { ...navigation, params: { ...navigation.params } } : undefined;
 }
 
 function profileTimestamp(profile: PageParameterProfile): string {
