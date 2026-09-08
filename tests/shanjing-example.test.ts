@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { loadProjectConfig } from "../src/server/config.js";
 import { loadRunnerRuntime } from "../src/server/runner-runtime.js";
 import { parseResultBundle } from "../src/shared/result-bundle.js";
+import { projectIdFromRoot } from "../src/server/project-identity.js";
 
 const exampleRoot = fileURLToPath(new URL("../examples/com.shanjing.example", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -16,7 +17,7 @@ describe("com.shanjing.example", () => {
     const runtime = await loadRunnerRuntime(config);
 
     expect(config.project).toMatchObject({
-      id: "shanjing-example",
+      id: projectIdFromRoot(exampleRoot),
       name: "com.shanjing.example",
       root: exampleRoot,
       integrationType: "lynx-app",

@@ -50,7 +50,7 @@ describe("项目配置", () => {
     expect(config.tests.map(test => test.id)).toEqual(["smoke", "pages"]);
     expect(config.mainConfigTests?.map(test => test.id)).toEqual(["smoke"]);
     expect(config.sidecarTests?.map(test => test.id)).toEqual(["pages"]);
-    expect(config.testEntriesPath).toBe(path.join(dir, "mobile-test.entries.json"));
+    expect(config.testEntriesPath).toBe(path.join(await fs.realpath(dir), "mobile-test.entries.json"));
     expect(toPublicTestsFromConfig(config).map(test => ({ id: test.id, source: test.source }))).toEqual([
       { id: "smoke", source: "preset" },
       { id: "pages", source: "custom" },
@@ -217,7 +217,7 @@ describe("项目配置", () => {
     expect(config.testing).toMatchObject({
       environments: [{ id: "qa", label: "QA", description: "QA 环境" }],
       capabilities: [{ id: "page.execute", providerId: "demo-provider", required: true }],
-      result: { schemaVersion: "test-analysis.run.v1", artifactsRoot: path.join(dir, "qa/results") },
+      result: { schemaVersion: "test-analysis.run.v1", artifactsRoot: path.join(await fs.realpath(dir), "qa/results") },
     });
     expect(toPublicTests(config.tests)[0]).toMatchObject({
       testType: "页面结构巡检",
@@ -312,9 +312,10 @@ describe("项目配置", () => {
 
     const config = await loadProjectConfig(configPath);
     expect(config.project.integrationType).toBe("app");
-    expect(config.project.root).toBe(path.resolve(dir, "../app"));
+    const canonicalProjectRoot = path.resolve(await fs.realpath(dir), "../app");
+    expect(config.project.root).toBe(canonicalProjectRoot);
     expect(config.iosSimulator).toEqual({
-      workspace: path.resolve(dir, "../app/ios/Demo.xcworkspace"),
+      workspace: path.join(canonicalProjectRoot, "ios/Demo.xcworkspace"),
       scheme: "Demo",
     });
     expect(config.tests[0].description).toBe("");
@@ -344,11 +345,11 @@ describe("项目配置", () => {
       "--run-id",
       "run-1",
     ]);
-    expect(config.taskResults?.artifactsRoot).toBe(path.resolve(dir, "../app/artifacts"));
+    expect(config.taskResults?.artifactsRoot).toBe(path.join(canonicalProjectRoot, "artifacts"));
     expect(resolveTaskResultCommand(config, createTask())?.args).toEqual([
       "result.cjs",
       "--root",
-      path.resolve(dir, "../app/artifacts"),
+      path.join(canonicalProjectRoot, "artifacts"),
     ]);
     expect(resolveTaskResultCommand(config, {
       ...createTask(),
@@ -375,7 +376,7 @@ describe("项目配置", () => {
       maxAttempts: 2,
       sandbox: "workspace-write",
       approvalPolicy: "never",
-      worktreeRoot: path.resolve(dir, "../app/.repair-worktrees"),
+      worktreeRoot: path.join(canonicalProjectRoot, ".repair-worktrees"),
       worktreeLinks: [],
     });
     expect(config.adapter).toEqual(EMPTY_PROJECT_ADAPTER);
@@ -578,7 +579,7 @@ describe("项目配置", () => {
     expect(command?.args).toEqual([
       "cleanup.cjs",
       "--request", path.join(dir, "request.json"),
-      "--root", path.join(dir, "qa/artifacts"),
+      "--root", path.join(await fs.realpath(dir), "qa/artifacts"),
     ]);
   });
 

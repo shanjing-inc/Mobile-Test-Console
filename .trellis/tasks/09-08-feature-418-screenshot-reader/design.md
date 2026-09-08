@@ -1,0 +1,11 @@
+# Design
+
+Introduce a focused ScreenshotReader component with a small generic image model: stable key, URL, display title, original label and optional subtitle. Adapt terminal Result Bundle and live artifacts in App without changing server payloads or result scoping. Reuse pure comparison navigation helpers, leaving the comparison workspace's event policy intact. Derive safe display labels from existing metadata with a filename fallback.
+
+Reader state includes mode and selected key; stream and directory DOM refs provide positions. Choose a surviving key after data changes and reset only when the task changes. A bounded page stream owns vertical scrolling with proximity snapping. Update the active key from section offsets, guard smooth navigation from intermediate scroll selection, and keep the active directory entry visible. Register shortcut handling only for the reader surface so unrelated workspace controls retain their behavior.
+
+Focus mode should use an accessible native dialog or equivalent modal with focus containment and restoration. Keep selection in the reader across mode transitions, restore the selected section after container geometry changes, and support Escape. Its opaque reading surface covers the surrounding run list and metadata. Do not create a second independently selected screenshot collection. Image links or a secondary original action preserve raw-artifact access.
+
+Use flex/grid min-height:0 throughout the bounded stream. Desktop directory width is around 200-220px, with the image centered in remaining width and height using contain. On small screens, constrain the directory to a short strip or compact area above the image and keep toolbar controls wrapping. Preserve image loading/error handling and lazy loading; use a stable keyed image component to reset error state when its URL changes.
+
+Tests cover adapters, stable identities, empty states, page order, keyboard eligibility and existing comparison regression. Browser checks exercise actual scrolling, focus entry/exit, arrows, overview transitions, dimensions, and failed-image recovery. No dependency additions are required. Rollback is a normal revert of the frontend and spec/task commit; stored results are unchanged.

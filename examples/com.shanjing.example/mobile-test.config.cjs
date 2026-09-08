@@ -2,7 +2,6 @@
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
-    id: "shanjing-example",
     name: "com.shanjing.example",
     root: ".",
     integrationType: "lynx-app",

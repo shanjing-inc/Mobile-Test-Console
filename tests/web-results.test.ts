@@ -236,7 +236,7 @@ describe("QA 结果分析界面", () => {
     const markup = renderResult("screenshots");
 
     expect(markup).toContain('/api/tasks/task-one/artifacts/artifact-one');
-    expect(markup).toContain('alt="case-one screen.png"');
+    expect(markup).toContain('alt="screen · pageDemo screen.png"');
   });
 
   it("接口详情展示格式化请求与响应并提供复制按钮", () => {

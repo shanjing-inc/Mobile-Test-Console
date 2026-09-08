@@ -15,13 +15,13 @@ MTC 的“项目”工作区将接入拆成可恢复的步骤：
 
 `mobile-test.config.cjs` 是单一接入清单。`testing.environments` 描述可选运行环境，`testing.capabilities` 声明能力名称、Provider 和修复引导，`tests[]` 声明页面测试、流程测试或通用测试及其能力依赖，`taskResults` 声明结果协议、产物目录和兼容 Provider，`artifactRetention` 声明产物根目录、保留策略和清理适配器。MTC 负责读取和校验这些声明，项目 Adapter 负责实现能力与解释项目测试语义。
 
-每个项目会记录步骤状态、最近检测时间和失败原因。Smoke 与 Result Bundle 证据会保存项目配置摘要和 Provider 能力版本摘要；MTC 启动或点击“验证接入”时发现摘要变化，会将这两步恢复为待验证并显示变化原因。当前 MTC 进程继续使用 `--config` 指定的项目执行任务，项目目录工作区负责登记和接入验收。
+每个项目会记录步骤状态、最近检测时间和失败原因。Smoke 与 Result Bundle 证据会保存项目配置摘要和 Provider 能力版本摘要；MTC 启动或点击“验证接入”时发现摘要变化，会将这两步恢复为待验证并显示变化原因。项目目录工作区负责登记和接入验收，选择项目时按需加载其独立 Runtime。
 
-完成配置验收后，可以从项目卡片切换运行项目。MTC 会先确认没有排队、准备中或执行中的任务，再校验目标配置并重启当前控制台；项目任务和接入状态分别留在各自的 `stateDir` 与项目目录文件中。
+完成配置验收后，可以从侧边栏直接加载项目。项目切换无需重启，原项目的活动任务继续执行；不同资源支持并行测试，共享同一设备或小程序执行环境的任务按全局 FIFO 队列执行。项目任务和接入状态分别保存在各自的 `stateDir` 与项目目录文件中。
 
 首次通过的 Lynx 测试会将“基础 Smoke”标记为已验证。Provider 产出 `resultUri` 后，或外部将 Result Bundle 推送到 `/api/result-bundles` 后，“结果分析”会自动标记为已验证；失败任务携带有效 Result Bundle 时同样保留分析证据。
 
-当配置摘要或 Provider 能力版本摘要发生变化，当前运行项目的步骤卡片会提供“重跑 Smoke”或“重跑分析”。入口会选中兼容测试并跳转到测试执行页；选择设备和参数后启动，完成任务后平台自动更新接入证据。
+当配置摘要或 Provider 能力版本摘要发生变化，当前查看项目的步骤卡片会提供“重跑 Smoke”或“重跑分析”。入口会选中兼容测试并跳转到测试执行页；选择设备和参数后启动，完成任务后平台自动更新接入证据。
 
 ## 1. 接入资格
 
@@ -132,7 +132,7 @@ collectResult(request) {
 Bundle 必须满足：
 
 - `schemaVersion` 为 `test-analysis.run.v1`。
-- `project.id` 等于当前配置的项目 ID。
+- `project.id` 等于 `RunPlan.projectId`，该值由 MTC 根据项目真实路径生成并注入。
 - `run.runId` 等于当前任务的 `runId`。
 - `run.status` 与 `RunnerResult.status` 一致。
 - 截图和证据使用 `project://<project-id>/...` URI。
@@ -173,7 +173,7 @@ artifactRetention: {
 /** @type {import("mobile-test-console/sdk").ProjectConfigInput} */
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
-  project: { id: "my-lynx-app", name: "My Lynx App", root: ".", integrationType: "lynx-app" },
+  project: { name: "My Lynx App", root: ".", integrationType: "lynx-app" },
   deviceProviders: ["android", "ios", "harmony"],
   tests: [{
     id: "lynx-smoke",

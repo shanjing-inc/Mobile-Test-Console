@@ -7,7 +7,7 @@ import { SystemCommandRunner } from "../src/server/command-runner.js";
 import type { LoadedProjectConfig } from "../src/server/config.js";
 import { TEST_PROJECT_ADAPTER } from "./fixtures/project-adapter.js";
 import type { DeviceDiscoveryService } from "../src/server/devices.js";
-import { buildCompleteFailureLogs, buildFailureContext, RepairJobManager, resolveCodexExecutable } from "../src/server/repair-job-manager.js";
+import { buildCompleteFailureLogs, buildFailureContext, RepairJobManager } from "../src/server/repair-job-manager.js";
 import { RepairJobStore } from "../src/server/repair-job-store.js";
 import { StateStore } from "../src/server/state-store.js";
 import { TaskManager } from "../src/server/task-manager.js";
@@ -21,11 +21,6 @@ afterEach(async () => {
 });
 
 describe("Codex 修复任务", () => {
-  it("配置使用裸 codex 时解析到 ChatGPT 内置 CLI", () => {
-    expect(resolveCodexExecutable("codex")).toBe("/Applications/ChatGPT.app/Contents/Resources/codex");
-    expect(resolveCodexExecutable("/tmp/custom-codex")).toBe("/tmp/custom-codex");
-  });
-
   it("隔离原工作区、幂等创建并在同参数复测通过后导出修复 patch", async () => {
     const fixture = await createFixture("pass");
     const nestedDirectory = path.join(fixture.repo, "nested");

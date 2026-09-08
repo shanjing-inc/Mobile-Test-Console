@@ -23,7 +23,7 @@ describe("Lynx App Starter", () => {
     await fs.cp(starterRoot, root, { recursive: true });
     const config = await loadProjectConfig(path.join(root, "mobile-test.config.cjs"));
     expect(config.project.integrationType).toBe("lynx-app");
-    expect(config.artifactRetention?.artifactsRoot).toBe(path.join(root, "qa", "artifacts"));
+    expect(config.artifactRetention?.artifactsRoot).toBe(path.join(config.project.root, "qa", "artifacts"));
     const bundles = new ResultBundleStore(config.stateDir);
     const runtime = await loadRunnerRuntime(config, [], bundles);
     const events: RunnerEvent[] = [];
@@ -80,7 +80,7 @@ describe("Lynx App Starter", () => {
       "项目结果分析完成",
     ]));
     expect(await bundles.get("starter-run-one")).toMatchObject({
-      project: { id: "lynx-app-starter" },
+      project: { id: config.project.id },
       target: { kind: "app", runtime: "lynx", platform: "android" },
       run: { runId: "starter-run-one", status: "passed" },
       cases: [{ caseId: "home-render", status: "passed" }],

@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend contract index"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Deterministic CLI discovery tests"}
+{"file":".trellis/spec/backend/mobile-test-console-integration.md","reason":"Project identity, provider ownership and theme contract"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"Type safety conventions"}

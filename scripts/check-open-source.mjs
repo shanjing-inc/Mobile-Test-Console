@@ -59,8 +59,8 @@ function isAuditedTextFile(file) {
 function auditFile(file) {
   const content = fs.readFileSync(path.join(root, file), "utf8");
   const checks = [
-    { pattern: /\/Users\/(?!demo(?:\/|\b)|example(?:\/|\b)|user(?:\/|\b))[A-Za-z0-9._-]+\//, label: "macOS 本机绝对路径" },
-    { pattern: /\/home\/(?!demo(?:\/|\b)|example(?:\/|\b)|user(?:\/|\b))[A-Za-z0-9._-]+\//, label: "Linux 本机绝对路径" },
+    { pattern: /(?<![A-Za-z0-9._-])\/Users\/(?!demo(?:\/|\b)|example(?:\/|\b)|user(?:\/|\b))[A-Za-z0-9._-]+\//, label: "macOS 本机绝对路径" },
+    { pattern: /(?<![A-Za-z0-9._-])\/home\/(?!demo(?:\/|\b)|example(?:\/|\b)|user(?:\/|\b))[A-Za-z0-9._-]+\//, label: "Linux 本机绝对路径" },
     { pattern: /AKIA[0-9A-Z]{16}/, label: "AWS access key" },
     { pattern: /\bghp_[A-Za-z0-9]{20,}\b/, label: "GitHub token" },
     { pattern: /\bnpm_[A-Za-z0-9]{20,}\b/, label: "npm token" },

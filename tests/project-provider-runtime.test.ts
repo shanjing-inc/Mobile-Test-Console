@@ -49,10 +49,10 @@ describe("项目 Provider 运行时", () => {
       apiVersion: "mobile-test-console.project-provider-plugin.v1",
       createProviders(context) {
         return [{
-          id: context.project.id + "-app",
+          id: "demo-app",
           manifest: {
             schemaVersion: "mobile-test-console.project-provider.v1",
-            providerId: context.project.id + "-app",
+            providerId: "demo-app",
             scope: { targetKinds: ["app"], runtimes: [context.options.runtime] },
             capabilities: context.options.capabilities.map(id => ({ id, version: 1 }))
           },
