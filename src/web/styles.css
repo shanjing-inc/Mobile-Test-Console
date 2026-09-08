@@ -1382,3 +1382,12 @@ h2 { margin-bottom: 0; font-size: 16px; line-height: 1.25; letter-spacing: 0; }
   .screenshot-compare-pair-section { min-height: 480px; height: auto; }
   .screenshot-compare-pair-section:last-child { min-height: 480px; height: auto; }
 }
+
+.account-backup-panel { min-width: 0; overflow-wrap: anywhere; }
+.account-backup-panel p { color: var(--muted); font-size: 13px; }
+.account-backup-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 12px 0; }
+.account-backup-actions .field { min-width: 0; max-width: 100%; }
+.account-backup-actions select { max-width: 100%; }
+
+.account-backup-panel > p, .account-backup-panel > .account-backup-actions, .account-backup-panel > details { margin-left: 14px; margin-right: 14px; }
+.account-backup-panel > details { margin-bottom: 14px; }

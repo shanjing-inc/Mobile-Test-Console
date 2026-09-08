@@ -71,7 +71,7 @@ export async function createProjectRuntime(
   const pageParameters = new PageParameterService(config, new PageParameterStore(config.stateDir));
   const accountProfiles = new AccountProfileService(
     config,
-    new AccountProfileStore(config.stateDir, config.adapter),
+    new AccountProfileStore(config.accountProfileStorage?.directory ?? config.stateDir, config.adapter, config.accountProfileStorage?.legacyDirectories, config.accountProfileStorage?.id),
   );
   const businessScripts = new BusinessScriptService(config, new BusinessScriptStore(config.stateDir));
   const repairs = config.codexRepair?.enabled

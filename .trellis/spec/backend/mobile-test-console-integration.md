@@ -674,7 +674,7 @@ GET /api/tasks/:taskId/artifacts/:artifactId
 ### 3. Contracts
 
 - `loadProjectConfig()` resolves `project.root` through `realpath` and generates `<directory-slug>-<sha1-prefix>` from that canonical absolute path.
-- `project.id` in `mobile-test.config.cjs` is an optional compatibility input. Runtime config, default state directory, catalog entries, tasks, Runner plans, and new Result Bundles use the generated identity.
+- `project.id` in `mobile-test.config.cjs` is an optional compatibility input. Runtime config, default task state directory, catalog entries, tasks, Runner plans, and new Result Bundles use the generated identity. Account profile vaults use a separate persistent UUID.
 - Catalog startup migrates legacy keys and `activeProjectId` by stored project root while preserving project metadata. Historical tasks retain their persisted `projectId` and `workspaceRoot`.
 - A Runner screenshot event carries the current `runId` and MTC-injected project ID. Its URI is project-relative and contains no host absolute path.
 - MTC accepts JPEG, PNG, and WebP live screenshots up to 20 MiB. The URI extension, declared MIME type, on-disk file type, and binary signature must agree when the event is accepted and when the attachment is read.
@@ -1337,3 +1337,75 @@ rg -n -i "<project-brand-or-business-id>" src README.md docs tests examples
 ```
 
 Run each integrated project's adapter unit tests, type-check, runtime health check, and at least one real task through MTC. Browser verification covers desktop and narrow viewports, project-family switching, target selection, terminal status, logs, Result Bundle statistics, screenshot serving, and console warnings/errors.
+
+## Scenario: Durable account profile vaults
+
+### 1. Scope / Trigger
+
+Account-provider projects retain profiles across checkout moves and expose explicit backup, import, export, and merge recovery.
+
+### 2. Signatures
+
+```ts
+accountProfileStatePath(config: LoadedProjectConfig): string;
+AccountProfileStore.importData(value: unknown): Promise<void>;
+AccountProfileStore.restoreBackup(id: string): Promise<void>;
+```
+
+HTTP routes use the existing `x-mtc-project-id` runtime routing: `GET /api/account-profiles/export`, `POST /api/account-profiles/import`, and `POST /api/account-profiles/backups/:backupId/restore`.
+
+### 3. Contracts
+
+- Projects with an account provider resolve a persistent UUID from `project.storageId`, a versioned `mobile-test.identity.json` beside config, or a local identity index when the sidecar is missing. Runtime project identity remains path-derived.
+- Account profiles use `~/.mobile-test-console/account-profiles/<uuid>/`; command placeholders and repair snapshots must use `accountProfileStatePath(config)`. In-memory legacy config fixtures may omit storage metadata and retain their explicit state directory.
+- Migration preserves source files and records consumed paths in the same atomic state write. Repeated startup must preserve user deletions. Conflicting profile/recording IDs retain separate deterministic copies.
+- All mutations lock across processes. Changed writes back up previous bytes before exclusive temporary-file publication. Invalid state blocks normal mutations; valid backups recover corrupt/missing state with a visible notice. Unknown future versions remain untouched automatically.
+- Export is explicit and uncached. Profile, provider-entry, and recording summaries enumerate their allowed fields. Imported extension fields remain in storage/export and are excluded from every summary response.
+- Import validates the full file, merges existing data, and finalizes imported active sessions. Normalize incoming profiles with the same completed-recording recovery used during loading before comparing conflicts, so repeated imports remain idempotent. Keep import errors free of credential values.
+- Backup retention currently keeps every automatic backup. Off-device copies use explicit export/import; same-disk backups provide no disk-failure guarantee.
+
+### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| Backup contains invalid JSON or an unsupported schema | Continue searching older valid backups |
+| Backup disappears during recovery (`ENOENT`) | Continue searching older valid backups |
+| Backup read fails with `EACCES`, `EIO`, or another operational error | Propagate the error and preserve existing files; a missing main file stays missing |
+| Imported profile/provider/recording contains extra credential fields | Preserve export round trips; return only declared summary fields |
+| Repeated import contains a profile completed from stopped recordings | Reuse the normalized profile and recording IDs |
+| Import exceeds 20 MiB or contains malformed JSON | Return a bounded error without credential values |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a moved checkout retains its UUID and reopens the same vault.
+- Base: importing the same file three times keeps the same profiles, including entries recovered from completed recordings.
+- Bad: treating an unreadable backup as an empty vault or spreading imported objects into public summaries.
+
+### 6. Tests Required
+
+- Cover identity move and sidecar deletion, legacy migration and restart, backup permissions, corruption and failed-write recovery, conflicting/repeated imports, cross-process updates, durable command paths, and HTTP/UI isolation.
+- Inject `EACCES` and `EIO` during backup reads. Both `load()` and `update()` must reject, preserve backup bytes, and leave a missing main file absent.
+- Import extra credential fields at profile, provider-entry, and recording levels. Summary/list and recording-detail responses omit them; explicit export retains them.
+- Import an incomplete profile plus a completed recording three times, loading between imports. Assert stable profile/recording counts and recovered provider data.
+
+### 7. Wrong vs Correct
+
+```ts
+// Wrong: imported extensions become public fields.
+const { accountUid, captures, ...metadata } = entry;
+return { ...metadata, accountUidMasked: maskIdentifier(accountUid) };
+```
+
+```ts
+// Correct: enumerate every field defined by the summary contract.
+return {
+  provider: entry.provider,
+  sourceDeviceKey: entry.sourceDeviceKey,
+  capabilities: entry.capabilities,
+  recordedAt: entry.recordedAt,
+  validatedAt: entry.validatedAt,
+  expiresAt: entry.expiresAt,
+  accountUidMasked: maskIdentifier(entry.accountUid),
+  captureSummaries: entry.captures.map(toCaptureSummary),
+};
+```

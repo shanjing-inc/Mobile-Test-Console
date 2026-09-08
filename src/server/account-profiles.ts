@@ -74,9 +74,16 @@ export class AccountProfileService {
       providers: resolveProjectAdapter(this.config).accountProfiles.providers,
       profiles: profiles.sort((left, right) => latestRecordedAt(right).localeCompare(latestRecordedAt(left))).map(toAccountProfileSummary),
       recordings: [...state.recordings].sort((left, right) => right.startedAt.localeCompare(left.startedAt)).map(toAccountProfileRecordingSummary),
-      warnings: this.config.accountProfiles ? [] : ["当前项目未配置账号画像 provider"],
+      storage: await this.store.storageInfo(),
+      warnings: [...(state.notices ?? []), ...(this.config.accountProfiles ? [] : ["当前项目未配置账号画像 provider"])],
     };
   }
+
+  async exportData() { return this.store.exportData(); }
+
+  async importData(value: unknown): Promise<void> { await this.store.importData(value); }
+
+  async restoreBackup(id: string): Promise<void> { await this.store.restoreBackup(id); }
 
   async startRecording(device: Device, input: StartAccountProfileRecordingRequest): Promise<AccountProfileRecording> {
     assertProviderDevice(input.provider, device, resolveAccountProfileProviderAdapter(this.config, input.provider));
@@ -329,25 +336,48 @@ function latestRecordedAt(profile: AccountProfile): string {
 
 export function toAccountProfileSummary(profile: AccountProfile): AccountProfileSummary {
   const normalized = normalizeAccountProfile(profile);
-  const { providerEntries, ...metadata } = normalized;
   return {
-    ...metadata,
-    providerEntries: providerEntries.map(toAccountProfileProviderEntrySummary),
+    schemaVersion: normalized.schemaVersion,
+    profileId: normalized.profileId,
+    accountLabel: normalized.accountLabel,
+    platform: normalized.platform,
+    environment: normalized.environment,
+    version: normalized.version,
+    providerEntries: normalized.providerEntries.map(toAccountProfileProviderEntrySummary),
   };
 }
 
 function toAccountProfileProviderEntrySummary(entry: AccountProfileProviderEntry): AccountProfileProviderEntrySummary {
-  const { accountUid, captures, ...metadata } = entry;
   return {
-    ...metadata,
-    accountUidMasked: maskIdentifier(accountUid),
-    captureSummaries: captures.map(toCaptureSummary),
+    provider: entry.provider,
+    sourceDeviceKey: entry.sourceDeviceKey,
+    capabilities: entry.capabilities,
+    recordedAt: entry.recordedAt,
+    validatedAt: entry.validatedAt,
+    expiresAt: entry.expiresAt,
+    accountUidMasked: maskIdentifier(entry.accountUid),
+    captureSummaries: entry.captures.map(toCaptureSummary),
   };
 }
 
 export function toAccountProfileRecordingSummary(recording: AccountProfileRecording): AccountProfileRecordingSummary {
-  const { captures, ...metadata } = recording;
-  return { ...metadata, captureSummaries: captures.map(toCaptureSummary) };
+  return {
+    recordingId: recording.recordingId,
+    profileId: recording.profileId,
+    accountLabel: recording.accountLabel,
+    provider: recording.provider,
+    deviceKey: recording.deviceKey,
+    deviceId: recording.deviceId,
+    deviceType: recording.deviceType,
+    ...(recording.deviceManufacturer !== undefined ? { deviceManufacturer: recording.deviceManufacturer } : {}),
+    platform: recording.platform,
+    environment: recording.environment,
+    status: recording.status,
+    startedAt: recording.startedAt,
+    stoppedAt: recording.stoppedAt,
+    error: recording.error,
+    captureSummaries: recording.captures.map(toCaptureSummary),
+  };
 }
 
 function toCaptureSummary(capture: AccountProfileCapture): AccountProfileCaptureSummary {

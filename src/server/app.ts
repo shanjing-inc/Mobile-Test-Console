@@ -345,7 +345,7 @@ export async function createApp(baseOptions: CreateAppOptions): Promise<FastifyI
   );
   const defaultAccountProfiles = new AccountProfileService(
     options.config,
-    new AccountProfileStore(options.config.stateDir, options.config.adapter),
+    new AccountProfileStore(options.config.accountProfileStorage?.directory ?? options.config.stateDir, options.config.adapter, options.config.accountProfileStorage?.legacyDirectories, options.config.accountProfileStorage?.id),
   );
   const defaultBusinessScripts = new BusinessScriptService(
     options.config,
@@ -682,6 +682,32 @@ export async function createApp(baseOptions: CreateAppOptions): Promise<FastifyI
   });
 
   app.get("/api/account-profiles", async () => accountProfiles.snapshot());
+
+  app.get("/api/account-profiles/export", async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    reply.header("Content-Disposition", 'attachment; filename="account-profiles.json"');
+    return accountProfiles.exportData();
+  });
+
+  app.post("/api/account-profiles/import", {
+    bodyLimit: 20 * 1024 * 1024,
+    errorHandler(error, _request, reply) {
+      const known = error instanceof ConsoleError;
+      const status = known ? error.statusCode : error.statusCode === 413 ? 413 : 400;
+      reply.code(status).send({ error: {
+        code: known ? error.code : "ACCOUNT_PROFILE_IMPORT_FAILED",
+        message: known ? error.message : status === 413 ? "画像文件应小于 20 MiB" : "画像导入失败，请检查文件格式和存储状态",
+      } });
+    },
+  }, async request => {
+    await accountProfiles.importData(request.body);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { backupId: string } }>("/api/account-profiles/backups/:backupId/restore", async request => {
+    await accountProfiles.restoreBackup(request.params.backupId);
+    return { ok: true };
+  });
 
   app.get<{ Params: { profileId: string }; Querystring: { provider?: string } }>("/api/account-profiles/:profileId/source", async request => {
     const parsed = accountProfileSourceSchema.safeParse(request.query);

@@ -1,3 +1,4 @@
+import { accountProfileStatePath, resolveAccountProfileStorage, type AccountProfileStorage } from "./account-profile-storage.js";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -286,6 +287,7 @@ export const configSchema = z.object({
   schemaVersion: z.literal("mobile-test-console.config.v1"),
   project: z.object({
     id: z.string().regex(/^[a-z][a-z0-9-]*$/).optional(),
+    storageId: z.string().uuid().optional(),
     name: z.string().min(1),
     root: z.string().min(1),
     integrationType: z.enum(PROJECT_INTEGRATION_TYPES).default("app"),
@@ -493,8 +495,10 @@ export interface LoadedProjectConfig {
   schemaVersion: "mobile-test-console.config.v1";
   configPath: string;
   configuredProjectId?: string;
+  accountProfileStorage?: AccountProfileStorage;
   project: {
     id: string;
+    storageId?: string;
     name: string;
     root: string;
     integrationType?: ProjectIntegrationType;
@@ -649,6 +653,9 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
 
   const mainConfigTests = parsed.data.tests.slice(0, mainTests.length);
   const sidecarTests = parsed.data.tests.slice(mainTests.length);
+  const accountProfileStorage = parsed.data.accountProfiles
+    ? await resolveAccountProfileStorage({ configPath, storageId: parsed.data.project.storageId, stateDir, configuredProjectId: parsed.data.project.id })
+    : undefined;
   const loaded = {
     ...parsed.data,
     configPath,
@@ -691,6 +698,7 @@ export async function loadProjectConfig(inputPath: string): Promise<LoadedProjec
       : parsed.data.codexRepair,
     adapter,
     stateDir,
+    accountProfileStorage,
     mainConfigTests,
     sidecarTests,
     testEntriesPath,
@@ -861,7 +869,7 @@ export function resolveOptionalCommand(
     "task.runId": task.runId,
     "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
-    "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
+    "accountProfiles.statePath": accountProfileStatePath(config),
   };
   for (const [key, value] of Object.entries(parameters)) {
     values[`params.${key}`] = value;
@@ -1033,7 +1041,7 @@ export function resolvePageParameterProviderCommand(
     configPath: config.configPath,
     "process.pid": String(process.pid),
     "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
-    "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
+    "accountProfiles.statePath": accountProfileStatePath(config),
     ...values,
   });
   return { ...command, args: [...command.args, action] };
@@ -1064,7 +1072,7 @@ export function resolveAccountProfileProviderCommand(
     projectRoot: config.project.root,
     configPath: config.configPath,
     "process.pid": String(process.pid),
-    "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
+    "accountProfiles.statePath": accountProfileStatePath(config),
   });
   return { ...command, args: [...command.args, action] };
 }
@@ -1077,7 +1085,7 @@ function buildTaskTemplateValues(config: LoadedProjectConfig, task: TestTask): R
     "task.testId": task.testId,
     "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
-    "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
+    "accountProfiles.statePath": accountProfileStatePath(config),
   };
   const target = task.target;
   if (target) Object.assign(values, buildTargetTemplateValues(target));
@@ -1108,7 +1116,7 @@ function buildCommonTemplateValues(
     "process.pid": String(process.pid),
     "pageParameters.statePath": path.join(config.stateDir, "page-parameters.json"),
     "businessScripts.statePath": path.join(config.stateDir, "business-scripts.json"),
-    "accountProfiles.statePath": path.join(config.stateDir, "account-profiles.json"),
+    "accountProfiles.statePath": accountProfileStatePath(config),
   };
 }
 

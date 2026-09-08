@@ -364,7 +364,7 @@ describe("项目配置", () => {
     expect(resolveAccountProfileProviderCommand(config, "recording-start")?.args).toEqual([
       "account-profiles.cjs",
       "--profiles",
-      path.join(config.stateDir, "account-profiles.json"),
+      path.join(config.accountProfileStorage!.directory, "account-profiles.json"),
       "recording-start",
     ]);
     expect(config.codexRepair).toEqual({

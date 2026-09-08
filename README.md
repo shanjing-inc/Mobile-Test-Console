@@ -84,7 +84,7 @@ Windows 上遇到端口冲突时编辑这个文件并重新执行 `pnpm dev`。�
 
 “项目”工作区用于登记多个本机项目并跟踪接入步骤。添加项目后可以直接点击“选择配置文件”，系统文件选择器确认 `mobile-test.config.cjs` 后自动填入配置路径和 `project.root` 项目目录；也可以点击“打开项目目录并扫描”，MTC 会在选中目录内查找配置文件并自动回填。MTC 从配置读取项目 ID、名称、`integrationType` 和 `deviceProviders`，点击“验证接入”后先检查目标平台需要的 adb、Xcode 或 hdc 工具链，再检测设备连接、授权、设备准备项和 Project Provider 能力。MTC 会把自动解析到的工具目录传给项目 Runner；特殊安装目录可通过 `ANDROID_ADB_PATH`、`ANDROID_SDK_ROOT`、`ANDROID_HOME`、`HARMONY_HDC_PATH`、`HARMONY_SDK_HOME` 或 `DEVECO_SDK_HOME` 声明。项目目录记录项目元数据与上次选择状态。用户在平台中选择项目，完成目录、配置和环境验收后，再切换为运行项目。
 
-项目目录默认保存到 `~/.mobile-test-console/projects.json`，可以通过 `--project-catalog <path>` 或 `MTC_PROJECT_CATALOG` 指定其他位置。目录只保存项目元数据和验证结果，测试任务与账号、页面、业务脚本状态继续保存到各项目自己的 `stateDir`。
+项目目录默认保存到 `~/.mobile-test-console/projects.json`，可以通过 `--project-catalog <path>` 或 `MTC_PROJECT_CATALOG` 指定其他位置。目录只保存项目元数据和验证结果，测试任务、页面和业务脚本状态保存到各项目自己的 `stateDir`；账号画像使用 MTC 用户数据目录中的持久存储。详见[账号画像存储与恢复](docs/account-profile-storage.md)。
 
 非当前运行项目可以从项目卡片移除登记。该操作只更新项目目录文件，项目源码、`mobile-test.config.cjs` 与项目自己的 `stateDir` 均保留。
 

@@ -1329,7 +1329,20 @@ export interface AccountProfileReplay {
   error: string;
 }
 
+export interface AccountProfileStorageInfo {
+  id?: string;
+  directory: string;
+  backups: Array<{ id: string; createdAt: string }>;
+}
+
+export interface AccountProfileExport {
+  schemaVersion: "mobile-test-console.account-profile-state.v1";
+  profiles: AccountProfile[];
+  recordings: AccountProfileRecording[];
+}
+
 export interface AccountProfilesResponse {
+  storage?: AccountProfileStorageInfo;
   schemaVersion: "mobile-test-console.account-profiles.v1";
   providers?: Record<AccountProfileProvider, AccountProfileProviderAdapterManifest>;
   profiles: AccountProfileSummary[];

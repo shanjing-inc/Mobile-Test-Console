@@ -1,3 +1,4 @@
+import { AccountProfileBackupPanel } from "./AccountProfileBackupPanel";
 import { AlertCircle, CheckCircle2, Copy, Eye, EyeOff, Fingerprint, KeyRound, LoaderCircle, Play, Radio, Square, Trash2, XCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -218,6 +219,7 @@ export function AccountProfilesWorkspace({ devices, onMessage }: {
   };
 
   return <div className="account-workspace">
+    <AccountProfileBackupPanel storage={data?.storage} onChanged={load} onMessage={onMessage} />
     <section className="section-panel account-recording-panel">
       <div className="section-heading">
         <div><p className="eyebrow">ACCOUNT CAPTURE</p><h2>真机账号录制</h2></div>

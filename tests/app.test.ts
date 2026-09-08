@@ -24,6 +24,62 @@ afterEach(async () => {
 });
 
 describe("HTTP API", () => {
+  it("持久画像支持隔离存储、脱敏列表、导入导出与备份恢复", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-profile-vault-"));
+    tempDirs.push(dir);
+    const config = createConfig(dir);
+    config.accountProfileStorage = { id: "vault-one", directory: path.join(dir, "vault-one"), legacyDirectories: [] };
+    const tasks = new TaskManager(config, new StateStore(dir));
+    await tasks.initialize();
+    const devices = new DeviceDiscoveryService({ async capture() { return { code: 0, stdout: "", stderr: "" }; } }, []);
+    const app = await createApp({ config, tasks, devices });
+    const other = await createApp({ config: { ...config, accountProfileStorage: { id: "vault-two", directory: path.join(dir, "vault-two"), legacyDirectories: [] } }, tasks, devices });
+    const payload = {
+      schemaVersion: "mobile-test-console.account-profile-state.v1",
+      profiles: [{ schemaVersion: "mobile-test-console.account-profile.v2", profileId: "account", accountLabel: "QA",
+        platform: "android", environment: "qa", version: 2,
+        accountUid: "test-private-profile-extension", captures: [{ token: "test-private-extra-capture" }],
+        providerEntries: [{ provider: "wechat", accountUid: "test-private-member", accessToken: "test-private-provider-extension", sourceDeviceKey: "android:test", capabilities: ["login"], captures: [], recordedAt: "2026-09-08T00:00:00Z", validatedAt: "", expiresAt: "2099-01-01T00:00:00Z" }],
+      }], recordings: [{ recordingId: "recording", profileId: "account", accountLabel: "QA", provider: "wechat",
+        deviceKey: "android:test", deviceId: "test", deviceType: "physical", platform: "android", environment: "qa",
+        status: "stopped", startedAt: "2026-09-08T00:00:00Z", stoppedAt: "2026-09-08T00:01:00Z", error: "", captures: [],
+        accessToken: "test-private-recording-extension",
+      }],
+    };
+    try {
+      expect((await app.inject({ method: "POST", url: "/api/account-profiles/import", payload })).statusCode).toBe(200);
+      const snapshot = await app.inject({ method: "GET", url: "/api/account-profiles" });
+      expect(snapshot.statusCode).toBe(200);
+      expect(snapshot.body).not.toContain("test-private-");
+      expect(snapshot.json().profiles[0]).not.toHaveProperty("captures");
+      expect(snapshot.json().profiles[0].providerEntries[0].accountUidMasked).toBe("********mber");
+      const recording = await app.inject({ method: "GET", url: "/api/account-profile-recordings/recording" });
+      expect(recording.statusCode).toBe(200);
+      expect(recording.body).not.toContain("test-private-");
+      expect(snapshot.json().storage.directory).toBe(config.accountProfileStorage.directory);
+      expect((await other.inject({ method: "GET", url: "/api/account-profiles" })).json().profiles).toEqual([]);
+      const exported = await app.inject({ method: "GET", url: "/api/account-profiles/export" });
+      expect(exported.headers["cache-control"]).toBe("no-store");
+      expect(exported.headers["content-disposition"]).toContain("attachment");
+      expect(exported.json()).toEqual(payload);
+      const invalid = await app.inject({ method: "POST", url: "/api/account-profiles/import", payload: { ...payload, profiles: [{ secret: "never-in-error" }] } });
+      expect(invalid.statusCode).toBe(409);
+      expect(invalid.body).not.toContain("never-in-error");
+      const malformed = await app.inject({ method: "POST", url: "/api/account-profiles/import", headers: { "content-type": "application/json" }, payload: '{"secret":"never-in-error"' });
+      expect(malformed.statusCode).toBe(400);
+      expect(malformed.body).not.toContain("never-in-error");
+      expect((await app.inject({ method: "DELETE", url: "/api/account-profiles/account" })).statusCode).toBe(200);
+      const deleted = (await app.inject({ method: "GET", url: "/api/account-profiles" })).json();
+      expect(deleted.profiles).toEqual([]);
+      expect(deleted.storage.backups).toHaveLength(2);
+      const restored = await app.inject({ method: "POST", url: `/api/account-profiles/backups/${deleted.storage.backups[0].id}/restore` });
+      expect(restored.statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/account-profiles" })).json().profiles).toHaveLength(1);
+      await expect(fs.stat(path.join(dir, "account-profiles.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await app.close(); await other.close(); await tasks.shutdown(); }
+  });
+
+
   it("通过统一附件接口读取 Runner 执行中截图并报告文件缺失", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mtc-api-live-artifact-"));
     tempDirs.push(dir);
