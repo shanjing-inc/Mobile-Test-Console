@@ -87,6 +87,8 @@ import {
 } from "./project-workspaces";
 import { diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey, uniqueFailedTargetPages } from "./result-analysis";
 import { ScreenshotComparisonWorkspace } from "./ScreenshotComparisonWorkspace";
+import { ScreenshotReader } from "./ScreenshotReader";
+import { liveScreenshotItems, resultScreenshotItems } from "./screenshot-reader-items";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
 const TERMINAL_STATUSES = new Set(TERMINAL_TASK_STATUSES);
@@ -1458,23 +1460,7 @@ function TaskLog({ task }: { task: TestTask }) {
 }
 
 export function LiveScreenshotResult({ task }: { task: Pick<TestTask, "id" | "artifacts"> }) {
-  const screenshots = task.artifacts?.filter(artifact => artifact.role === "screenshot") ?? [];
-  if (screenshots.length === 0) {
-    return <div className="result-empty"><LoaderCircle className="spin" size={18} /><strong>等待首张截图</strong><span>Runner 发布截图后会在这里实时展示</span></div>;
-  }
-  return <div className="screenshot-gallery">
-    {screenshots.map(artifact => <LiveScreenshotItem key={artifact.id} taskId={task.id} artifact={artifact} />)}
-  </div>;
-}
-
-function LiveScreenshotItem({ taskId, artifact }: { taskId: string; artifact: NonNullable<TestTask["artifacts"]>[number] }) {
-  const [failed, setFailed] = useState(false);
-  const url = taskArtifactUrl(taskId, artifact.id);
-  return <a className={`screenshot-item ${failed ? "artifact-error" : ""}`} href={failed ? undefined : url} target="_blank" rel="noreferrer">
-    {failed
-      ? <span><strong>截图无法读取</strong><small>{artifact.label} · {artifact.uri}</small></span>
-      : <><img src={url} alt={artifact.label} loading="lazy" onError={() => setFailed(true)} /><span><strong>{artifact.label}</strong><small>运行中截图</small></span></>}
-  </a>;
+  return <ScreenshotReader key={task.id} items={liveScreenshotItems(task)} waiting />;
 }
 
 export function ResultPanel({
@@ -1889,20 +1875,7 @@ function AnalysisMetric({ label, value, tone = "", onClick, active = false }: { 
 }
 
 function ScreenshotResult({ taskId, runs }: { taskId: string; runs: TaskResultRun[] }) {
-  const screenshots = runs.flatMap(run => run.screenshots.map(artifact => ({ artifact, run })));
-  if (screenshots.length === 0) return <div className="result-empty"><ImageIcon size={18} /><strong>没有截图</strong><span>当前运行未生成 PNG、JPEG 或 WebP 图片</span></div>;
-  return <div className="screenshot-gallery">
-    {screenshots.map(({ artifact, run }) => <a
-      key={`${run.runId}:${artifact.id}`}
-      className="screenshot-item"
-      href={taskArtifactUrl(taskId, artifact.id)}
-      target="_blank"
-      rel="noreferrer"
-    >
-      <img src={taskArtifactUrl(taskId, artifact.id)} alt={`${run.caseId} ${artifact.label}`} loading="lazy" />
-      <span><strong>{artifact.label}</strong><small>{run.caseId || run.targetPage || run.runId}</small></span>
-    </a>)}
-  </div>;
+  return <ScreenshotReader key={taskId} items={resultScreenshotItems(taskId, runs)} />;
 }
 
 function RunScreenshotPreview({ taskId, run }: { taskId: string; run: TaskResultRun }) {

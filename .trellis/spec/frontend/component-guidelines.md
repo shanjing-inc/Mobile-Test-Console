@@ -152,6 +152,16 @@ Keep the preview link beside the detail button so the markup does not nest inter
 - Hiding the gallery changes `aria-expanded` to `false` and removes all `<img>` nodes.
 - Entry previews sit beside the entry copy and make the preview image define the cell height. The image is rendered directly without a background block at `420px` high on desktop and `330px` high at a `390px` viewport. The disclosure chevron stays at the far-right edge and the page has no horizontal overflow.
 
+### Single-run screenshot reading
+
+`ScreenshotReader` presents terminal Result Bundle screenshots and active Runner artifacts through stable items containing `key`, task-scoped `url`, `title`, and original `label`. Terminal identities include run/case/artifact identity; live identities include task/artifact identity. Preserve source order and selected-result scope. Existing comparison title formatting can provide readable labels while original artifact labels stay available.
+
+The default view contains an independently scrolling directory and bounded page stream. Images preserve their natural aspect ratio with `object-fit: contain` and both width and height limits. Previous/next, directory clicks and unmodified ArrowUp/ArrowDown select the same item, clamp at boundaries and synchronize the page count. Keyboard handling belongs to the reader surface and preserves native behavior in editable fields. Natural scrolling updates the directory without moving the surrounding workspace. Appending live artifacts preserves the current selection.
+
+The thumbnail overview returns to the selected page when a thumbnail is clicked. Focus reading uses an accessible modal surface with an explicit exit and Escape; restore the selected page and keyboard focus to a connected reader control on exit. Keep selection through overview/focus transitions and viewport resizing. Image failures remain visible and navigation stays usable. Empty active results show the waiting state; empty terminal results show the empty state.
+
+Required browser checks: actual multi-page scroll and arrows, directory selection, overview-to-reader selection, focus entry/exit and focus restoration, first/last boundaries, natural-ratio images, and no horizontal overflow at a 390px viewport. Unit checks cover task/project URL scoping, stable identities, missing selection fallback, empty states and shared comparison shortcut compatibility. Use image URL identity to reset a failed image when its source changes.
+
 ### Screenshot comparison continuous browsing
 
 **Problem**: Full-width rendering enlarges tall mobile screenshots beyond the usable viewport, while rendering only the selected pair makes every page transition depend on the navigation list.
