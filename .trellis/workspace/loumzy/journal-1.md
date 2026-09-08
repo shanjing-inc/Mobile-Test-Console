@@ -754,3 +754,25 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 25: 恢复页面参数与页面启动导航
+<!-- trellis-session: v=2 fp=58601c74ea4eb72f -->
+
+**Date**: 2026-09-08
+**Task**: 恢复页面参数与页面启动导航
+**Branch**: `main`
+
+### Summary
+
+补齐页面参数持久化和导航编辑往返：共用项目UUID并隔离页面vault；迁移保留完整values/navigation/actions/assertions与录制；所有启动、回放和修复快照读取同一持久路径。页面store采用跨进程锁、变更前备份、原子写入、故障恢复，服务避免异步响应覆盖新状态。已恢复真实28画像和48录制，与旧源完整深相等，28份启动导航均保留，HTTP和浏览器显示恢复结果。最终472测试通过、14项基线失败，3项既有类型诊断；lint/Schema/各bundle和145文件包检查通过。开源扫描仍误报原有API路径，全量门禁处置后归档任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bf78541` | fix(mtc): 恢复页面参数并持久保留页面启动导航 |
+
+### Status
+
+[OK] **Completed**

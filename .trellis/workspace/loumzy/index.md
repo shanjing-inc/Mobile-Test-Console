@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 24
+- **Total Sessions**: 25
 - **Last Active**: 2026-09-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~756 | Active |
+| `journal-1.md` | ~778 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 25 | 2026-09-08 | 恢复页面参数与页面启动导航 | `bf78541` | `main` |
 | 24 | 2026-09-08 | 审核并提交账号画像持久存储 | `315f2be` | `main` |
 | 23 | 2026-09-01 | App 多设备并行测试 | `5961319` | `main` |
 | 22 | 2026-09-01 | 加固重试终态并简化小程序单目标运行 | `1d5efb2`, `2075606` | `main` |
