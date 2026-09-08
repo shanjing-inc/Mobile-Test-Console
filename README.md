@@ -39,11 +39,11 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` 固定启动 MTC 平台服务和项目接入中心，启动阶段不会加载项目构建、设备准备、生命周期或测试脚本。用户在后台选择项目并点击“切换运行项目”后，控制台才进入该项目的运行环境；也可以使用 `pnpm dev -- --config /path/to/app/qa/mobile-test.config.cjs` 显式调试项目。
+`pnpm dev` 固定启动 MTC 平台服务和项目接入中心。用户在后台选择项目后，控制台按需加载该项目的独立 Runtime；也可以使用 `pnpm dev -- --config /path/to/app/qa/mobile-test.config.cjs` 显式指定启动时加载的项目。
 
 默认浏览器地址为 `http://127.0.0.1:4311`，API 地址为 `http://127.0.0.1:4310`。端口可以通过项目配置调整：
 
-开发启动器在 API 与页面进程之外持有当前运行项目的生命周期：平台模式不会执行项目生命周期，切换运行项目或使用 `--config` 后执行一次 `lifecycle.startup`，服务端源码热更新只重启 API，退出时执行一次 `lifecycle.shutdown`。因此重型项目准备不会阻塞每次服务端热更新。
+每个已加载项目拥有独立的配置、任务、结果、账号画像、页面参数、业务脚本和生命周期。服务端退出时统一关闭所有已加载 Runtime。项目选择只改变页面当前查看的 Runtime，其他项目的活动任务会继续执行。
 
 启动器会在项目准备前检查配置中的 API 与页面端口。健康检查确认已有控制台时会提示现有地址并成功退出；端口被其他程序占用时返回错误。该检查避免 Vite 自动切换端口后与固定 API 端口失配。
 
@@ -82,17 +82,17 @@ Windows 上遇到端口冲突时编辑这个文件并重新执行 `pnpm dev`。�
 
 ## 项目接入中心
 
-“项目”工作区用于登记多个本机项目并跟踪接入步骤。添加项目后可以直接点击“选择配置文件”，系统文件选择器确认 `mobile-test.config.cjs` 后自动填入配置路径和 `project.root` 项目目录；也可以点击“打开项目目录并扫描”，MTC 会在选中目录内查找配置文件并自动回填。MTC 从配置读取项目 ID、名称、`integrationType` 和 `deviceProviders`，点击“验证接入”后先检查目标平台需要的 adb、Xcode 或 hdc 工具链，再检测设备连接、授权、设备准备项和 Project Provider 能力。MTC 会把自动解析到的工具目录传给项目 Runner；特殊安装目录可通过 `ANDROID_ADB_PATH`、`ANDROID_SDK_ROOT`、`ANDROID_HOME`、`HARMONY_HDC_PATH`、`HARMONY_SDK_HOME` 或 `DEVECO_SDK_HOME` 声明。项目目录记录项目元数据与上次选择状态。用户在平台中选择项目，完成目录、配置和环境验收后，再切换为运行项目。
+“项目”工作区用于登记多个本机项目并跟踪接入步骤。添加项目后可以直接点击“选择配置文件”，系统文件选择器确认 `mobile-test.config.cjs` 后自动填入配置路径和 `project.root` 项目目录；也可以点击“打开项目目录并扫描”，MTC 会在选中目录内查找配置文件并自动回填。MTC 从配置读取名称、`integrationType` 和 `deviceProviders`，并按项目真实目录生成实例 ID。点击“验证接入”后先检查目标平台需要的 adb、Xcode 或 hdc 工具链，再检测设备连接、授权、设备准备项和 Project Provider 能力。MTC 会把自动解析到的工具目录传给项目 Runner；特殊安装目录可通过 `ANDROID_ADB_PATH`、`ANDROID_SDK_ROOT`、`ANDROID_HOME`、`HARMONY_HDC_PATH`、`HARMONY_SDK_HOME` 或 `DEVECO_SDK_HOME` 声明。项目目录记录项目元数据与上次选择状态，选择项目时直接加载对应 Runtime。
 
 项目目录默认保存到 `~/.mobile-test-console/projects.json`，可以通过 `--project-catalog <path>` 或 `MTC_PROJECT_CATALOG` 指定其他位置。目录只保存项目元数据和验证结果，测试任务与账号、页面、业务脚本状态继续保存到各项目自己的 `stateDir`。
 
-非当前运行项目可以从项目卡片移除登记。该操作只更新项目目录文件，项目源码、`mobile-test.config.cjs` 与项目自己的 `stateDir` 均保留。
+项目可以从项目卡片移除登记。该操作只更新项目目录文件，项目源码、`mobile-test.config.cjs` 与项目自己的 `stateDir` 均保留。
 
-登记项目完成配置验收后，可以在“项目”工作区点击“切换运行项目”。切换前 MTC 会阻止仍有活动任务的请求，校验目标配置并自动重启控制台；重启后 `--config` 指向目标项目，原项目的任务状态仍保存在原 `stateDir`。
+登记项目完成配置验收后，在侧边栏选择项目即可加载对应 Runtime，API 和页面无需重启。不同设备或小程序执行环境可以跨项目并行测试；共享同一设备或 `concurrencyKey` 的任务进入全局 FIFO 队列，避免资源争用。
 
 项目完成度会自动推进：任一测试任务首次通过时，“基础 Smoke”记录该次运行；任务返回 `resultUri` 或通过 HTTP 推送 Result Bundle 时，“结果分析”记录运行 ID 和受控结果 URI。每份运行证据都会绑定项目配置摘要和 Provider 能力版本摘要，MTC 启动或重新验证时发现摘要变化会将 Smoke 与结果分析恢复为待验证状态。
 
-当前运行项目的过期步骤会显示“重跑 Smoke”或“重跑分析”。点击后控制台预选兼容测试入口并进入测试执行页，开发者确认设备和参数后启动；结果分析通过项目 Provider 的 `collectResult()` 生成新的 Result Bundle。
+当前查看项目的过期步骤会显示“重跑 Smoke”或“重跑分析”。点击后控制台预选兼容测试入口并进入测试执行页，开发者确认设备和参数后启动；结果分析通过项目 Provider 的 `collectResult()` 生成新的 Result Bundle。
 
 ## 项目配置
 
@@ -112,7 +112,7 @@ iosSimulator: {
 ```js
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
-  project: { id: "demo", name: "Demo App", root: ".", integrationType: "app" },
+  project: { name: "Demo App", root: ".", integrationType: "app" },
   deviceProviders: ["android", "ios", "harmony"],
   testing: {
     environments: [{ id: "qa", label: "QA", description: "QA 测试环境" }],
@@ -169,7 +169,6 @@ module.exports = {
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
-    id: "demo-mini-program",
     name: "Demo 小程序",
     root: ".",
     integrationType: "mini-program",
@@ -217,6 +216,8 @@ module.exports = {
   }],
 };
 ```
+
+MTC 会对 `project.root` 执行 `realpath`，再根据真实路径生成稳定项目实例 ID。不同 worktree 自动隔离；配置中的历史 `project.id` 仍可读取，但不参与运行身份计算。
 
 `healthCheck` 是 MTC 在开放测试入口前执行的环境检查命令。命令从项目根目录启动，退出码 `0` 表示环境可用，其他退出码表示需要处理；标准输出或错误输出会展示在“运行环境 → 查看检查详情”中。`args` 支持 `{{target.key}}`、`{{target.platform}}`、`{{target.runtime}}` 和 `{{target.appId}}` 占位符。
 

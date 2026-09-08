@@ -25,9 +25,9 @@ describe("Runner CLI 运行时", () => {
       fs.readFile(new URL("../src/server/lifecycle-cli.ts", import.meta.url), "utf8"),
     ]);
 
-    expect(cliSource).toContain("await loadRunnerRuntime(config, [], resultBundles)");
+    expect(cliSource).toContain("await createProjectRuntime(config");
     expect(lifecycleSource).toContain('if (phase === "startup") await loadRunnerRuntime(config)');
-    expect(cliSource.indexOf("applyDeviceToolEnv();")).toBeLessThan(cliSource.indexOf("await loadRunnerRuntime"));
+    expect(cliSource.indexOf("applyDeviceToolEnv();")).toBeLessThan(cliSource.indexOf("await createProjectRuntime"));
     expect(lifecycleSource.indexOf("applyDeviceToolEnv();")).toBeLessThan(lifecycleSource.indexOf("await loadRunnerRuntime"));
   });
 
@@ -52,7 +52,7 @@ describe("Runner CLI 运行时", () => {
     await fs.writeFile(path.join(dir, "runner-plugin.cjs"), `module.exports = {
       apiVersion: "mobile-test-console.runner-plugin.v1",
       createRunners(context) {
-        return [context.services.createCommandRunner(context.project.id + "-" + context.options.suffix)];
+        return [context.services.createCommandRunner(context.options.runnerId)];
       }
     };`);
     await fs.writeFile(path.join(dir, "runner-plugin.mjs"), `export default {
@@ -69,7 +69,7 @@ describe("Runner CLI 运行时", () => {
       schemaVersion: "mobile-test-console.config.v1",
       project: { id: "demo", name: "Demo", root: "." },
       runnerPlugins: [
-        { module: "./runner-plugin.cjs", options: { suffix: "runner" } },
+        { module: "./runner-plugin.cjs", options: { runnerId: "demo-runner" } },
         { module: "./runner-plugin.mjs", options: { runnerId: "esm-plugin-runner" } }
       ],
       tests: [{ id: "smoke", label: "Smoke", runnerId: "demo-runner", platforms: ["android"] }]

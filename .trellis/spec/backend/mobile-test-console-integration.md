@@ -267,9 +267,9 @@ DELETE /api/tasks/:taskId
 - `TestTask.device` remains required during the v1 compatibility period. Mini-program tasks receive a virtual device derived from the target; new code does not use this placeholder for runtime decisions.
 - App targets use a FIFO queue keyed by device key. The queue head executes immediately when its device is idle; later App tasks for that device remain `queued`. Queues for different devices execute independently.
 - An App task in `queued`, `preparing`, or `running` reserves its pair of `testId` and device key. A repeated start for that pair returns `TASK_DUPLICATE`, HTTP 409. A request containing any duplicate pair creates no tasks. A different App test may join the same device queue.
-- Active mini-program tasks lock by `target.concurrencyKey`.
-- One `TaskManager` instance establishes the mini-program lock before its first asynchronous persistence boundary. Concurrent `start()` calls therefore observe the first registered active task and only one call can acquire a given `concurrencyKey`.
-- Busy mini-program starts fail immediately with `TARGET_BUSY`; task queuing and cross-process locking are separate capabilities.
+- Mini-program tasks use a FIFO queue keyed by `target.concurrencyKey`. All project Runtimes in one MTC process share the execution coordinator, so tasks for the same resource execute serially across projects.
+- One `TaskManager` instance reserves the pair of test ID and mini-program concurrency key before its first asynchronous persistence boundary. Concurrent `start()` calls for that pair observe the first registered active task and one call returns `TARGET_BUSY`.
+- A different test in the same project may join the resource queue. Another project may queue the same test ID because duplicate detection is scoped to its own `TaskManager`. A single request selecting two target keys with the same concurrency key returns `TARGET_BUSY`. Cross-process locking remains a separate capability.
 - Cancellation aborts the Runner signal, calls optional Runner cancellation, persists the request, and finalizes the task as `cancelled`. Cancelling an App task that is still queued starts no Runner and leaves the next queued task eligible to run after the current task reaches a terminal state.
 - State loading adds `appRunTargetOf(task.device)` to legacy tasks without a target. Tasks persisted as `queued`, `preparing`, or `running` become `interrupted` after service restart.
 - A terminal Runner result may set `resultUri`. MTC persists the URI before result analysis is requested.
@@ -286,8 +286,10 @@ DELETE /api/tasks/:taskId
 | Device platform is absent from the test | `PLATFORM_UNSUPPORTED` |
 | Unknown configured target | `TARGET_UNKNOWN`, HTTP 404 |
 | Target is absent from the selected test | `TARGET_UNSUPPORTED` |
-| Active task holds the concurrency key | `TARGET_BUSY`, HTTP 409 |
-| Two concurrent starts request the same concurrency key | One start succeeds and one returns `TARGET_BUSY`, HTTP 409 |
+| An active task in this project has the same test ID and concurrency key | `TARGET_BUSY`, HTTP 409 |
+| A different test or another project holds the concurrency key | Create a `queued` task and execute it through the shared FIFO coordinator |
+| One request selects two targets with the same concurrency key | `TARGET_BUSY`, HTTP 409; no new task is created |
+| Two concurrent starts in this project request the same test ID and concurrency key | One start succeeds and one returns `TARGET_BUSY`, HTTP 409 |
 | App device already has an executing task | Create a `queued` App task for that device; its queue position does not block tasks on other devices |
 | Active App task has the same test ID and device key | `TASK_DUPLICATE`, HTTP 409; no new task is created |
 | Service restarts with an active persisted task | Recover it as `interrupted` with a finished timestamp |
@@ -295,7 +297,8 @@ DELETE /api/tasks/:taskId
 ### 5. Good / Base / Bad Cases
 
 - Good: two independent mini-program targets use different concurrency keys and execute concurrently.
-- Good: two simultaneous starts share one concurrency key; one task is registered and the competing start receives `TARGET_BUSY`.
+- Good: two simultaneous starts in one project share a test ID and concurrency key; one task is registered and the competing start receives `TARGET_BUSY`.
+- Good: different projects share one concurrency key, including matching test IDs; their tasks execute in FIFO order while unrelated resources run concurrently.
 - Good: a legacy App task gains an App target during state loading and continues to render normally.
 - Base: stopping an already terminal task returns the terminal snapshot.
 - Bad: account-profile selection runs against the mini-program virtual device.
@@ -304,11 +307,12 @@ DELETE /api/tasks/:taskId
 ### 6. Tests Required
 
 - Start App and mini-program tasks through HTTP and assert the frozen target in state and Runner plans.
-- Reject mixed, empty, unknown, unsupported, unavailable, and busy selections with exact codes.
-- Start two shared-key mini-program requests through `Promise.allSettled()`. Assert one fulfilled result, one `TARGET_BUSY` rejection, and one matching active task in `TaskManager.list()`.
+- Reject mixed, empty, unknown, unsupported, unavailable, duplicate test/key pairs, and same-request shared-key selections with exact codes.
+- Start two shared-key mini-program requests for the same test in one `TaskManager` through `Promise.allSettled()`. Assert one fulfilled result, one `TARGET_BUSY` rejection, and one matching active task in `TaskManager.list()`.
+- Assert different mini-program tests in one project and matching test IDs across projects queue by the same concurrency key and execute in FIFO order through a shared coordinator.
 - Start App tasks on two devices and assert both runners enter `running`; start three App tasks for one device and assert FIFO execution, queued cancellation, and continued scheduling.
 - Reject repeated App starts for the same test ID and device in both `running` and `queued` states; assert a batch duplicate request remains atomic; allow a new task after the original reaches a terminal state and allow another test ID to join the device queue.
-- Assert mini-program cancellation, concurrency locking, persistence, and service-restart recovery.
+- Assert mini-program cancellation, resource queue serialization, persistence, and service-restart recovery.
 - Assert persisted App `queued` tasks recover as `interrupted` and never resume after restart.
 - Assert old state without `target` migrates to an App target.
 - Assert template resolution and UI labels prefer `target` over the compatibility device.
@@ -322,7 +326,7 @@ await persist(task);
 tasks.set(task.id, task);
 ```
 
-This yields execution before the in-memory lock exists, so a concurrent start can acquire the same execution resource.
+This yields execution before the in-memory duplicate reservation exists, so concurrent starts can both create the same test and resource pair.
 
 #### Correct
 
@@ -707,6 +711,8 @@ GET /api/tasks/:taskId/artifacts/:artifactId
 ### 6. Tests Required
 
 - Assert missing, fixed, and stale configured IDs all produce the canonical path identity at the config boundary.
+- Keep the generated configuration schema and public examples valid with `project.id` omitted; `pnpm schema:check` must report no drift.
+- Filesystem fixtures compare resolved output paths with `realpath`-canonical roots. Provider and Runner fixtures use stable registration IDs and pass the runtime-generated `config.project.id` into run plans.
 - Assert same-name roots differ, symlink roots converge, catalog keys migrate, and historical task artifact URIs still use `task.projectId`.
 - Assert Runner artifact schema, run/project matching, URI traversal, deduplication, 100-item cap, persistence, missing files, escaping symlinks, extension/MIME mismatch, forged signatures, and zero/over-20-MiB files.
 - Assert active screenshot waiting/gallery/error states and terminal Result Bundle handoff.

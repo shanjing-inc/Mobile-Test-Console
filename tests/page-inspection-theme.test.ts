@@ -24,6 +24,7 @@ function pageInspectionTest(overrides: Partial<TestDefinition> = {}): TestDefini
   return {
     id: "saas-page-matrix",
     label: "本地回放页面结构巡检",
+    description: "验证页面巡检的外观参数与启动命令。",
     kind: "page",
     platforms: [],
     targetKeys: ["wechat-devtools"],
@@ -95,10 +96,56 @@ describe("页面巡检外观参数", () => {
     expect(test.commands.default?.env?.E2E_THEME).toBe("custom-{{params.theme}}");
   });
 
+  it("重复处理共享配置分区时保持参数和各平台环境值稳定", () => {
+    const test = pageInspectionTest({
+      commands: {
+        default: { executable: "pnpm", args: [], env: { KEEP: "value" } },
+        android: { executable: "pnpm", args: [] },
+        ios: { executable: "pnpm", args: [], env: { E2E_THEME: "dark" } },
+        harmony: { executable: "pnpm", args: [], env: { E2E_THEME: "" } },
+      },
+    });
+    const config = { tests: [test], mainConfigTests: [test], sidecarTests: [test] };
+
+    expect(ensureConfigPageInspectionTheme(config)).toBe(config);
+    const firstPass = structuredClone(test);
+    expect(ensurePageInspectionTheme(test)).toBe(test);
+    ensureConfigPageInspectionTheme(config);
+
+    expect(test).toEqual(firstPass);
+    expect(test.parameters.filter(parameter => parameter.id === "theme")).toHaveLength(1);
+    expect(test.commands.default?.env).toEqual({ KEEP: "value", E2E_THEME: "{{params.theme}}" });
+    expect(test.commands.android?.env).toEqual({ E2E_THEME: "{{params.theme}}" });
+    expect(test.commands.ios?.env).toEqual({ E2E_THEME: "dark" });
+    expect(test.commands.harmony?.env).toEqual({ E2E_THEME: "" });
+  });
+
+  it("每个测试独立复制外观选项数组与选项对象", () => {
+    const first = ensurePageInspectionTheme(pageInspectionTest());
+    const second = ensurePageInspectionTheme(pageInspectionTest());
+    const firstTheme = first.parameters.find(parameter => parameter.id === "theme");
+    const secondTheme = second.parameters.find(parameter => parameter.id === "theme");
+    if (firstTheme?.type !== "select" || secondTheme?.type !== "select") {
+      throw new Error("缺少外观选项");
+    }
+    const originalOptions = structuredClone(PAGE_INSPECTION_THEME_PARAMETER.options);
+
+    expect(firstTheme.options).not.toBe(secondTheme.options);
+    expect(firstTheme.options).not.toBe(PAGE_INSPECTION_THEME_PARAMETER.options);
+    expect(firstTheme.options[0]).not.toBe(secondTheme.options[0]);
+    expect(firstTheme.options[0]).not.toBe(PAGE_INSPECTION_THEME_PARAMETER.options[0]);
+    firstTheme.options[0].label = "项目自定义浅色";
+    firstTheme.options.push({ value: "system", label: "跟随系统", description: "" });
+
+    expect(secondTheme.options).toEqual(originalOptions);
+    expect(PAGE_INSPECTION_THEME_PARAMETER.options).toEqual(originalOptions);
+  });
+
   it("Smoke 和无页面选择的 page 测试不注入外观", () => {
     const smoke: TestDefinition = {
       id: "saas-smoke",
       label: "Smoke 测试",
+      description: "验证普通测试保持原始参数。",
       kind: "general",
       platforms: [],
       parameters: [],

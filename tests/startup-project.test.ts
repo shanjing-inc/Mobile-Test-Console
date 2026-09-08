@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadProjectConfig } from "../src/server/config.js";
 import { ProjectCatalogService, ProjectCatalogStore } from "../src/server/project-catalog.js";
+import { projectIdFromRoot } from "../src/server/project-identity.js";
 import { isConfiguredProject, resolveStartupProject } from "../src/server/startup-project.js";
 
 const tempDirs: string[] = [];
@@ -48,7 +49,7 @@ describe("MTC 启动项目解析", () => {
 
     const restoredCatalog = new ProjectCatalogService(store);
     await restoredCatalog.initialize();
-    expect(restoredCatalog.snapshot().activeProjectId).toBe("catalog-app");
+    expect(restoredCatalog.snapshot().activeProjectId).toBe(config.project.id);
     expect(restoredCatalog.snapshot().projects[0]?.active).toBe(true);
   });
 
@@ -68,7 +69,7 @@ describe("MTC 启动项目解析", () => {
       platformRoot: dir,
     });
     expect(resolution.source).toBe("explicit");
-    expect(resolution.config.project.id).toBe("explicit-app");
+    expect(resolution.config.project.id).toBe(projectIdFromRoot(await fs.realpath(dir)));
     expect(isConfiguredProject(resolution)).toBe(true);
   });
 
@@ -85,7 +86,8 @@ describe("MTC 启动项目解析", () => {
       tests: [{ id: "smoke", label: "Smoke", platforms: ["android"], commands: { default: { executable: "node", args: ["--version"] } } }],
     };\n`);
     const store = new ProjectCatalogStore(path.join(dir, "projects.json"));
-    await new ProjectCatalogService(store).initialize(await loadProjectConfig(configPath));
+    const config = await loadProjectConfig(configPath);
+    await new ProjectCatalogService(store).initialize(config);
     await fs.rm(configPath);
 
     const resolution = await resolveStartupProject({ platformRoot: dir });
@@ -94,6 +96,6 @@ describe("MTC 启动项目解析", () => {
 
     const restoredCatalog = new ProjectCatalogService(store);
     await restoredCatalog.initialize();
-    expect(restoredCatalog.snapshot().projects.map(project => project.id)).toEqual(["stale-app"]);
+    expect(restoredCatalog.snapshot().projects.map(project => project.id)).toEqual([config.project.id]);
   });
 });

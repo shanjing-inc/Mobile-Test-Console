@@ -2,7 +2,6 @@
 module.exports = {
   schemaVersion: "mobile-test-console.config.v1",
   project: {
-    id: "lynx-app-starter",
     name: "Lynx App Starter",
     root: ".",
     integrationType: "lynx-app",
