@@ -8,6 +8,26 @@ It supports Android, iOS, HarmonyOS, and mini-program targets. Projects integrat
 
 The current release is `0.1.0-beta.1` and is available for integration testing under the MIT License.
 
+## Demo
+
+**App: start tests across devices and review historical screenshots**
+
+Select Android, iOS, and HarmonyOS devices and test pages, inspect execution status, then browse historical case results and screenshots.
+
+![App test launch and historical screenshots](assets/showcase/app-demo.gif)
+
+**WeChat mini program: historical results and screenshots**
+
+Browse mini-program cases, page screenshots, and error details in the same workspace.
+
+![WeChat mini-program historical results and screenshots](assets/showcase/wechat-results.gif)
+
+[Watch the full video (MP4)](assets/showcase/showcase.mp4) · [Recording notes and reproduction](docs/showcase.md)
+
+This is a real screen recording with Chinese captions. The App run was cancelled after launch; the following App and WeChat scenes show historical results, with the transition identified in the captions. Personal information has been obscured.
+
+When reading this page on npm, visit the [demo on GitHub](https://github.com/shanjing-inc/Mobile-Test-Console#功能演示) to view the media.
+
 ## Highlights
 
 - Discover and manage Android, iOS, and HarmonyOS devices and mini-program targets

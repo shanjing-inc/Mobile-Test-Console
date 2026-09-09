@@ -8,6 +8,26 @@ Mobile Test Console 是一个开源、配置驱动的多终端测试控制台，
 
 当前版本为 `0.1.0-beta.1`，面向 App 与小程序项目开放接入验证。平台核心使用 MIT License，项目能力通过配置、Runner、Project Provider 和 Result Bundle 契约注册。
 
+## 功能演示
+
+**App：多设备测试启动与历史截图**
+
+选择 Android、iOS、HarmonyOS 设备和测试页面，查看运行状态，再浏览历史用例结果与页面截图。
+
+![App 多设备测试启动与历史截图演示](assets/showcase/app-demo.gif)
+
+**微信小程序：历史结果与页面截图**
+
+在同一工作区浏览小程序用例、页面截图和异常信息。
+
+![微信小程序历史测试结果与页面截图演示](assets/showcase/wechat-results.gif)
+
+[观看完整视频（MP4）](assets/showcase/showcase.mp4) · [素材说明与剪辑复现](docs/showcase.md)
+
+本视频来自真实操作录屏。App 测试在启动后取消，后续 App 与微信小程序画面展示历史测试结果；字幕标明了这一切换。个人信息已做遮挡。
+
+通过 npm 查看本页时，可前往 [GitHub 项目演示区](https://github.com/shanjing-inc/Mobile-Test-Console#功能演示)观看素材。
+
 ## 核心能力
 
 - 统一发现和管理 Android、iOS、HarmonyOS 设备及小程序运行目标
