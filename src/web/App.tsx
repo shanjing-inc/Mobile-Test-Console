@@ -85,7 +85,7 @@ import {
   workspaceDisabledReason,
   type WorkspaceView,
 } from "./project-workspaces";
-import { diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey, uniqueFailedTargetPages } from "./result-analysis";
+import { groupApiCalls, responseCaptureNotice, diagnoseTaskResultRun, isFailedApiCall, isSuiteResultRun, suiteTestSummary, taskResultRunKey, uniqueFailedTargetPages } from "./result-analysis";
 import { ScreenshotComparisonWorkspace } from "./ScreenshotComparisonWorkspace";
 
 const ACTIVE_STATUSES = new Set(ACTIVE_TASK_STATUSES);
@@ -1653,7 +1653,8 @@ export function OverviewResult({
         <AnalysisMetric label="通过" value={result.passed} tone="passed" />
         <AnalysisMetric label="失败" value={result.failed} tone="failed" onClick={() => onFilterChange("failed")} active={filter === "failed"} />
         <AnalysisMetric label="截图" value={screenshots} />
-        <AnalysisMetric label="接口" value={apiCalls} />
+        <AnalysisMetric label="调用次数" value={apiCalls} />
+        <AnalysisMetric label="去重接口数" value={groupApiCalls(result.runs).length} />
       </>}
     </div>
     {(result.preconditions?.length ?? 0) > 0 && <div className="result-preconditions">
@@ -1706,7 +1707,7 @@ export function OverviewResult({
                   <span className="analysis-result-text">{run.errorSummary || `全部 ${suiteSummary.total} 个测试点已完成`}</span>
                 </> : <>
                   <small>{run.executionKind || "scenario"} · {run.launchPage || "?"} → {run.actualFinalPage || "?"} / {run.expectedFinalPage || run.targetPage || "?"}</small>
-                  <span className="analysis-run-meta"><span>{run.platform || "-"} · {run.device || "未记录设备"}</span><span>{run.apiCalls.length} 接口 · {run.screenshots.length} 截图 · {run.uiActionCount} 动作</span></span>
+                  <span className="analysis-run-meta"><span>{run.platform || "-"} · {run.device || "未记录设备"}</span><span>{run.apiCalls.length} 次调用 · {groupApiCalls([run]).length} 个接口 · {run.screenshots.length} 截图 · {run.uiActionCount} 动作</span></span>
                   <span className="analysis-result-text">{run.errorSummary || (run.missingEvents.length ? `缺少 ${run.missingEvents.join("、")}` : run.passBasis?.map(item => item.description).join("；") || "证据采集完成")}</span>
                 </>}
               </span>
@@ -1919,11 +1920,17 @@ function RunScreenshotPreview({ taskId, run }: { taskId: string; run: TaskResult
   </a>;
 }
 
-function ApiResult({ runs, onCopy }: { runs: TaskResultRun[]; onCopy: (label: string, value: unknown) => void }) {
-  const calls = runs.flatMap(run => run.apiCalls.map(call => ({ call, run })));
-  if (calls.length === 0) return <div className="result-empty"><Network size={18} /><strong>没有接口记录</strong><span>当前运行未采集到 API runtime event</span></div>;
+export function ApiResult({ runs, onCopy }: { runs: TaskResultRun[]; onCopy: (label: string, value: unknown) => void }) {
+  const groups = groupApiCalls(runs);
+  const count = groups.reduce((total, group) => total + group.calls.length, 0);
+  if (count === 0) return <div className="result-empty"><Network size={18} /><strong>没有接口记录</strong><span>当前运行未采集到 API runtime event</span></div>;
   return <div className="api-result-list">
-    {calls.map(({ call, run }, index) => <ApiCallItem key={`${run.runId}:${call.index}:${index}`} call={call} run={run} onCopy={onCopy} />)}
+    <p className="api-group-total">{count} 次调用 · {groups.length} 个去重接口</p>
+    {groups.map(group => <details className="api-group" key={group.key}>
+      <summary><strong>{group.name}</strong><span>{group.calls.length} 次调用 · {group.pages.length} 个页面 · {group.calls.filter(({ call }) => isFailedApiCall(call)).length} 次失败</span></summary>
+      <p className="api-group-pages">页面：{group.pages.join(" · ")}</p>
+      {group.calls.map(({ call, run }, index) => <ApiCallItem key={`${run.runId}:${call.index}:${index}`} call={call} run={run} onCopy={onCopy} />)}
+    </details>)}
   </div>;
 }
 
@@ -1937,7 +1944,8 @@ function ApiCallItem({ call, run, onCopy }: { call: TaskResultApiCall; run: Task
       <span className={`api-outcome ${call.result === "success" ? "success" : "failed"}`}>{String(call.status || call.result || "-")}</span>
       <span className="api-duration">{call.durationMs == null ? "-" : `${call.durationMs}ms`}</span>
     </summary>
-    <div className="api-context"><span>{run.caseId || run.runId}</span><span>{call.page || run.targetPage || "-"}</span><span>{[call.network.dnsType, call.network.connectIp, call.network.protocol].filter(Boolean).join(" · ") || "未记录网络详情"}</span></div>
+    <div className="api-context"><span>{run.caseId || run.runId}</span><span>{call.ts || "未记录时间"}</span><span>{call.page || run.targetPage || "-"}</span><span>{[call.network.dnsType, call.network.connectIp, call.network.protocol].filter(Boolean).join(" · ") || "未记录网络详情"}</span></div>
+    <p className="api-capture-notice">{responseCaptureNotice(call.response)}</p>
     <div className="json-grid">
       <JsonBlock label="请求参数" value={call.request} onCopy={() => onCopy("请求参数", call.request)} />
       <JsonBlock label="响应结果" value={call.response} onCopy={() => onCopy("响应结果", call.response)} />

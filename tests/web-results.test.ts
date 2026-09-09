@@ -2,9 +2,9 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskResult } from "../src/shared/contracts.js";
-import { LiveScreenshotResult, OverviewResult, ResultPanel } from "../src/web/App.js";
+import { ApiResult, LiveScreenshotResult, OverviewResult, ResultPanel } from "../src/web/App.js";
 import { fetchSnapshot, fetchTaskResult, retryTask, taskArtifactUrl } from "../src/web/api.js";
-import { diagnoseTaskResultRun, isFailedApiCall, suiteTestSummary, uniqueFailedTargetPages } from "../src/web/result-analysis.js";
+import { groupApiCalls, responseCaptureNotice, diagnoseTaskResultRun, isFailedApiCall, suiteTestSummary, uniqueFailedTargetPages } from "../src/web/result-analysis.js";
 
 describe("QA 结果分析界面", () => {
   it("活动任务等待 Runner 发布首张截图", () => {
@@ -54,7 +54,7 @@ describe("QA 结果分析界面", () => {
 
     expect(markup).toContain("用例");
     expect(markup).toContain("case-one");
-    expect(markup).toContain("1 接口");
+    expect(markup).toContain("1 次调用 · 1 个接口");
     expect(markup).toContain("1 截图");
     expect(markup).toContain('aria-label="查看 case-one 失败详情"');
     expect(markup).toContain('aria-expanded="false"');
@@ -527,3 +527,32 @@ const suiteResult: TaskResult = {
     failureLogExcerpt: "",
   }],
 };
+
+
+describe("接口分组与响应完整性", () => {
+  it("跨页面调用归组，保留分页与重试，并区分服务和操作", () => {
+    const run = result.runs[0];
+    const base = run.apiCalls[0];
+    const runs = [
+      { ...run, targetPage: "pageA", apiCalls: [{ ...base, page: "pageA", host: "api.test", path: "/graphql", method: "POST", operationName: "Goods" }] },
+      { ...run, runId: "retry", targetPage: "pageB", apiCalls: [
+        { ...base, page: "pageB", host: "api.test", path: "/graphql", method: "POST", operationName: "Goods" },
+        { ...base, page: "pageB", host: "api.test", path: "/graphql", method: "POST", operationName: "Orders" },
+        { ...base, page: "pageB", host: "other.test", path: "/graphql", method: "POST", operationName: "Goods" },
+      ] },
+    ];
+    const groups = groupApiCalls(runs);
+    expect(groups).toHaveLength(3);
+    expect(groups[0].calls).toHaveLength(2);
+    expect(groups[0].pages).toEqual(["pageA", "pageB"]);
+    const markup = renderToStaticMarkup(createElement(ApiResult, { runs, onCopy: () => undefined }));
+    expect(markup).toContain("4 次调用");
+    expect(markup).toContain("3 个去重接口");
+    expect(markup).toContain("pageA · pageB");
+  });
+  it("区分完整、截断与历史摘要", () => {
+    expect(responseCaptureNotice({ capture: { version: 1, truncated: false } })).toContain("业务响应已保留");
+    expect(responseCaptureNotice({ capture: { version: 1, truncated: true } })).toContain("截断");
+    expect(responseCaptureNotice({ body: { length: 20 } })).toContain("重新测试");
+  });
+});

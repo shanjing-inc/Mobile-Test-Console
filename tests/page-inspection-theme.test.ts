@@ -24,6 +24,7 @@ function pageInspectionTest(overrides: Partial<TestDefinition> = {}): TestDefini
   return {
     id: "saas-page-matrix",
     label: "本地回放页面结构巡检",
+    description: "",
     kind: "page",
     platforms: [],
     targetKeys: ["wechat-devtools"],
@@ -99,6 +100,7 @@ describe("页面巡检外观参数", () => {
     const smoke: TestDefinition = {
       id: "saas-smoke",
       label: "Smoke 测试",
+      description: "",
       kind: "general",
       platforms: [],
       parameters: [],

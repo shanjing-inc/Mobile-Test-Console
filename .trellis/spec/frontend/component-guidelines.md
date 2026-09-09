@@ -318,3 +318,10 @@ Required regressions: historical selection followed by a field edit, non-default
 Both account and page workspaces render `ProjectDataBackupPanel`. The shared panel owns combined export, explicit file selection/merge confirmation, credential handling notice, and `PROJECT_DATA_IMPORT_MAX_BYTES` (40 MiB). Old account-only files remain accepted. Account storage metadata optionally adds clearly labeled account-only automatic backup recovery controls.
 
 After a successful import, refresh the workspace before reporting success; a refresh failure identifies the completed import and requests a page refresh. Partial import errors retain the selected file, refresh any committed data, and preserve the original error for retry. API helpers continue using the selected project's request header. Cover both workspaces' shared entry, old-file compatibility, project routing, and export cache settings.
+
+### API evidence groups
+
+- `groupApiCalls(runs)` groups by method, host/path, endpoint and operation name. Every invocation remains in the group, including retries and pagination.
+- Overview shows invocation count and distinct recorded API identities separately. API groups list their pages and expandable invocations with timestamps.
+- `response.capture.version === 1` identifies detailed response evidence. Render a visible notice for truncation; legacy evidence explains that a new run is needed for details.
+- Validate cross-page grouping, distinct hosts/operations and capture notices in `tests/web-results.test.ts`.

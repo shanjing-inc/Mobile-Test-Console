@@ -111,3 +111,32 @@ function normalizeSuiteTestStatus(status: unknown): string {
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
+
+export function groupApiCalls(runs: TaskResultRun[]) {
+  const groups = new Map<string, { key: string; name: string; pages: string[]; calls: Array<{ call: TaskResultApiCall; run: TaskResultRun }> }>();
+  for (const run of runs) {
+    for (const call of run.apiCalls) {
+      let host = call.host;
+      let path = call.path;
+      try { const url = new URL(call.url); host ||= url.host; path ||= url.pathname; } catch { /* 部分历史记录只包含路径。 */ }
+      const name = call.operationName || path || call.endpoint || call.url || "未命名接口";
+      // 分组保留请求次数；不同服务、方法和 GraphQL 操作分别统计。
+      const key = JSON.stringify([call.method.toUpperCase(), host, path, call.endpoint, call.operationName || (path ? "" : name)]);
+      const group = groups.get(key) ?? { key, name, pages: [], calls: [] };
+      const page = call.page || run.targetPage || run.caseId || "未记录页面";
+      if (!group.pages.includes(page)) group.pages.push(page);
+      group.calls.push({ call, run });
+      groups.set(key, group);
+    }
+  }
+  return [...groups.values()];
+}
+
+export function responseCaptureNotice(response: unknown): string {
+  const capture = response && typeof response === "object" && "capture" in response ? response.capture : undefined;
+  if (capture && typeof capture === "object") {
+    if ("truncated" in capture && capture.truncated) return "响应已达到采集上限，截断位置和原因见响应内容。";
+    if ("version" in capture && capture.version === 1) return "业务响应已保留，敏感字段已脱敏。";
+  }
+  return "历史响应可能仅包含摘要；重新测试可采集业务详情。";
+}

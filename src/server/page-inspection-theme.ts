@@ -41,10 +41,11 @@ export function isPageInspectionTest(test: Pick<ThemeAwareTest, "kind" | "parame
 export function ensurePageInspectionTheme<T extends ThemeAwareTest>(test: T): T {
   if (!isPageInspectionTest(test)) return test;
   if (!test.parameters.some(parameter => parameter.id === "theme")) {
-    test.parameters.push({
+    const theme: SelectParameterDefinition = {
       ...PAGE_INSPECTION_THEME_PARAMETER,
       options: PAGE_INSPECTION_THEME_PARAMETER.options.map(option => ({ ...option })),
-    });
+    };
+    test.parameters.push(theme);
   }
   for (const command of Object.values(test.commands)) {
     if (!command) continue;
