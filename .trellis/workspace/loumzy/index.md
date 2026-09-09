@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 26
-- **Last Active**: 2026-09-08
+- **Total Sessions**: 27
+- **Last Active**: 2026-09-09
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~800 | Active |
+| `journal-1.md` | ~822 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 27 | 2026-09-09 | 完成 App 与微信小程序演示素材及文档 | `cce5525` | `codex/app-miniprogram-showcase` |
 | 26 | 2026-09-08 | 统一账号与页面项目备份 | `17bc6b8` | `main` |
 | 25 | 2026-09-08 | 恢复页面参数与页面启动导航 | `bf78541` | `main` |
 | 24 | 2026-09-08 | 审核并提交账号画像持久存储 | `315f2be` | `main` |

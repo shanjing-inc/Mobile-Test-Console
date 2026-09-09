@@ -798,3 +798,25 @@ Mobile Test Console 展示 78 个 Lynx 页面，支持参数标识、搜索筛�
 ### Status
 
 [OK] **Completed**
+
+
+## Session 27: 完成 App 与微信小程序演示素材及文档
+<!-- trellis-session: v=2 fp=cfc0a49f86f769c4 -->
+
+**Date**: 2026-09-09
+**Task**: 完成 App 与微信小程序演示素材及文档
+**Branch**: `codex/app-miniprogram-showcase`
+
+### Summary
+
+完成66秒实录视频、28秒App GIF、19秒微信GIF、封面及可复现剪辑脚本，接入中英文README和素材说明。媒体解码、历史结果字幕和隐私遮挡复核通过，lint/typecheck/build/schema/package检查通过。干净HEAD复现既有10项测试失败和开源扫描路由误报，未修改相关源码。本地提交并归档任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cce5525` | docs(showcase): 增加 App 与小程序实录演示 |
+
+### Status
+
+[OK] **Completed**
